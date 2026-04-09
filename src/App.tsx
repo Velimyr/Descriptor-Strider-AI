@@ -724,10 +724,14 @@ export default function App() {
       <aside className="w-72 bg-white border-r border-slate-200 flex flex-col">
         <div className="p-6 border-b border-slate-100">
           <div className="flex items-center gap-3 mb-8">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white">
-              <Database size={24} />
+            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white overflow-hidden relative">
+              <img 
+                src="/logo.png" 
+                alt="Logo" 
+                className="absolute inset-0 w-full h-full object-cover" 
+              />
             </div>
-            <h1 className="font-bold text-xl tracking-tight">Описовий блукач</h1>
+            <h1 className="font-bold text-xl tracking-tight">Блукач Описами</h1>
           </div>
           
           <button 
