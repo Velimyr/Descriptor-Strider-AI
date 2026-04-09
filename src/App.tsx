@@ -726,7 +726,7 @@ export default function App() {
           <div className="flex items-center gap-3 mb-8">
             <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white overflow-hidden relative">
               <img 
-                src="/logo.png" 
+                src="logo.png" 
                 alt="Logo" 
                 className="absolute inset-0 w-full h-full object-cover" 
               />
@@ -1098,6 +1098,27 @@ export default function App() {
                                 {file.isLocal ? <FileUp size={14} /> : <Search size={14} />}
                               </div>
                               <span className="flex-1 truncate text-sm text-slate-700 font-medium">{file.name}</span>
+                              {file.isLocal && (
+                                <label className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors cursor-pointer" title="Перезавантажити файл (якщо загубився)">
+                                  <RotateCcw size={16} />
+                                  <input 
+                                    type="file" 
+                                    accept=".pdf" 
+                                    className="hidden" 
+                                    onChange={async (e) => {
+                                      const newFile = e.target.files?.[0];
+                                      if (!newFile || !activeProject) return;
+                                      try {
+                                        const buffer = await newFile.arrayBuffer();
+                                        await pdfStorage.save(file.id, buffer);
+                                        addLog(`Файл ${file.name} успішно оновлено в сховищі.`);
+                                      } catch (err) {
+                                        addLog(`Помилка оновлення файлу: ${err}`, 'error');
+                                      }
+                                    }}
+                                  />
+                                </label>
+                              )}
                               <button 
                                 onClick={async () => {
                                   if (file.isLocal && file.id) {
