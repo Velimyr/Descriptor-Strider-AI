@@ -451,7 +451,10 @@ export default function App() {
       
       addLog(`Сторінку ${pageNum} успішно переопрацьовано.`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      let msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('429') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('rate limit')) {
+        msg = `Перевищено ліміт запитів Gemini (${geminiModelRef.current}). Спробуйте іншу модель або зачекайте кілька хвилин.`;
+      }
       addLog(`Помилка перезапуску сторінки ${pageNum}: ${msg}`, 'error');
       updatePageStatus(url, pageNum, { status: 'error', message: msg });
     }
@@ -624,33 +627,60 @@ export default function App() {
             continue;
           }
 
-          try {
-            // Add a small delay to avoid rate limits
-            await new Promise(resolve => setTimeout(resolve, 1500));
+          let retryCount = 0;
+          const maxRetries = 2;
+          let success = false;
+
+          while (retryCount <= maxRetries && !success) {
+            if (stopRef.current) break;
             
-            const currentGemini = new GeminiService(geminiKeyRef.current, geminiModelRef.current);
-            const pageResults = await processSinglePage(pdf, pageNum, url, activeProject, currentGemini);
-            if (pageResults.length > 0) {
-              const currentResults = await pdfStorage.getResults(activeProject.id) || [];
-              const updatedResults = [...currentResults, ...pageResults];
-              await pdfStorage.saveResults(activeProject.id, updatedResults);
-              updateProject(activeProject.id, { results: updatedResults });
-            }
-            if (pageStatus) {
-              pageStatus.status = 'completed';
-              pageStatus.progress = 100;
-            }
-            completedInFile++;
-          } catch (err) {
-            let msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes('429') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('rate limit')) {
-              msg = `Перевищено ліміт запитів Gemini (${geminiModelRef.current}). Спробуйте іншу модель або зачекайте хвилину.`;
-            }
-            addLog(`Помилка сторінки ${pageNum} [Модель: ${geminiModelRef.current}]: ${msg}`, 'error');
-            updatePageStatus(url, pageNum, { status: 'error', message: msg });
-            if (pageStatus) {
-              pageStatus.status = 'error';
-              pageStatus.message = msg;
+            try {
+              // Base delay between pages (increased to 3s for safety)
+              const baseDelay = retryCount === 0 ? 3000 : 15000; 
+              if (retryCount > 0) {
+                addLog(`Повторна спроба для сторінки ${pageNum} через ліміти (спроба ${retryCount}/${maxRetries}). Очікуємо 15с...`, 'warn');
+                updatePageStatus(url, pageNum, { status: 'processing', message: `Очікування лімітів (спроба ${retryCount})...` });
+              }
+              
+              await new Promise(resolve => setTimeout(resolve, baseDelay));
+              
+              const currentGemini = new GeminiService(geminiKeyRef.current, geminiModelRef.current);
+              const pageResults = await processSinglePage(pdf, pageNum, url, activeProject, currentGemini);
+              
+              if (pageResults.length > 0) {
+                const currentResults = await pdfStorage.getResults(activeProject.id) || [];
+                const updatedResults = [...currentResults, ...pageResults];
+                await pdfStorage.saveResults(activeProject.id, updatedResults);
+                updateProject(activeProject.id, { results: updatedResults });
+              }
+              
+              if (pageStatus) {
+                pageStatus.status = 'completed';
+                pageStatus.progress = 100;
+                pageStatus.message = undefined;
+              }
+              completedInFile++;
+              success = true;
+            } catch (err) {
+              let msg = err instanceof Error ? err.message : String(err);
+              const isRateLimit = msg.includes('429') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('rate limit');
+              
+              if (isRateLimit && retryCount < maxRetries) {
+                retryCount++;
+                continue;
+              }
+
+              if (isRateLimit) {
+                msg = `Перевищено ліміт запитів Gemini (${geminiModelRef.current}) після декількох спроб. Спробуйте іншу модель або зачекайте кілька хвилин.`;
+              }
+              
+              addLog(`Помилка сторінки ${pageNum} [Модель: ${geminiModelRef.current}]: ${msg}`, 'error');
+              updatePageStatus(url, pageNum, { status: 'error', message: msg });
+              if (pageStatus) {
+                pageStatus.status = 'error';
+                pageStatus.message = msg;
+              }
+              break; // Exit retry loop on non-rate-limit error or max retries
             }
           }
           
