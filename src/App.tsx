@@ -370,9 +370,7 @@ export default function App() {
         const row = project.tableStructure.map(col => res.data[col.id] || "");
         row.push(url);
         row.push(pageNum.toString());
-        if (res.tags) {
-          row.push(res.tags.join(", "));
-        }
+        row.push(res.tags ? res.tags.join(", ") : "");
         return row;
       });
 
@@ -509,6 +507,7 @@ export default function App() {
         const headers = activeProject.tableStructure.map(col => col.label);
         headers.push("Посилання на файл");
         headers.push("Сторінка");
+        headers.push("Теги");
 
         const response = await fetch('/api/sheets/append', {
           method: 'POST',
@@ -752,6 +751,9 @@ export default function App() {
 
       try {
         const titleField = activeProject.tableStructure.find(c => c.id === 'title' || c.label.toLowerCase().includes('назва'))?.id || 'title';
+        const titleColumnIndex = activeProject.tableStructure.findIndex(c => c.id === titleField);
+        const tagsColumnIndex = activeProject.tableStructure.length + 2; // URL, Page, Tags
+
         const title = record.data[titleField];
         if (!title) continue;
 
@@ -762,18 +764,24 @@ export default function App() {
           addLog(`Створено теги для: ${title.substring(0, 30)}...`);
           
           if (activeProject.googleSheetsTokens && activeProject.googleSheetsId) {
-            const response = await fetch('/api/sheets/append', {
+            const response = await fetch('/api/sheets/update-tags', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 tokens: activeProject.googleSheetsTokens,
                 spreadsheetId: activeProject.googleSheetsId,
                 sheetName: activeProject.googleSheetsSheetName,
-                values: [[`ТЕГИ для: ${title}`, tags.join(", ")]]
+                pdfUrl: record.pdfUrl,
+                pageNumber: record.pageNumber,
+                title: title,
+                tags: tags,
+                titleColumnIndex,
+                tagsColumnIndex
               })
             });
             if (!response.ok) {
-              throw new Error(`Сервер повернув помилку ${response.status}. Можливо, бекенд не працює.`);
+              const errData = await response.json().catch(() => ({}));
+              throw new Error(errData.error || `Сервер повернув помилку ${response.status}`);
             }
           }
         }
