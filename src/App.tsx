@@ -799,7 +799,7 @@ export default function App() {
           <div className="flex flex-col items-center gap-3 mb-8">
             <div className="w-20 h-20 overflow-hidden relative">
               <img 
-                src="\logo.png" 
+                src="/logo.png" 
                 alt="Logo" 
                 className="absolute inset-0 w-full h-full object-contain" 
               />
