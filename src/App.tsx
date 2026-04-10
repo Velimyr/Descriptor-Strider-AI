@@ -73,6 +73,7 @@ export default function App() {
   const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [activeStatusTab, setActiveStatusTab] = useState<number>(0);
 
   useEffect(() => {
     console.log(`App mounted. Current geminiModel: ${geminiModel}`);
@@ -95,6 +96,7 @@ export default function App() {
   useEffect(() => {
     if (activeProject) {
       setProcessingStatus(activeProject.processingStatus || []);
+      setActiveStatusTab(0);
     } else {
       setProcessingStatus([]);
     }
@@ -498,6 +500,7 @@ export default function App() {
       await pdfStorage.saveResults(activeProject.id, []);
       updateProject(activeProject.id, { results: [], processingStatus: [] });
       setProcessingStatus([]);
+      setActiveStatusTab(0);
     }
 
     // 1. Add Headers to Google Sheets first if connected
@@ -555,10 +558,16 @@ export default function App() {
 
     // Initialize or preserve statuses
     let currentStatuses = [...processingStatus];
-    if (mode === 'start' || currentStatuses.length === 0) {
-      addLog("Попередній аналіз файлів...");
-      const initialStatuses: ProcessingStatus[] = [];
-      for (const f of allFiles) {
+    
+    // Check if we need to initialize any new files
+    const missingFiles = allFiles.filter(f => !currentStatuses.find(s => s.pdfUrl === f.url));
+    
+    if (mode === 'start' || (mode === 'continue' && missingFiles.length > 0)) {
+      addLog(mode === 'start' ? "Попередній аналіз файлів..." : "Аналіз нових файлів...");
+      const initialStatuses: ProcessingStatus[] = mode === 'start' ? [] : [...currentStatuses];
+      const filesToProcess = mode === 'start' ? allFiles : missingFiles;
+
+      for (const f of filesToProcess) {
         try {
           const buffer = await getFileBuffer(f);
           const pdf = await pdfjs.getDocument({ data: buffer }).promise;
@@ -1275,7 +1284,7 @@ export default function App() {
 
                 {(isProcessing || processingStatus.some(s => s.status !== 'pending')) && (
                   <section className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                    <div className="flex justify-between items-center mb-6">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
                       <h3 className="font-bold flex items-center gap-2">
                         {isProcessing ? <Loader2 size={18} className="text-indigo-600 animate-spin" /> : <CheckCircle2 size={18} className="text-green-600" />}
                         Статус опрацювання
@@ -1285,12 +1294,12 @@ export default function App() {
                         const completedPages = processingStatus.reduce((acc, s) => acc + (s.pages?.filter(p => p.status === 'completed').length || 0), 0);
                         const overallProgress = totalPages > 0 ? (completedPages / totalPages) * 100 : 0;
                         return (
-                          <div className="flex items-center gap-4">
+                          <div className="flex items-center gap-4 w-full md:w-auto">
                             <div className="flex flex-col items-end">
                               <span className="text-xs font-bold text-slate-700">Загальний прогрес</span>
                               <span className="text-[10px] text-slate-400 font-bold">{completedPages} / {totalPages} сторінок</span>
                             </div>
-                            <div className="w-32 h-2 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                            <div className="flex-1 md:w-32 h-2 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
                               <motion.div 
                                 initial={{ width: 0 }}
                                 animate={{ width: `${overallProgress}%` }}
@@ -1302,83 +1311,124 @@ export default function App() {
                         );
                       })()}
                     </div>
-                    <div className="space-y-6">
-                      {processingStatus.map((s, idx) => (
-                        <div key={idx} className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-100">
-                          <div className="flex justify-between items-center">
-                            <div className="flex flex-col">
-                              <span className="text-xs font-bold text-slate-700 truncate max-w-[300px]">{s.pdfUrl}</span>
-                              <span className="text-[10px] text-slate-400 uppercase font-bold">
-                                {s.status === 'pending' && 'Очікування...'}
-                                {s.status === 'downloading' && 'Завантаження...'}
-                                {s.status === 'processing' && 'Аналіз...'}
-                                {s.status === 'completed' && 'Завершено'}
-                                {s.status === 'error' && s.message}
-                              </span>
-                            </div>
-                            <span className="text-xs font-bold text-indigo-600">{Math.round(s.progress)}%</span>
-                          </div>
-                          
-                          <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                            <motion.div 
-                              initial={{ width: 0 }}
-                              animate={{ width: `${s.progress}%` }}
-                              className={cn(
-                                "h-full transition-all",
-                                s.status === 'error' ? "bg-red-500" : "bg-indigo-600"
-                              )}
-                            />
-                          </div>
 
-                          {/* Pages List */}
-                          {s.pages && s.pages.length > 0 && (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 pt-2">
-                              {s.pages.map(page => (
-                                <div 
-                                  key={page.pageNumber} 
-                                  className={cn(
-                                    "p-2 rounded-lg border text-[10px] flex flex-col gap-1 relative group",
-                                    page.status === 'completed' ? "bg-green-50 border-green-100 text-green-700" :
-                                    page.status === 'error' ? "bg-red-50 border-red-100 text-red-700" :
-                                    page.status === 'processing' ? "bg-indigo-50 border-indigo-100 text-indigo-700" :
-                                    "bg-white border-slate-100 text-slate-400"
-                                  )}
-                                >
-                                  <div className="flex justify-between items-center">
-                                    <span className="font-bold">Стор. {page.pageNumber}</span>
-                                    {page.status === 'processing' && <Loader2 size={10} className="animate-spin" />}
-                                    {page.status === 'completed' && <CheckCircle2 size={10} />}
-                                    {page.status === 'error' && <AlertCircle size={10} />}
-                                  </div>
-                                  <div className="h-1 bg-current opacity-20 rounded-full overflow-hidden">
-                                    <div className="h-full bg-current" style={{ width: `${page.progress}%` }} />
-                                  </div>
-                                  
-                                  {/* Retry Button Overlay */}
-                                  {page.status === 'error' && (
-                                    <button 
-                                      onClick={() => retryPage(s.pdfUrl, page.pageNumber)}
-                                      className="absolute inset-0 bg-red-600 text-white opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center gap-1 font-bold"
-                                    >
-                                      <Play size={10} />
-                                      Повтор
-                                    </button>
-                                  )}
-                                  {page.status === 'completed' && (
-                                    <button 
-                                      onClick={() => retryPage(s.pdfUrl, page.pageNumber)}
-                                      className="absolute inset-0 bg-indigo-600 text-white opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center gap-1 font-bold"
-                                    >
-                                      <Play size={10} />
-                                      Оновити
-                                    </button>
-                                  )}
-                                </div>
-                              ))}
+                    {/* Tabs */}
+                    {processingStatus.length > 1 && (
+                      <div className="flex border-b border-slate-100 mb-6 overflow-x-auto no-scrollbar">
+                        {processingStatus.map((s, idx) => {
+                          const fileName = s.pdfUrl.split('/').pop() || s.pdfUrl;
+                          const isError = s.status === 'error';
+                          const isCompleted = s.status === 'completed';
+                          return (
+                            <button
+                              key={idx}
+                              onClick={() => setActiveStatusTab(idx)}
+                              className={cn(
+                                "px-4 py-2 text-xs font-bold transition-all border-b-2 whitespace-nowrap flex items-center gap-2",
+                                activeStatusTab === idx 
+                                  ? "border-indigo-600 text-indigo-600 bg-indigo-50/30" 
+                                  : "border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50"
+                              )}
+                            >
+                              {isError && <AlertCircle size={12} className="text-red-500" />}
+                              {isCompleted && <CheckCircle2 size={12} className="text-green-500" />}
+                              {!isError && !isCompleted && s.status !== 'pending' && <Loader2 size={12} className="animate-spin text-indigo-500" />}
+                              <span className="max-w-[150px] truncate">{fileName}</span>
+                              <span className="ml-1 px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-[9px]">
+                                {Math.round(s.progress)}%
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className="space-y-6">
+                      {processingStatus.map((s, idx) => {
+                        if (processingStatus.length > 1 && activeStatusTab !== idx) return null;
+                        
+                        return (
+                          <motion.div 
+                            key={idx} 
+                            initial={{ opacity: 0, x: 10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-100"
+                          >
+                            <div className="flex justify-between items-center">
+                              <div className="flex flex-col">
+                                <span className="text-xs font-bold text-slate-700 truncate max-w-[300px] md:max-w-full">{s.pdfUrl}</span>
+                                <span className="text-[10px] text-slate-400 uppercase font-bold">
+                                  {s.status === 'pending' && 'Очікування...'}
+                                  {s.status === 'downloading' && 'Завантаження...'}
+                                  {s.status === 'processing' && 'Аналіз...'}
+                                  {s.status === 'completed' && 'Завершено'}
+                                  {s.status === 'error' && s.message}
+                                </span>
+                              </div>
+                              <span className="text-xs font-bold text-indigo-600">{Math.round(s.progress)}%</span>
                             </div>
-                          )}
-                        </div>
-                      ))}
+                            
+                            <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                              <motion.div 
+                                initial={{ width: 0 }}
+                                animate={{ width: `${s.progress}%` }}
+                                className={cn(
+                                  "h-full transition-all",
+                                  s.status === 'error' ? "bg-red-500" : "bg-indigo-600"
+                                )}
+                              />
+                            </div>
+
+                            {/* Pages List */}
+                            {s.pages && s.pages.length > 0 && (
+                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2 pt-2">
+                                {s.pages.map(page => (
+                                  <div 
+                                    key={page.pageNumber} 
+                                    className={cn(
+                                      "p-2 rounded-lg border text-[10px] flex flex-col gap-1 relative group",
+                                      page.status === 'completed' ? "bg-green-50 border-green-100 text-green-700" :
+                                      page.status === 'error' ? "bg-red-50 border-red-100 text-red-700" :
+                                      page.status === 'processing' ? "bg-indigo-50 border-indigo-100 text-indigo-700" :
+                                      "bg-white border-slate-100 text-slate-400"
+                                    )}
+                                  >
+                                    <div className="flex justify-between items-center">
+                                      <span className="font-bold">Стор. {page.pageNumber}</span>
+                                      {page.status === 'processing' && <Loader2 size={10} className="animate-spin" />}
+                                      {page.status === 'completed' && <CheckCircle2 size={10} />}
+                                      {page.status === 'error' && <AlertCircle size={10} />}
+                                    </div>
+                                    <div className="h-1 bg-current opacity-20 rounded-full overflow-hidden">
+                                      <div className="h-full bg-current" style={{ width: `${page.progress}%` }} />
+                                    </div>
+                                    
+                                    {/* Retry Button Overlay */}
+                                    {page.status === 'error' && (
+                                      <button 
+                                        onClick={() => retryPage(s.pdfUrl, page.pageNumber)}
+                                        className="absolute inset-0 bg-red-600 text-white opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center gap-1 font-bold"
+                                      >
+                                        <Play size={10} />
+                                        Повтор
+                                      </button>
+                                    )}
+                                    {page.status === 'completed' && (
+                                      <button 
+                                        onClick={() => retryPage(s.pdfUrl, page.pageNumber)}
+                                        className="absolute inset-0 bg-indigo-600 text-white opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center gap-1 font-bold"
+                                      >
+                                        <Play size={10} />
+                                        Оновити
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </motion.div>
+                        );
+                      })}
                     </div>
                   </section>
                 )}
