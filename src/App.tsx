@@ -171,6 +171,12 @@ export default function App() {
     try {
       const redirectUri = `${window.location.origin}/api/auth/google/callback`;
       const response = await fetch(`/api/auth/google/url?redirectUri=${encodeURIComponent(redirectUri)}`);
+      
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Сервер повернув помилку ${response.status}. Можливо, бекенд не працює (наприклад, на Vercel без налаштування API).`);
+      }
+      
       const { url } = await response.json();
       
       const authWindow = window.open(url, 'google_auth', 'width=600,height=700');
@@ -382,8 +388,14 @@ export default function App() {
       });
       
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || 'Помилка запису в таблицю');
+        let errMessage = 'Помилка запису в таблицю';
+        try {
+          const errData = await response.json();
+          errMessage = errData.error || errMessage;
+        } catch (e) {
+          errMessage = `Сервер повернув помилку ${response.status}. Можливо, бекенд не працює.`;
+        }
+        throw new Error(errMessage);
       }
     }
 
@@ -498,7 +510,7 @@ export default function App() {
         headers.push("Посилання на файл");
         headers.push("Сторінка");
 
-        await fetch('/api/sheets/append', {
+        const response = await fetch('/api/sheets/append', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -509,6 +521,9 @@ export default function App() {
             isHeader: true
           })
         });
+        if (!response.ok) {
+          throw new Error(`Сервер повернув помилку ${response.status}. Можливо, бекенд не працює.`);
+        }
         addLog("Заголовки успішно додано та відформатовано в Google Sheets");
       } catch (err) {
         addLog(`Помилка підготовки заголовків: ${err}`, 'warn');
@@ -747,7 +762,7 @@ export default function App() {
           addLog(`Створено теги для: ${title.substring(0, 30)}...`);
           
           if (activeProject.googleSheetsTokens && activeProject.googleSheetsId) {
-            await fetch('/api/sheets/append', {
+            const response = await fetch('/api/sheets/append', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -757,6 +772,9 @@ export default function App() {
                 values: [[`ТЕГИ для: ${title}`, tags.join(", ")]]
               })
             });
+            if (!response.ok) {
+              throw new Error(`Сервер повернув помилку ${response.status}. Можливо, бекенд не працює.`);
+            }
           }
         }
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -781,7 +799,7 @@ export default function App() {
           <div className="flex flex-col items-center gap-3 mb-8">
             <div className="w-20 h-20 overflow-hidden relative">
               <img 
-                src="/logo.png" 
+                src="logo.png" 
                 alt="Logo" 
                 className="absolute inset-0 w-full h-full object-contain" 
               />
