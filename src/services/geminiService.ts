@@ -13,25 +13,15 @@ export class GeminiService {
 
   async processPage(
     imageBase64: string,
-    tableStructure: TableColumn[],
-    scenario: 'search' | 'full',
-    keywords: string[] = []
+    tableStructure: TableColumn[]
   ) {
     const columnsDesc = tableStructure.map(c => c.label).join(", ");
     
-    let systemInstruction = "";
-    if (scenario === 'search') {
-      systemInstruction = `Ви професійний архівіст. Ваше завдання - розпізнати таблицю на зображенні архівної сторінки та знайти справи, що стосуються ключових слів: ${keywords.join(", ")}. 
-      Для кожної знайденої справи поверніть дані у форматі JSON. 
-      Структура таблиці: ${columnsDesc}. 
-      Також для кожного рядка вкажіть координати bounding box у форматі [ymin, xmin, ymax, xmax] (значення від 0 до 1000).`;
-    } else {
-      systemInstruction = `Ви професійний архівіст. Ваше завдання - розпізнати ВСІ справи в таблиці на зображенні архівної сторінки. 
+    const systemInstruction = `Ви професійний архівіст. Ваше завдання - розпізнати ВСІ справи в таблиці на зображенні архівної сторінки. 
       Для кожної справи поверніть дані у форматі JSON. 
       Структура таблиці: ${columnsDesc}. 
       Для кожної справи проаналізуйте заголовок та додайте список тегів (люди, прізвища, населені пункти, установи).
       Також для кожного рядка вкажіть координати bounding box у форматі [ymin, xmin, ymax, xmax] (значення від 0 до 1000).`;
-    }
 
     const responseSchema: any = {
       type: Type.OBJECT,
@@ -56,8 +46,7 @@ export class GeminiService {
               },
               tags: {
                 type: Type.ARRAY,
-                items: { type: Type.STRING },
-                description: "Тільки для сценарію 'full'"
+                items: { type: Type.STRING }
               }
             },
             required: ["data", "boundingBox"]
@@ -90,6 +79,44 @@ export class GeminiService {
       return parsed.results || [];
     } catch (e) {
       console.error("Failed to parse Gemini response:", e);
+      return [];
+    }
+  }
+
+  async generateTags(recordTitle: string) {
+    const systemInstruction = `Ви професійний архівіст. Ваше завдання - проаналізувати заголовок архівної справи та виділити список "тегів".
+    Теги - це нормалізовані назви власних імен (люди, прізвища), населених пунктів, значних локацій, установ.
+    Поверніть результат у форматі JSON зі списком рядків.
+    Приклад: "Привилей кн. Федора Ивановича Ярославовича на им. Особовичи Пинского пов." -> ["Федор Иванович Ярославович", "Особовичи", "Пинский повет"]`;
+
+    const responseSchema: any = {
+      type: Type.OBJECT,
+      properties: {
+        tags: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING }
+        }
+      },
+      required: ["tags"]
+    };
+
+    const response = await this.ai.models.generateContent({
+      model: this.model,
+      contents: {
+        parts: [{ text: `Заголовок справи: "${recordTitle}"` }]
+      },
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema
+      }
+    });
+
+    try {
+      const parsed = JSON.parse(response.text || "{}");
+      return parsed.tags || [];
+    } catch (e) {
+      console.error("Failed to parse tags response:", e);
       return [];
     }
   }

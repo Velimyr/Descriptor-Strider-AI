@@ -63,6 +63,7 @@ export default function App() {
   }, [geminiModel]);
 
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isIndexing, setIsIndexing] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const stopRef = useRef(false);
   const [processingStatus, setProcessingStatus] = useState<ProcessingStatus[]>([]);
@@ -322,9 +323,7 @@ export default function App() {
     updatePageStatus(url, pageNum, { progress: 40 });
     const pageResults = await gemini.processPage(
       imageBase64,
-      project.tableStructure,
-      project.scenario,
-      project.keywords
+      project.tableStructure
     );
     
     const foundCount = pageResults.length;
@@ -365,6 +364,9 @@ export default function App() {
         const row = project.tableStructure.map(col => res.data[col.id] || "");
         row.push(url);
         row.push(pageNum.toString());
+        if (res.tags) {
+          row.push(res.tags.join(", "));
+        }
         return row;
       });
 
@@ -718,17 +720,70 @@ export default function App() {
     }
   };
 
+  const startIndexing = async () => {
+    if (!activeProject || !geminiKey) return;
+    setIsIndexing(true);
+    stopRef.current = false;
+    addLog("Запуск створення покажчика (тегів)...");
+    const gemini = new GeminiService(geminiKey, geminiModel);
+    
+    const updatedResults = [...activeProject.results];
+    let changed = false;
+
+    for (let i = 0; i < updatedResults.length; i++) {
+      if (stopRef.current) break;
+      const record = updatedResults[i];
+      if (record.tags && record.tags.length > 0) continue;
+
+      try {
+        const titleField = activeProject.tableStructure.find(c => c.id === 'title' || c.label.toLowerCase().includes('назва'))?.id || 'title';
+        const title = record.data[titleField];
+        if (!title) continue;
+
+        const tags = await gemini.generateTags(title);
+        if (tags.length > 0) {
+          updatedResults[i] = { ...record, tags };
+          changed = true;
+          addLog(`Створено теги для: ${title.substring(0, 30)}...`);
+          
+          if (activeProject.googleSheetsTokens && activeProject.googleSheetsId) {
+            await fetch('/api/sheets/append', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                tokens: activeProject.googleSheetsTokens,
+                spreadsheetId: activeProject.googleSheetsId,
+                sheetName: activeProject.googleSheetsSheetName,
+                values: [[`ТЕГИ для: ${title}`, tags.join(", ")]]
+              })
+            });
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (err) {
+        addLog(`Помилка створення тегів: ${err}`, 'error');
+      }
+    }
+
+    if (changed) {
+      await pdfStorage.saveResults(activeProject.id, updatedResults);
+      updateProject(activeProject.id, { results: updatedResults });
+    }
+    setIsIndexing(false);
+    addLog("Створення покажчика завершено.");
+  };
+
   return (
     <div className="flex h-screen bg-[#F8F9FA] text-slate-900 font-sans">
       {/* Sidebar */}
       <aside className="w-72 bg-white border-r border-slate-200 flex flex-col">
         <div className="p-6 border-b border-slate-100">
-          <div className="flex items-center gap-3 mb-8">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white overflow-hidden relative">
+          <div className="flex flex-col items-center gap-3 mb-8">
+            <div className="w-20 h-20 overflow-hidden relative">
               <img 
                 src="logo.png" 
                 alt="Logo" 
-                className="absolute inset-0 w-full h-full object-cover" 
+                className="absolute inset-0 w-full h-full object-contain" 
               />
             </div>
             <h1 className="font-bold text-xl tracking-tight">Блукач Описами</h1>
@@ -873,13 +928,24 @@ export default function App() {
                     Експорт CSV
                   </button>
                   <button 
-                    disabled={isProcessing}
+                    disabled={isProcessing || isIndexing}
                     onClick={() => startProcessing('continue')}
                     className="flex items-center gap-2 px-6 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg transition-colors text-sm font-bold shadow-md"
                   >
                     <Play size={16} />
                     Продовжити
                   </button>
+                  
+                  {processingStatus.length > 0 && processingStatus.every(s => s.status === 'completed') && (
+                    <button 
+                      disabled={isIndexing || isProcessing}
+                      onClick={startIndexing}
+                      className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white rounded-lg transition-colors text-sm font-bold shadow-md"
+                    >
+                      {isIndexing ? <Loader2 size={16} className="animate-spin" /> : <Tag size={16} />}
+                      Створити покажчик
+                    </button>
+                  )}
                   <button 
                     disabled={isProcessing}
                     onClick={() => startProcessing('start')}
@@ -925,57 +991,6 @@ export default function App() {
                           <SettingsIcon size={16} className="text-indigo-600" />
                           Параметри AI
                         </h4>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Сценарій</label>
-                          <div className="grid grid-cols-2 gap-2">
-                            <button 
-                              onClick={() => updateProject(activeProject.id, { scenario: 'search' })}
-                              className={cn(
-                                "p-2 rounded-lg border text-xs font-medium transition-all flex flex-col items-center gap-1",
-                                activeProject.scenario === 'search' ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "border-slate-100 hover:border-slate-200 text-slate-600"
-                              )}
-                            >
-                              <Search size={16} />
-                              Пошук
-                            </button>
-                            <button 
-                              onClick={() => updateProject(activeProject.id, { scenario: 'full' })}
-                              className={cn(
-                                "p-2 rounded-lg border text-xs font-medium transition-all flex flex-col items-center gap-1",
-                                activeProject.scenario === 'full' ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "border-slate-100 hover:border-slate-200 text-slate-600"
-                              )}
-                            >
-                              <Tag size={16} />
-                              Повний
-                            </button>
-                          </div>
-                        </div>
-                        {activeProject.scenario === 'search' && (
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Ключові слова</label>
-                            <div className="flex flex-wrap gap-1 mb-2">
-                              {activeProject.keywords.map(kw => (
-                                <span key={kw} className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded text-[10px] font-medium flex items-center gap-1">
-                                  {kw}
-                                  <X size={10} className="cursor-pointer" onClick={() => updateProject(activeProject.id, { keywords: activeProject.keywords.filter(k => k !== kw) })} />
-                                </span>
-                              ))}
-                            </div>
-                            <input 
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  const val = e.currentTarget.value.trim();
-                                  if (val && !activeProject.keywords.includes(val)) {
-                                    updateProject(activeProject.id, { keywords: [...activeProject.keywords, val] });
-                                    e.currentTarget.value = '';
-                                  }
-                                }
-                              }}
-                              placeholder="Додати слово..."
-                              className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                            />
-                          </div>
-                        )}
                         <div>
                           <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Діапазон сторінок (глобально)</label>
                           <input 
@@ -1375,6 +1390,7 @@ export default function App() {
                               <th key={col.id} className="px-6 py-4">{col.label}</th>
                             ))}
                             <th className="px-6 py-4">Джерело</th>
+                            <th className="px-6 py-4">Теги</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
@@ -1409,6 +1425,15 @@ export default function App() {
                                 </div>
                                 <div className="text-[10px] text-slate-400 truncate max-w-[150px]">
                                   {res.pdfUrl}
+                                </div>
+                              </td>
+                              <td className="px-6 py-4">
+                                <div className="flex flex-wrap gap-1">
+                                  {res.tags?.map(tag => (
+                                    <span key={tag} className="bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded text-[10px] font-medium border border-amber-100">
+                                      {tag}
+                                    </span>
+                                  ))}
                                 </div>
                               </td>
                             </tr>
