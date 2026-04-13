@@ -571,7 +571,7 @@ export default function App() {
         try {
           const buffer = await getFileBuffer(f);
           const pdf = await pdfjs.getDocument({ data: buffer }).promise;
-          const targetPages = parsePageRange(f.pageRange || activeProject.pageRange || "", pdf.numPages);
+          const targetPages = parsePageRange(f.pageRange || "", pdf.numPages);
           
           const pages = targetPages.map(p => {
             const isDone = activeProject.results.some(r => r.pdfUrl === f.url && r.pageNumber === p);
@@ -630,7 +630,7 @@ export default function App() {
 
         const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
         const numPages = pdf.numPages;
-        const targetPages = parsePageRange(file.pageRange || activeProject.pageRange || "", numPages);
+        const targetPages = parsePageRange(file.pageRange || "", numPages);
         
         // Ensure pages are initialized
         if (!fileStatus?.pages || fileStatus.pages.length === 0) {
@@ -1020,23 +1020,7 @@ export default function App() {
                     exit={{ height: 0, opacity: 0 }}
                     className="mb-8 overflow-hidden"
                   >
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                      <div className="space-y-4">
-                        <h4 className="font-bold text-sm flex items-center gap-2 text-slate-700">
-                          <SettingsIcon size={16} className="text-indigo-600" />
-                          Параметри AI
-                        </h4>
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Діапазон сторінок (глобально)</label>
-                          <input 
-                            value={activeProject.pageRange || ''}
-                            onChange={(e) => updateProject(activeProject.id, { pageRange: e.target.value })}
-                            placeholder="Наприклад: 1-5, 10"
-                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                          />
-                        </div>
-                      </div>
-
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                       <div className="space-y-4">
                         <h4 className="font-bold text-sm flex items-center gap-2 text-slate-700">
                           <Database size={16} className="text-indigo-600" />
@@ -1210,7 +1194,7 @@ export default function App() {
                                     updateProject(activeProject.id, { files: newFiles as any, pdfUrls: [], localPdfs: [] });
                                   }
                                 }}
-                                placeholder="Напр: 1-5 (за замовч. глобальний)"
+                                placeholder="Напр: 1-5 (за замовч. всі)"
                                 className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-[10px] outline-none focus:ring-1 focus:ring-indigo-500"
                               />
                             </div>
@@ -1220,39 +1204,6 @@ export default function App() {
                     </div>
 
                     <div className="flex flex-col gap-3 mt-2">
-                      <div className="flex gap-2">
-                        <input 
-                          id="new-url"
-                          placeholder="Вставте посилання на PDF..."
-                          className="flex-1 p-2.5 bg-white border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              const val = e.currentTarget.value.trim();
-                              if (val) {
-                                const newFile = { id: crypto.randomUUID(), name: val, url: val, isLocal: false };
-                                updateProject(activeProject.id, { files: [...(activeProject.files || []), newFile] });
-                                e.currentTarget.value = '';
-                                addLog(`Додано посилання: ${val}`);
-                              }
-                            }
-                          }}
-                        />
-                        <button 
-                          onClick={() => {
-                            const input = document.getElementById('new-url') as HTMLInputElement;
-                            if (input.value) {
-                              const newFile = { id: crypto.randomUUID(), name: input.value, url: input.value, isLocal: false };
-                              updateProject(activeProject.id, { files: [...(activeProject.files || []), newFile] });
-                              addLog(`Додано посилання: ${input.value}`);
-                              input.value = '';
-                            }
-                          }}
-                          className="px-4 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-                        >
-                          Додати URL
-                        </button>
-                      </div>
-
                       <label className="w-full flex items-center justify-center gap-2 py-2.5 border-2 border-dashed border-slate-200 rounded-xl text-sm font-bold text-slate-400 hover:text-indigo-600 hover:border-indigo-200 hover:bg-indigo-50/30 transition-all cursor-pointer">
                         <FileUp size={18} />
                         Вибрати PDF з диска
