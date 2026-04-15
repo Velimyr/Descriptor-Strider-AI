@@ -1,6 +1,11 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { TableColumn } from "../types";
 
+const getColumnLabel = (column: TableColumn, index: number) => {
+  const trimmed = column.label.trim();
+  return trimmed || `Колонка ${index + 1}`;
+};
+
 export class GeminiService {
   private ai: GoogleGenAI;
   private model: string;
@@ -16,7 +21,7 @@ export class GeminiService {
     tableStructure: TableColumn[]
   ) {
     const columnsDesc = tableStructure
-      .map(c => `"${c.label}" -> ключ "${c.id}"`)
+      .map((c, index) => `"${getColumnLabel(c, index)}" -> ключ "${c.id}"`)
       .join(", ");
     
     const systemInstruction = `Ви професійний архівіст. Ваше завдання - розпізнати ВСІ справи в таблиці на зображенні архівної сторінки. 

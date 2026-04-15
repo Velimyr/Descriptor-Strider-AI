@@ -41,8 +41,8 @@ const DEFAULT_COLUMNS: TableColumn[] = [
   { id: 'notes', label: 'Примітки' },
 ];
 
-const normalizeColumnLabel = (label: string, index: number) => {
-  const trimmed = label.trim();
+const getColumnLabel = (column: TableColumn, index: number) => {
+  const trimmed = column.label.trim();
   return trimmed || `Колонка ${index + 1}`;
 };
 
@@ -61,7 +61,7 @@ const normalizeTableStructure = (columns?: TableColumn[]): TableColumn[] => {
     seenIds.add(id);
     return {
       id,
-      label: normalizeColumnLabel(column?.label || "", index)
+      label: column?.label ?? ""
     };
   });
 };
@@ -120,7 +120,7 @@ const normalizeProject = (project: Project): Project => ({
 });
 
 const getExportHeaders = (tableStructure: TableColumn[]) => [
-  ...tableStructure.map(column => column.label),
+  ...tableStructure.map((column, index) => getColumnLabel(column, index)),
   'Посилання на файл',
   'Сторінка',
   'Теги'
@@ -367,8 +367,8 @@ export default function App() {
   const exportToCSV = (project: Project) => {
     const headers = getExportHeaders(project.tableStructure);
     const csvData = project.results.map(r => {
-      const row = project.tableStructure.reduce<Record<string, string | number>>((acc, col) => {
-        acc[col.label] = getColumnValue(r.data, col);
+      const row = project.tableStructure.reduce<Record<string, string | number>>((acc, col, index) => {
+        acc[getColumnLabel(col, index)] = getColumnValue(r.data, col);
         return acc;
       }, {});
 
@@ -1525,8 +1525,8 @@ export default function App() {
                         <thead className="bg-slate-50 text-slate-500 font-bold uppercase tracking-wider text-[10px] border-b border-slate-100">
                           <tr>
                             <th className="px-6 py-4">Фрагмент</th>
-                            {activeProject.tableStructure.map(col => (
-                              <th key={col.id} className="px-6 py-4">{col.label}</th>
+                            {activeProject.tableStructure.map((col, index) => (
+                              <th key={col.id} className="px-6 py-4">{getColumnLabel(col, index)}</th>
                             ))}
                             <th className="px-6 py-4">Джерело</th>
                             <th className="px-6 py-4">Теги</th>
