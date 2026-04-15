@@ -3,8 +3,14 @@ import axios from "axios";
 import { google } from "googleapis";
 import dotenv from "dotenv";
 import cors from "cors";
+import path from "path";
 
-dotenv.config();
+dotenv.config({
+  path: [
+    path.resolve(process.cwd(), ".env.local"),
+    path.resolve(process.cwd(), ".env"),
+  ],
+});
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -82,7 +88,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
 
 // Append to Google Sheets with optional header formatting
 app.post("/api/sheets/append", async (req, res) => {
-  const { tokens, spreadsheetId, values, sheetName, isHeader } = req.body;
+  const { tokens, spreadsheetId, values, sheetName, isHeader, headers } = req.body;
   if (!tokens || !spreadsheetId || !values) return res.status(400).send("Missing parameters");
 
   const targetSheet = sheetName || "Sheet1";
@@ -100,7 +106,7 @@ app.post("/api/sheets/append", async (req, res) => {
       try {
         await sheets.spreadsheets.values.clear({
           spreadsheetId,
-          range: `${targetSheet}!A1:Z1000`,
+          range: `${targetSheet}`,
         });
       } catch (e) {
         console.log("Error during clear", e);
@@ -117,16 +123,34 @@ app.post("/api/sheets/append", async (req, res) => {
       })
     );
 
+    let valuesToAppend = processedRows;
+
+    if (!isHeader && Array.isArray(headers) && headers.length > 0) {
+      const existingResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `${targetSheet}`,
+      });
+
+      const existingRows = existingResponse.data.values || [];
+      const isSheetEmpty = existingRows.length === 0 || existingRows.every(row =>
+        row.every(cell => `${cell ?? ""}`.trim() === "")
+      );
+
+      if (isSheetEmpty) {
+        valuesToAppend = [headers, ...processedRows];
+      }
+    }
+
     await sheets.spreadsheets.values.append({
       spreadsheetId,
       range: `${targetSheet}!A1`,
       valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: processedRows
+        values: valuesToAppend
       }
     });
 
-    if (isHeader) {
+    if (isHeader || valuesToAppend[0] === headers) {
       await sheets.spreadsheets.batchUpdate({
         spreadsheetId,
         requestBody: {
@@ -162,18 +186,19 @@ app.post("/api/sheets/append", async (req, res) => {
 
 app.post("/api/sheets/delete-rows", async (req, res) => {
   const { tokens, spreadsheetId, sheetName, pdfUrl, pageNumber } = req.body;
+  const targetSheet = sheetName || "Sheet1";
   try {
     const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
     client.setCredentials(tokens);
     const sheets = google.sheets({ version: "v4", auth: client });
 
     const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-    const sheet = spreadsheet.data.sheets?.find(s => s.properties?.title === sheetName) || spreadsheet.data.sheets?.[0];
+    const sheet = spreadsheet.data.sheets?.find(s => s.properties?.title === targetSheet) || spreadsheet.data.sheets?.[0];
     const sheetId = sheet?.properties?.sheetId || 0;
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!A:Z`,
+      range: `${targetSheet}`,
     });
 
     const rows = response.data.values || [];
@@ -224,6 +249,7 @@ function indexToColumn(index: number): string {
 
 app.post("/api/sheets/update-tags", async (req, res) => {
   const { tokens, spreadsheetId, sheetName, pdfUrl, pageNumber, title, tags, titleColumnIndex, tagsColumnIndex } = req.body;
+  const targetSheet = sheetName || "Sheet1";
   
   try {
     const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
@@ -232,7 +258,7 @@ app.post("/api/sheets/update-tags", async (req, res) => {
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!A:Z`,
+      range: `${targetSheet}`,
     });
 
     const rows = response.data.values || [];
@@ -248,7 +274,7 @@ app.post("/api/sheets/update-tags", async (req, res) => {
       // For robustness, we check if the row contains the values.
       const matchesUrl = row.some(cell => cell === pdfUrl);
       const matchesPage = row.some(cell => cell === pageNumber.toString());
-      const matchesTitle = row[titleColumnIndex] === title;
+      const matchesTitle = titleColumnIndex >= 0 ? row[titleColumnIndex] === title : row.some(cell => cell === title);
 
       if (matchesUrl && matchesPage && matchesTitle) {
         rowIndex = i;
@@ -262,7 +288,7 @@ app.post("/api/sheets/update-tags", async (req, res) => {
 
     // Update the tags column
     const colLetter = indexToColumn(tagsColumnIndex);
-    const range = `${sheetName}!${colLetter}${rowIndex + 1}`;
+    const range = `${targetSheet}!${colLetter}${rowIndex + 1}`;
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range,

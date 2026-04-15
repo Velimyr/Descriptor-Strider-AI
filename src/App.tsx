@@ -41,6 +41,91 @@ const DEFAULT_COLUMNS: TableColumn[] = [
   { id: 'notes', label: 'Примітки' },
 ];
 
+const normalizeColumnLabel = (label: string, index: number) => {
+  const trimmed = label.trim();
+  return trimmed || `Колонка ${index + 1}`;
+};
+
+const normalizeTableStructure = (columns?: TableColumn[]): TableColumn[] => {
+  const source = Array.isArray(columns) && columns.length > 0 ? columns : DEFAULT_COLUMNS;
+  const seenIds = new Set<string>();
+
+  return source.map((column, index) => {
+    const baseId = column?.id?.trim() || `col_${index + 1}`;
+    let id = baseId;
+
+    while (seenIds.has(id)) {
+      id = `${baseId}_${seenIds.size + 1}`;
+    }
+
+    seenIds.add(id);
+    return {
+      id,
+      label: normalizeColumnLabel(column?.label || "", index)
+    };
+  });
+};
+
+const normalizeColumnKey = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, "_")
+    .replace(/^_+|_+$/g, "");
+
+const toCellValue = (value: unknown) => {
+  if (value === null || value === undefined) return "";
+  return typeof value === "string" ? value.trim() : String(value);
+};
+
+const getColumnValue = (data: Record<string, unknown> | undefined, column: TableColumn) => {
+  if (!data) return "";
+
+  const directValue = data[column.id];
+  if (directValue !== undefined && directValue !== null) {
+    return toCellValue(directValue);
+  }
+
+  const labelValue = data[column.label];
+  if (labelValue !== undefined && labelValue !== null) {
+    return toCellValue(labelValue);
+  }
+
+  const targetKeys = new Set([
+    normalizeColumnKey(column.id),
+    normalizeColumnKey(column.label)
+  ]);
+
+  for (const [key, value] of Object.entries(data)) {
+    if (targetKeys.has(normalizeColumnKey(key))) {
+      return toCellValue(value);
+    }
+  }
+
+  return "";
+};
+
+const normalizeRecordData = (
+  data: Record<string, unknown> | undefined,
+  tableStructure: TableColumn[]
+) => tableStructure.reduce<Record<string, string>>((acc, column) => {
+  acc[column.id] = getColumnValue(data, column);
+  return acc;
+}, {});
+
+const normalizeProject = (project: Project): Project => ({
+  ...project,
+  tableStructure: normalizeTableStructure(project.tableStructure)
+});
+
+const getExportHeaders = (tableStructure: TableColumn[]) => [
+  ...tableStructure.map(column => column.label),
+  'Посилання на файл',
+  'Сторінка',
+  'Теги'
+];
+
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
@@ -123,8 +208,9 @@ export default function App() {
           const parsedProjects: Project[] = JSON.parse(saved);
           // Load results from IndexedDB for each project
           const projectsWithResults = await Promise.all(parsedProjects.map(async p => {
+            const normalizedProject = normalizeProject(p);
             const results = await pdfStorage.getResults(p.id);
-            return { ...p, results: results || [] };
+            return { ...normalizedProject, results: results || [] };
           }));
           setProjects(projectsWithResults);
         } catch (e) {
@@ -225,7 +311,7 @@ export default function App() {
   };
 
   const createProject = () => {
-    const newProject: Project = {
+    const newProject: Project = normalizeProject({
       id: crypto.randomUUID(),
       name: `Новий проект ${projects.length + 1}`,
       pdfUrls: [],
@@ -234,7 +320,7 @@ export default function App() {
       scenario: 'search',
       results: [],
       createdAt: Date.now()
-    };
+    });
     setProjects([...projects, newProject]);
     setActiveProjectId(newProject.id);
   };
@@ -246,7 +332,12 @@ export default function App() {
   };
 
   const updateProject = (id: string, updates: Partial<Project>) => {
-    setProjects(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
+    setProjects(prev => prev.map(p => {
+      if (p.id !== id) return p;
+
+      const nextProject = { ...p, ...updates };
+      return updates.tableStructure ? normalizeProject(nextProject) : nextProject;
+    }));
   };
 
   const exportProject = (project: Project) => {
@@ -265,7 +356,7 @@ export default function App() {
     reader.onload = (e) => {
       try {
         const imported = JSON.parse(e.target?.result as string);
-        setProjects([...projects, { ...imported, id: crypto.randomUUID() }]);
+        setProjects([...projects, normalizeProject({ ...imported, id: crypto.randomUUID() })]);
       } catch (err) {
         setError("Помилка імпорту файлу");
       }
@@ -274,13 +365,24 @@ export default function App() {
   };
 
   const exportToCSV = (project: Project) => {
-    const csvData = project.results.map(r => ({
-      'PDF URL': r.pdfUrl,
-      'Сторінка': r.pageNumber,
-      ...r.data,
-      'Теги': r.tags?.join(', ') || ''
-    }));
-    const csv = Papa.unparse(csvData);
+    const headers = getExportHeaders(project.tableStructure);
+    const csvData = project.results.map(r => {
+      const row = project.tableStructure.reduce<Record<string, string | number>>((acc, col) => {
+        acc[col.label] = getColumnValue(r.data, col);
+        return acc;
+      }, {});
+
+      row['Посилання на файл'] = r.pdfUrl;
+      row['Сторінка'] = r.pageNumber;
+      row['Теги'] = r.tags?.join(', ') || '';
+
+      return row;
+    });
+
+    const csv = Papa.unparse({
+      fields: headers,
+      data: csvData
+    });
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -329,10 +431,17 @@ export default function App() {
     const imageBase64 = canvas.toDataURL('image/png').split(',')[1];
 
     updatePageStatus(url, pageNum, { progress: 40 });
-    const pageResults = await gemini.processPage(
+    const rawPageResults = await gemini.processPage(
       imageBase64,
       project.tableStructure
     );
+    const pageResults = rawPageResults.map((result: any) => ({
+      ...result,
+      data: normalizeRecordData(result?.data, project.tableStructure),
+      tags: Array.isArray(result?.tags)
+        ? result.tags.map((tag: unknown) => toCellValue(tag)).filter(Boolean)
+        : []
+    }));
     
     const foundCount = pageResults.length;
     addLog(`Gemini AI знайшов ${foundCount} записів на сторінці ${pageNum} (${url})`);
@@ -344,7 +453,10 @@ export default function App() {
 
     updatePageStatus(url, pageNum, { progress: 70 });
     const recordsWithFragments: ArchivalRecord[] = pageResults.map((res: any) => {
-      const [ymin, xmin, ymax, xmax] = res.boundingBox;
+      const boundingBox = Array.isArray(res.boundingBox) && res.boundingBox.length === 4
+        ? res.boundingBox
+        : [0, 0, 1000, 1000];
+      const [ymin, xmin, ymax, xmax] = boundingBox;
       const cropX = (xmin / 1000) * canvas.width;
       const cropY = (ymin / 1000) * canvas.height;
       const cropW = ((xmax - xmin) / 1000) * canvas.width;
@@ -369,7 +481,7 @@ export default function App() {
 
     if (project.googleSheetsTokens && project.googleSheetsId) {
       const batchValues = pageResults.map((res: any) => {
-        const row = project.tableStructure.map(col => res.data[col.id] || "");
+        const row = project.tableStructure.map(col => getColumnValue(res.data, col));
         row.push(url);
         row.push(pageNum.toString());
         row.push(res.tags ? res.tags.join(", ") : "");
@@ -383,6 +495,7 @@ export default function App() {
           tokens: project.googleSheetsTokens,
           spreadsheetId: project.googleSheetsId,
           sheetName: project.googleSheetsSheetName,
+          headers: getExportHeaders(project.tableStructure),
           values: batchValues
         })
       });
@@ -507,10 +620,7 @@ export default function App() {
     if (activeProject.googleSheetsTokens && activeProject.googleSheetsId && mode === 'start') {
       try {
         addLog("Підготовка Google Sheets: запис заголовків...");
-        const headers = activeProject.tableStructure.map(col => col.label);
-        headers.push("Посилання на файл");
-        headers.push("Сторінка");
-        headers.push("Теги");
+        const headers = getExportHeaders(activeProject.tableStructure);
 
         const response = await fetch('/api/sheets/append', {
           method: 'POST',
@@ -759,11 +869,13 @@ export default function App() {
       if (record.tags && record.tags.length > 0) continue;
 
       try {
-        const titleField = activeProject.tableStructure.find(c => c.id === 'title' || c.label.toLowerCase().includes('назва'))?.id || 'title';
-        const titleColumnIndex = activeProject.tableStructure.findIndex(c => c.id === titleField);
+        const titleColumn = activeProject.tableStructure.find(c => c.id === 'title' || c.label.toLowerCase().includes('назва'));
+        const titleColumnIndex = titleColumn
+          ? activeProject.tableStructure.findIndex(c => c.id === titleColumn.id)
+          : -1;
         const tagsColumnIndex = activeProject.tableStructure.length + 2; // URL, Page, Tags
 
-        const title = record.data[titleField];
+        const title = titleColumn ? getColumnValue(record.data, titleColumn) : "";
         if (!title) continue;
 
         const tags = await gemini.generateTags(title);
@@ -1443,7 +1555,7 @@ export default function App() {
                               </td>
                               {activeProject.tableStructure.map(col => (
                                 <td key={col.id} className="px-6 py-4 font-medium text-slate-700">
-                                  {res.data[col.id] || '-'}
+                                  {getColumnValue(res.data, col) || '-'}
                                 </td>
                               ))}
                               <td className="px-6 py-4">
