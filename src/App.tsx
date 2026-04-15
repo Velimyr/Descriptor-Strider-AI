@@ -3,6 +3,8 @@ import {
   FolderPlus, 
   FileText, 
   Settings as SettingsIcon, 
+  ArrowDown,
+  ArrowUp,
   Play, 
   Trash2, 
   Plus, 
@@ -24,47 +26,22 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import Papa from 'papaparse';
 import { cn } from './lib/utils';
-import { Project, TableColumn, ArchivalRecord, ProcessingStatus, LogEntry, PageStatus } from './types';
+import { Project, TableColumn, ArchivalRecord, ProcessingStatus, LogEntry, PageStatus, ColumnRole } from './types';
+import {
+  COLUMN_ROLE_LABELS,
+  COLUMN_ROLE_OPTIONS,
+  createColumn,
+  createDefaultColumns,
+  getColumnLabel,
+  LEGACY_DEFAULT_COLUMNS,
+  normalizeTableStructure,
+} from './lib/tableColumns';
 import { GeminiService } from './services/geminiService';
 import { pdfStorage } from './services/pdfStorage';
 
 // PDF.js worker setup
 import * as pdfjs from 'pdfjs-dist';
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
-
-const DEFAULT_COLUMNS: TableColumn[] = [
-  { id: 'order_no', label: 'Порядковий номер' },
-  { id: 'case_no', label: 'Номер справи' },
-  { id: 'title', label: 'Назва справи' },
-  { id: 'years', label: 'Роки' },
-  { id: 'pages', label: 'Кількість сторінок' },
-  { id: 'notes', label: 'Примітки' },
-];
-
-const getColumnLabel = (column: TableColumn, index: number) => {
-  const trimmed = column.label.trim();
-  return trimmed || `Колонка ${index + 1}`;
-};
-
-const normalizeTableStructure = (columns?: TableColumn[]): TableColumn[] => {
-  const source = Array.isArray(columns) && columns.length > 0 ? columns : DEFAULT_COLUMNS;
-  const seenIds = new Set<string>();
-
-  return source.map((column, index) => {
-    const baseId = column?.id?.trim() || `col_${index + 1}`;
-    let id = baseId;
-
-    while (seenIds.has(id)) {
-      id = `${baseId}_${seenIds.size + 1}`;
-    }
-
-    seenIds.add(id);
-    return {
-      id,
-      label: column?.label ?? ""
-    };
-  });
-};
 
 const normalizeColumnKey = (value: string) =>
   value
@@ -79,7 +56,11 @@ const toCellValue = (value: unknown) => {
   return typeof value === "string" ? value.trim() : String(value);
 };
 
-const getColumnValue = (data: Record<string, unknown> | undefined, column: TableColumn) => {
+const getColumnValue = (
+  data: Record<string, unknown> | undefined,
+  column: TableColumn,
+  aliases: string[] = []
+) => {
   if (!data) return "";
 
   const directValue = data[column.id];
@@ -94,8 +75,16 @@ const getColumnValue = (data: Record<string, unknown> | undefined, column: Table
 
   const targetKeys = new Set([
     normalizeColumnKey(column.id),
-    normalizeColumnKey(column.label)
+    normalizeColumnKey(column.label),
+    ...aliases.map(alias => normalizeColumnKey(alias))
   ]);
+
+  for (const alias of aliases) {
+    const aliasValue = data[alias];
+    if (aliasValue !== undefined && aliasValue !== null) {
+      return toCellValue(aliasValue);
+    }
+  }
 
   for (const [key, value] of Object.entries(data)) {
     if (targetKeys.has(normalizeColumnKey(key))) {
@@ -108,16 +97,44 @@ const getColumnValue = (data: Record<string, unknown> | undefined, column: Table
 
 const normalizeRecordData = (
   data: Record<string, unknown> | undefined,
-  tableStructure: TableColumn[]
-) => tableStructure.reduce<Record<string, string>>((acc, column) => {
-  acc[column.id] = getColumnValue(data, column);
+  tableStructure: TableColumn[],
+  sourceColumns: TableColumn[] = tableStructure
+) => tableStructure.reduce<Record<string, string>>((acc, column, index) => {
+  const sourceColumn = sourceColumns[index];
+  const aliases = sourceColumn ? [sourceColumn.id, sourceColumn.label] : [];
+  acc[column.id] = getColumnValue(data, column, aliases);
   return acc;
 }, {});
 
-const normalizeProject = (project: Project): Project => ({
-  ...project,
-  tableStructure: normalizeTableStructure(project.tableStructure)
-});
+const remapResultsToTableStructure = (
+  results: ArchivalRecord[] | undefined,
+  sourceColumns: TableColumn[],
+  tableStructure: TableColumn[]
+) => (results || []).map(record => ({
+  ...record,
+  data: normalizeRecordData(record.data, tableStructure, sourceColumns)
+}));
+
+const normalizeProject = (
+  project: Project,
+  resultsOverride?: ArchivalRecord[]
+): { project: Project; results: ArchivalRecord[] } => {
+  const sourceColumns = Array.isArray(project.tableStructure) && project.tableStructure.length > 0
+    ? project.tableStructure
+    : LEGACY_DEFAULT_COLUMNS;
+  const tableStructure = normalizeTableStructure(sourceColumns);
+  const sourceResults = resultsOverride ?? project.results ?? [];
+  const results = remapResultsToTableStructure(sourceResults, sourceColumns, tableStructure);
+
+  return {
+    project: {
+      ...project,
+      tableStructure,
+      results
+    },
+    results
+  };
+};
 
 const getExportHeaders = (tableStructure: TableColumn[]) => [
   ...tableStructure.map((column, index) => getColumnLabel(column, index)),
@@ -125,6 +142,9 @@ const getExportHeaders = (tableStructure: TableColumn[]) => [
   'Сторінка',
   'Теги'
 ];
+
+const getTitleColumn = (tableStructure: TableColumn[]) =>
+  tableStructure.find(column => column.role === 'title');
 
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -208,9 +228,9 @@ export default function App() {
           const parsedProjects: Project[] = JSON.parse(saved);
           // Load results from IndexedDB for each project
           const projectsWithResults = await Promise.all(parsedProjects.map(async p => {
-            const normalizedProject = normalizeProject(p);
-            const results = await pdfStorage.getResults(p.id);
-            return { ...normalizedProject, results: results || [] };
+            const storedResults = await pdfStorage.getResults(p.id);
+            const { project } = normalizeProject(p, storedResults || []);
+            return project;
           }));
           setProjects(projectsWithResults);
         } catch (e) {
@@ -311,12 +331,12 @@ export default function App() {
   };
 
   const createProject = () => {
-    const newProject: Project = normalizeProject({
+    const { project: newProject } = normalizeProject({
       id: crypto.randomUUID(),
       name: `Новий проект ${projects.length + 1}`,
       pdfUrls: [],
       keywords: [],
-      tableStructure: [...DEFAULT_COLUMNS],
+      tableStructure: createDefaultColumns(),
       scenario: 'search',
       results: [],
       createdAt: Date.now()
@@ -336,7 +356,11 @@ export default function App() {
       if (p.id !== id) return p;
 
       const nextProject = { ...p, ...updates };
-      return updates.tableStructure ? normalizeProject(nextProject) : nextProject;
+      if (!updates.tableStructure) {
+        return nextProject;
+      }
+
+      return normalizeProject(nextProject, nextProject.results).project;
     }));
   };
 
@@ -356,7 +380,8 @@ export default function App() {
     reader.onload = (e) => {
       try {
         const imported = JSON.parse(e.target?.result as string);
-        setProjects([...projects, normalizeProject({ ...imported, id: crypto.randomUUID() })]);
+        const { project } = normalizeProject({ ...imported, id: crypto.randomUUID() });
+        setProjects([...projects, project]);
       } catch (err) {
         setError("Помилка імпорту файлу");
       }
@@ -859,6 +884,13 @@ export default function App() {
     stopRef.current = false;
     addLog("Запуск створення покажчика (тегів)...");
     const gemini = new GeminiService(geminiKey, geminiModel);
+    const titleColumn = getTitleColumn(activeProject.tableStructure);
+
+    if (!titleColumn) {
+      addLog('Для створення покажчика призначте одній з колонок роль "Назва справи".', 'warn');
+      setIsIndexing(false);
+      return;
+    }
     
     const updatedResults = [...activeProject.results];
     let changed = false;
@@ -869,7 +901,6 @@ export default function App() {
       if (record.tags && record.tags.length > 0) continue;
 
       try {
-        const titleColumn = activeProject.tableStructure.find(c => c.id === 'title' || c.label.toLowerCase().includes('назва'));
         const titleColumnIndex = titleColumn
           ? activeProject.tableStructure.findIndex(c => c.id === titleColumn.id)
           : -1;
@@ -918,6 +949,33 @@ export default function App() {
     }
     setIsIndexing(false);
     addLog("Створення покажчика завершено.");
+  };
+
+  const updateColumnRole = (project: Project, columnId: string, role: ColumnRole) => {
+    const newCols = project.tableStructure.map(column => {
+      if (role !== 'none' && column.role === role && column.id !== columnId) {
+        return { ...column, role: 'none' as ColumnRole };
+      }
+
+      if (column.id === columnId) {
+        return { ...column, role };
+      }
+
+      return column;
+    });
+
+    updateProject(project.id, { tableStructure: newCols });
+  };
+
+  const moveColumn = (project: Project, fromIndex: number, toIndex: number) => {
+    if (toIndex < 0 || toIndex >= project.tableStructure.length) {
+      return;
+    }
+
+    const newCols = [...project.tableStructure];
+    const [movedColumn] = newCols.splice(fromIndex, 1);
+    newCols.splice(toIndex, 0, movedColumn);
+    updateProject(project.id, { tableStructure: newCols });
   };
 
   return (
@@ -1141,15 +1199,47 @@ export default function App() {
                         <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                           {activeProject.tableStructure.map((col, idx) => (
                             <div key={col.id} className="flex items-center gap-2">
-                              <input 
-                                value={col.label}
-                                onChange={(e) => {
-                                  const newCols = [...activeProject.tableStructure];
-                                  newCols[idx].label = e.target.value;
-                                  updateProject(activeProject.id, { tableStructure: newCols });
-                                }}
-                                className="flex-1 p-1.5 bg-slate-50 border border-slate-100 rounded text-xs"
-                              />
+                              <div className="flex flex-col gap-1">
+                                <button
+                                  onClick={() => moveColumn(activeProject, idx, idx - 1)}
+                                  disabled={idx === 0}
+                                  className="text-slate-400 hover:text-indigo-600 disabled:text-slate-200 disabled:cursor-not-allowed transition-colors"
+                                  title="Перемістити вгору"
+                                >
+                                  <ArrowUp size={12} />
+                                </button>
+                                <button
+                                  onClick={() => moveColumn(activeProject, idx, idx + 1)}
+                                  disabled={idx === activeProject.tableStructure.length - 1}
+                                  className="text-slate-400 hover:text-indigo-600 disabled:text-slate-200 disabled:cursor-not-allowed transition-colors"
+                                  title="Перемістити вниз"
+                                >
+                                  <ArrowDown size={12} />
+                                </button>
+                              </div>
+                              <div className="flex-1 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_160px] gap-2">
+                                <input 
+                                  value={col.label}
+                                  onChange={(e) => {
+                                    const newCols = [...activeProject.tableStructure];
+                                    newCols[idx].label = e.target.value;
+                                    updateProject(activeProject.id, { tableStructure: newCols });
+                                  }}
+                                  placeholder={getColumnLabel(col, idx)}
+                                  className="w-full p-1.5 bg-slate-50 border border-slate-100 rounded text-xs"
+                                />
+                                <select
+                                  value={col.role || 'none'}
+                                  onChange={(e) => updateColumnRole(activeProject, col.id, e.target.value as ColumnRole)}
+                                  className="w-full p-1.5 bg-slate-50 border border-slate-100 rounded text-xs text-slate-600"
+                                >
+                                  {COLUMN_ROLE_OPTIONS.map(role => (
+                                    <option key={role} value={role}>
+                                      {COLUMN_ROLE_LABELS[role]}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
                               <button 
                                 onClick={() => updateProject(activeProject.id, { tableStructure: activeProject.tableStructure.filter((_, i) => i !== idx) })}
                                 className="text-slate-400 hover:text-red-500"
@@ -1160,7 +1250,7 @@ export default function App() {
                           ))}
                         </div>
                         <button 
-                          onClick={() => updateProject(activeProject.id, { tableStructure: [...activeProject.tableStructure, { id: `col_${Date.now()}`, label: 'Нова колонка' }] })}
+                          onClick={() => updateProject(activeProject.id, { tableStructure: [...activeProject.tableStructure, createColumn()] })}
                           className="w-full py-1.5 border border-dashed border-slate-200 rounded text-[10px] font-bold text-slate-400 hover:text-indigo-600 hover:border-indigo-200 transition-all"
                         >
                           + Додати колонку

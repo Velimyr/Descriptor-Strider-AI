@@ -1,6 +1,18 @@
+export type ColumnRole =
+  | 'none'
+  | 'order_no'
+  | 'case_no'
+  | 'title'
+  | 'year_range'
+  | 'date_start'
+  | 'date_end'
+  | 'page_count'
+  | 'notes';
+
 export interface TableColumn {
   id: string;
   label: string;
+  role?: ColumnRole;
 }
 
 export interface LogEntry {

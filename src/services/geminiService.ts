@@ -1,10 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { TableColumn } from "../types";
-
-const getColumnLabel = (column: TableColumn, index: number) => {
-  const trimmed = column.label.trim();
-  return trimmed || `Колонка ${index + 1}`;
-};
+import { getColumnLabel } from "../lib/tableColumns";
 
 export class GeminiService {
   private ai: GoogleGenAI;
@@ -29,6 +25,7 @@ export class GeminiService {
       Використовуйте ТОЧНО цю структуру таблиці: ${columnsDesc}. 
       У полі data ключами мають бути саме технічні ключі колонок, а не їхні назви.
       Для кожної колонки заповніть рядок. Якщо значення відсутнє або не читається, поверніть порожній рядок "".
+      Якщо текст у будь-якій колонці переноситься на новий рядок, об'єднайте його в один нормалізований рядок без переносів.
       Для кожної справи проаналізуйте заголовок та додайте список тегів (люди, прізвища, населені пункти, установи).
       Також для кожного рядка вкажіть координати bounding box у форматі [ymin, xmin, ymax, xmax] (значення від 0 до 1000).`;
 
