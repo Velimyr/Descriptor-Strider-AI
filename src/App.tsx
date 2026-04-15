@@ -56,6 +56,34 @@ const toCellValue = (value: unknown) => {
   return typeof value === "string" ? value.trim() : String(value);
 };
 
+const formatDuration = (ms: number) => {
+  if (ms < 1000) {
+    return `${Math.round(ms)}мс`;
+  }
+
+  const seconds = ms / 1000;
+  if (seconds < 60) {
+    return `${seconds >= 10 ? seconds.toFixed(1) : seconds.toFixed(2)}с`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds - minutes * 60;
+  return `${minutes}хв ${remainingSeconds >= 10 ? remainingSeconds.toFixed(0) : remainingSeconds.toFixed(1)}с`;
+};
+
+const formatBytes = (bytes: number) => {
+  if (bytes < 1024) {
+    return `${bytes} Б`;
+  }
+
+  const kilobytes = bytes / 1024;
+  if (kilobytes < 1024) {
+    return `${kilobytes.toFixed(1)} КБ`;
+  }
+
+  return `${(kilobytes / 1024).toFixed(2)} МБ`;
+};
+
 const getColumnValue = (
   data: Record<string, unknown> | undefined,
   column: TableColumn,
@@ -194,6 +222,32 @@ export default function App() {
     setLogs(prev => [newLog, ...prev].slice(0, 100));
     console.log(`[${level.toUpperCase()}] ${message}`);
   };
+
+  const logDuration = (
+    message: string,
+    startedAt: number,
+    warnThresholdMs: number = 15000
+  ) => {
+    const duration = performance.now() - startedAt;
+    addLog(`${message} за ${formatDuration(duration)}`, duration >= warnThresholdMs ? 'warn' : 'info');
+    return duration;
+  };
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!isProcessing && !isIndexing) return;
+
+      addLog(
+        document.hidden
+          ? "Вкладка браузера стала неактивною під час обробки. Browser throttling може сповільнювати canvas, таймери та мережеві запити."
+          : "Вкладка браузера знову активна. Якщо перед цим була довга пауза, звірте її з новими таймінгами в логах.",
+        document.hidden ? 'warn' : 'info'
+      );
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [isProcessing, isIndexing]);
 
   const activeProject = projects.find(p => p.id === activeProjectId);
 
@@ -441,25 +495,38 @@ export default function App() {
     project: Project, 
     gemini: GeminiService
   ): Promise<ArchivalRecord[]> => {
+    const pageStartedAt = performance.now();
     updatePageStatus(url, pageNum, { status: 'processing', progress: 10 });
+
+    addLog(`Сторінка ${pageNum} (${url}): початок підготовки PDF-сторінки...`);
+    const pdfPageStartedAt = performance.now();
     const page = await pdf.getPage(pageNum);
+    logDuration(`Сторінка ${pageNum} (${url}): PDF-сторінку отримано`, pdfPageStartedAt, 5000);
     const viewport = page.getViewport({ scale: 2 });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     canvas.height = viewport.height;
     canvas.width = viewport.width;
     
+    const renderStartedAt = performance.now();
     await page.render({ 
       canvasContext: context!, 
       viewport 
     } as any).promise;
+    logDuration(`Сторінка ${pageNum} (${url}): canvas render завершено`, renderStartedAt, 10000);
+
+    const imageEncodeStartedAt = performance.now();
     const imageBase64 = canvas.toDataURL('image/png').split(',')[1];
+    logDuration(`Сторінка ${pageNum} (${url}): PNG/base64 підготовлено`, imageEncodeStartedAt, 7000);
 
     updatePageStatus(url, pageNum, { progress: 40 });
+    addLog(`Сторінка ${pageNum} (${url}): початок Gemini-запиту...`);
+    const geminiStartedAt = performance.now();
     const rawPageResults = await gemini.processPage(
       imageBase64,
       project.tableStructure
     );
+    logDuration(`Сторінка ${pageNum} (${url}): Gemini-відповідь отримана`, geminiStartedAt, 30000);
     const pageResults = rawPageResults.map((result: any) => ({
       ...result,
       data: normalizeRecordData(result?.data, project.tableStructure),
@@ -477,6 +544,7 @@ export default function App() {
     }
 
     updatePageStatus(url, pageNum, { progress: 70 });
+    const fragmentsStartedAt = performance.now();
     const recordsWithFragments: ArchivalRecord[] = pageResults.map((res: any) => {
       const boundingBox = Array.isArray(res.boundingBox) && res.boundingBox.length === 4
         ? res.boundingBox
@@ -503,6 +571,7 @@ export default function App() {
         fragmentImage: fragmentCanvas.toDataURL('image/png')
       };
     });
+    logDuration(`Сторінка ${pageNum} (${url}): вирізання фрагментів завершено`, fragmentsStartedAt, 10000);
 
     if (project.googleSheetsTokens && project.googleSheetsId) {
       const batchValues = pageResults.map((res: any) => {
@@ -513,6 +582,8 @@ export default function App() {
         return row;
       });
 
+      addLog(`Сторінка ${pageNum} (${url}): запис ${batchValues.length} рядків у Google Sheets...`);
+      const sheetsStartedAt = performance.now();
       const response = await fetch('/api/sheets/append', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -535,29 +606,44 @@ export default function App() {
         }
         throw new Error(errMessage);
       }
+
+      logDuration(`Сторінка ${pageNum} (${url}): запис у Google Sheets завершено`, sheetsStartedAt, 15000);
     }
 
     updatePageStatus(url, pageNum, { status: 'completed', progress: 100 });
+    logDuration(`Сторінка ${pageNum} (${url}): повна обробка сторінки завершена`, pageStartedAt, 45000);
     return recordsWithFragments;
   };
 
-  const getFileBuffer = async (file: { url: string; isLocal: boolean; id?: string }) => {
+  const getFileBuffer = async (
+    file: { url: string; isLocal: boolean; id?: string },
+    contextLabel?: string
+  ) => {
+    const label = contextLabel || file.url;
+    const bufferStartedAt = performance.now();
+    addLog(`${label}: початок читання ${file.isLocal ? 'локального' : 'віддаленого'} PDF...`);
+
     if (file.isLocal && file.id) {
       const localFileRef = activeProject?.files?.find(f => f.id === file.id) || 
                          activeProject?.localPdfs?.find(f => f.id === file.id);
       
       if (localFileRef?.handle) {
         const fileData = await localFileRef.handle.getFile();
-        return await fileData.arrayBuffer();
+        const arrayBuffer = await fileData.arrayBuffer();
+        logDuration(`${label}: локальний PDF прочитано (${formatBytes(arrayBuffer.byteLength)})`, bufferStartedAt, 5000);
+        return arrayBuffer;
       } else {
         const storedData = await pdfStorage.get(file.id);
         if (!storedData) throw new Error("Локальний файл не знайдено");
+        logDuration(`${label}: PDF отримано з IndexedDB (${formatBytes(storedData.byteLength)})`, bufferStartedAt, 5000);
         return storedData;
       }
     } else {
       const response = await fetch(`/api/proxy-pdf?url=${encodeURIComponent(file.url)}`);
       if (!response.ok) throw new Error(`Не вдалося завантажити PDF: ${response.statusText}`);
-      return await response.arrayBuffer();
+      const arrayBuffer = await response.arrayBuffer();
+      logDuration(`${label}: віддалений PDF завантажено (${formatBytes(arrayBuffer.byteLength)})`, bufferStartedAt, 10000);
+      return arrayBuffer;
     }
   };
 
@@ -575,8 +661,11 @@ export default function App() {
       if (!file) throw new Error("Файл не знайдено");
 
       // 2. Load PDF
-      const arrayBuffer = await getFileBuffer(file as any);
+      const arrayBuffer = await getFileBuffer(file as any, `Повтор сторінки ${pageNum} (${url})`);
+      addLog(`Повтор сторінки ${pageNum} (${url}): відкриття PDF у pdf.js...`);
+      const retryPdfStartedAt = performance.now();
       const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+      logDuration(`Повтор сторінки ${pageNum} (${url}): PDF відкрито в pdf.js`, retryPdfStartedAt, 10000);
 
       // 3. Delete old data from Google Sheets if connected
       if (activeProject.googleSheetsTokens && activeProject.googleSheetsId) {
@@ -704,8 +793,11 @@ export default function App() {
 
       for (const f of filesToProcess) {
         try {
-          const buffer = await getFileBuffer(f);
+          const buffer = await getFileBuffer(f, `Початковий аналіз ${f.url}`);
+          addLog(`Початковий аналіз ${f.url}: відкриття PDF у pdf.js...`);
+          const initPdfStartedAt = performance.now();
           const pdf = await pdfjs.getDocument({ data: buffer }).promise;
+          logDuration(`Початковий аналіз ${f.url}: PDF відкрито в pdf.js`, initPdfStartedAt, 10000);
           const targetPages = parsePageRange(f.pageRange || "", pdf.numPages);
           
           const pages = targetPages.map(p => {
@@ -753,6 +845,7 @@ export default function App() {
       }
 
       addLog(`Опрацювання файлу: ${url}`);
+      const fileStartedAt = performance.now();
       updateStatus(url, { status: 'processing', progress: 10 });
       if (fileStatus) {
         fileStatus.status = 'processing';
@@ -760,10 +853,13 @@ export default function App() {
       }
 
       try {
-        const arrayBuffer = await getFileBuffer(file);
+        const arrayBuffer = await getFileBuffer(file, `Опрацювання файлу ${url}`);
         if (stopRef.current) break;
 
+        addLog(`Опрацювання файлу ${url}: відкриття PDF у pdf.js...`);
+        const pdfOpenStartedAt = performance.now();
         const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+        logDuration(`Опрацювання файлу ${url}: PDF відкрито в pdf.js`, pdfOpenStartedAt, 10000);
         const numPages = pdf.numPages;
         const targetPages = parsePageRange(file.pageRange || "", numPages);
         
@@ -802,16 +898,29 @@ export default function App() {
                 updatePageStatus(url, pageNum, { status: 'processing', message: `Очікування лімітів (спроба ${retryCount})...` });
               }
               
+              const waitStartedAt = performance.now();
+              addLog(
+                retryCount === 0
+                  ? `Сторінка ${pageNum} (${url}): базова пауза перед запитом ${baseDelay / 1000}с...`
+                  : `Сторінка ${pageNum} (${url}): пауза перед повтором ${baseDelay / 1000}с...`
+              );
               await new Promise(resolve => setTimeout(resolve, baseDelay));
+              const actualWait = performance.now() - waitStartedAt;
+              addLog(
+                `Сторінка ${pageNum} (${url}): пауза завершена за ${formatDuration(actualWait)}`,
+                actualWait > baseDelay + 2000 ? 'warn' : 'info'
+              );
               
               const currentGemini = new GeminiService(geminiKeyRef.current, geminiModelRef.current);
               const pageResults = await processSinglePage(pdf, pageNum, url, activeProject, currentGemini);
               
               if (pageResults.length > 0) {
+                const saveResultsStartedAt = performance.now();
                 const currentResults = await pdfStorage.getResults(activeProject.id) || [];
                 const updatedResults = [...currentResults, ...pageResults];
                 await pdfStorage.saveResults(activeProject.id, updatedResults);
                 updateProject(activeProject.id, { results: updatedResults });
+                logDuration(`Сторінка ${pageNum} (${url}): результати збережено локально`, saveResultsStartedAt, 5000);
               }
               
               if (pageStatus) {
@@ -858,6 +967,7 @@ export default function App() {
         }
         // Save current statuses to project after each file
         updateProject(activeProject.id, { processingStatus: currentStatuses });
+        logDuration(`Опрацювання файлу ${url}: файл завершено`, fileStartedAt, 60000);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         addLog(`Помилка опрацювання ${url}: ${errorMsg}`, 'error');
