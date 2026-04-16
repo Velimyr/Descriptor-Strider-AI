@@ -516,8 +516,8 @@ export default function App() {
     logDuration(`Сторінка ${pageNum} (${url}): canvas render завершено`, renderStartedAt, 10000);
 
     const imageEncodeStartedAt = performance.now();
-    const imageBase64 = canvas.toDataURL('image/png').split(',')[1];
-    logDuration(`Сторінка ${pageNum} (${url}): PNG/base64 підготовлено`, imageEncodeStartedAt, 7000);
+    const imageBase64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+    logDuration(`Сторінка ${pageNum} (${url}): JPEG/base64 підготовлено`, imageEncodeStartedAt, 7000);
 
     updatePageStatus(url, pageNum, { progress: 40 });
     addLog(`Сторінка ${pageNum} (${url}): початок Gemini-запиту...`);
@@ -875,6 +875,7 @@ export default function App() {
           return ps?.status === 'completed';
         }).length;
 
+        const currentGemini = new GeminiService(geminiKeyRef.current, geminiModelRef.current);
         for (const pageNum of targetPages) {
           if (stopRef.current) break;
 
@@ -889,29 +890,20 @@ export default function App() {
 
           while (retryCount <= maxRetries && !success) {
             if (stopRef.current) break;
-            
+
             try {
-              // Base delay between pages (increased to 3s for safety)
-              const baseDelay = retryCount === 0 ? 3000 : 15000; 
               if (retryCount > 0) {
                 addLog(`Повторна спроба для сторінки ${pageNum} через ліміти (спроба ${retryCount}/${maxRetries}). Очікуємо 15с...`, 'warn');
                 updatePageStatus(url, pageNum, { status: 'processing', message: `Очікування лімітів (спроба ${retryCount})...` });
+                const waitStartedAt = performance.now();
+                addLog(`Сторінка ${pageNum} (${url}): пауза перед повтором 15с...`);
+                await new Promise(resolve => setTimeout(resolve, 15000));
+                const actualWait = performance.now() - waitStartedAt;
+                addLog(
+                  `Сторінка ${pageNum} (${url}): пауза завершена за ${formatDuration(actualWait)}`,
+                  actualWait > 17000 ? 'warn' : 'info'
+                );
               }
-              
-              const waitStartedAt = performance.now();
-              addLog(
-                retryCount === 0
-                  ? `Сторінка ${pageNum} (${url}): базова пауза перед запитом ${baseDelay / 1000}с...`
-                  : `Сторінка ${pageNum} (${url}): пауза перед повтором ${baseDelay / 1000}с...`
-              );
-              await new Promise(resolve => setTimeout(resolve, baseDelay));
-              const actualWait = performance.now() - waitStartedAt;
-              addLog(
-                `Сторінка ${pageNum} (${url}): пауза завершена за ${formatDuration(actualWait)}`,
-                actualWait > baseDelay + 2000 ? 'warn' : 'info'
-              );
-              
-              const currentGemini = new GeminiService(geminiKeyRef.current, geminiModelRef.current);
               const pageResults = await processSinglePage(pdf, pageNum, url, activeProject, currentGemini);
               
               if (pageResults.length > 0) {
