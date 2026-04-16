@@ -68,7 +68,7 @@ export class GeminiService {
       contents: {
         parts: [
           { text: "Опрацюй цю сторінку архівної таблиці." },
-          { inlineData: { mimeType: "image/png", data: imageBase64 } }
+          { inlineData: { mimeType: "image/jpeg", data: imageBase64 } }
         ]
       },
       config: {
