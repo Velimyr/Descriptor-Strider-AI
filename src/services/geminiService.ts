@@ -19,15 +19,40 @@ export class GeminiService {
     const columnsDesc = tableStructure
       .map((c, index) => `"${getColumnLabel(c, index)}" -> ключ "${c.id}"`)
       .join(", ");
-    
-    const systemInstruction = `Ви професійний архівіст. Ваше завдання - розпізнати ВСІ справи в таблиці на зображенні архівної сторінки. 
-      Для кожної справи поверніть дані у форматі JSON. 
-      Використовуйте ТОЧНО цю структуру таблиці: ${columnsDesc}. 
+
+    const roleRules: string[] = [];
+
+    const noColumns = tableStructure.filter(c => c.role === 'order_no' || c.role === 'case_no');
+    const dateColumns = tableStructure.filter(c => c.role === 'year_range' || c.role === 'date_start' || c.role === 'date_end');
+    const pageCountColumns = tableStructure.filter(c => c.role === 'page_count');
+
+    if (noColumns.length > 0) {
+      const cols = noColumns.map(c => `"${getColumnLabel(c, tableStructure.indexOf(c))}" (ключ "${c.id}")`).join(', ');
+      roleRules.push(`Для колонок ${cols}: значення може містити лише цифри та літери (кириличні або латинські). Видаляй крапки, коми, пробіли та будь-які інші зайві символи. Приклад: "12а", "547Б" — правильно; "12.", "1 2", "547," — неправильно.`);
+    }
+
+    if (dateColumns.length > 0) {
+      const cols = dateColumns.map(c => `"${getColumnLabel(c, tableStructure.indexOf(c))}" (ключ "${c.id}")`).join(', ');
+      roleRules.push(`Для колонок ${cols}: нормалізуй значення як дату або діапазон дат. Допустимі формати: ДД.ММ.РРРР, РРРР, "XVIII ст.", "кін. XVIII ст.", "поч. XIX ст." тощо. Діапазон записуй через тире: РРРР–РРРР, ДД.ММ.РРРР–ДД.ММ.РРРР або "XVIII–XIX ст.". Зберігай уточнення типу "поч.", "кін.", "сер." якщо вони є. Видаляй лише зайві дужки та сторонні символи, що не є частиною дати.`);
+    }
+
+    if (pageCountColumns.length > 0) {
+      const cols = pageCountColumns.map(c => `"${getColumnLabel(c, tableStructure.indexOf(c))}" (ключ "${c.id}")`).join(', ');
+      roleRules.push(`Для колонок ${cols}: записуй лише ціле число без слів, одиниць виміру та інших символів. Приклад: "47" — правильно; "47 арк.", "47 л.", "47." — неправильно.`);
+    }
+
+    const rulesBlock = roleRules.length > 0
+      ? '\nДодаткові правила нормалізації:\n' + roleRules.map((r, i) => `${i + 1}. ${r}`).join('\n')
+      : '';
+
+    const systemInstruction = `Ви професійний архівіст. Ваше завдання - розпізнати ВСІ справи в таблиці на зображенні архівної сторінки.
+      Для кожної справи поверніть дані у форматі JSON.
+      Використовуйте ТОЧНО цю структуру таблиці: ${columnsDesc}.
       У полі data ключами мають бути саме технічні ключі колонок, а не їхні назви.
       Для кожної колонки заповніть рядок. Якщо значення відсутнє або не читається, поверніть порожній рядок "".
       Якщо текст у будь-якій колонці переноситься на новий рядок, об'єднайте його в один нормалізований рядок без переносів.
       Для кожної справи проаналізуйте заголовок та додайте список тегів (люди, прізвища, населені пункти, установи).
-      Також для кожного рядка вкажіть координати bounding box у форматі [ymin, xmin, ymax, xmax] (значення від 0 до 1000).`;
+      Також для кожного рядка вкажіть координати bounding box у форматі [ymin, xmin, ymax, xmax] (значення від 0 до 1000).${rulesBlock}`;
 
     const responseSchema: any = {
       type: Type.OBJECT,
