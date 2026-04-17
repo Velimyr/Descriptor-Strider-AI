@@ -186,6 +186,7 @@ export default function App() {
   });
   const geminiKeyRef = useRef(geminiKey);
   const geminiModelRef = useRef(geminiModel);
+  const errorStopRef = useRef(false);
 
   useEffect(() => {
     geminiKeyRef.current = geminiKey;
@@ -719,6 +720,7 @@ export default function App() {
     setIsProcessing(true);
     setIsStopping(false);
     stopRef.current = false;
+    errorStopRef.current = false;
     setError(null);
     addLog(`Запуск опрацювання проекту (${mode === 'start' ? 'спочатку' : 'продовження'}): ${activeProject.name} [Модель: ${geminiModelRef.current}]`);
     console.log(`Starting processing with model: ${geminiModelRef.current}`);
@@ -941,6 +943,11 @@ export default function App() {
                 pageStatus.status = 'error';
                 pageStatus.message = msg;
               }
+              if ((activeProject.errorBehavior ?? 'continue') === 'stop') {
+                errorStopRef.current = true;
+                stopRef.current = true;
+                addLog(`Опрацювання зупинено через помилку розпізнавання (налаштування "Зупинити розпізнавання").`, 'warn');
+              }
               break; // Exit retry loop on non-rate-limit error or max retries
             }
           }
@@ -973,7 +980,9 @@ export default function App() {
 
     setIsProcessing(false);
     setIsStopping(false);
-    if (stopRef.current) {
+    if (errorStopRef.current) {
+      addLog("Опрацювання зупинено через помилку розпізнавання.", 'warn');
+    } else if (stopRef.current) {
       addLog("Опрацювання зупинено користувачем.", 'warn');
     } else {
       addLog(`Опрацювання проекту ${activeProject.name} завершено.`);
@@ -1150,7 +1159,7 @@ export default function App() {
             <div>
               <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 px-3">Модель Gemini</label>
               <div className="px-3">
-                <select 
+                <select
                   value={geminiModel}
                   onChange={(e) => saveGeminiModel(e.target.value)}
                   className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none appearance-none cursor-pointer"
@@ -1393,7 +1402,7 @@ export default function App() {
                               placeholder="Spreadsheet ID..."
                               className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-green-500"
                             />
-                            <input 
+                            <input
                               value={activeProject.googleSheetsSheetName || ''}
                               onChange={(e) => updateProject(activeProject.id, { googleSheetsSheetName: e.target.value })}
                               placeholder="Назва вкладки..."
@@ -1401,6 +1410,21 @@ export default function App() {
                             />
                           </div>
                         )}
+
+                        <div className="pt-2 space-y-2">
+                          <h4 className="font-bold text-sm flex items-center gap-2 text-slate-700">
+                            <AlertCircle size={16} className="text-amber-500" />
+                            Що робити при помилці розпізнавання?
+                          </h4>
+                          <select
+                            value={activeProject.errorBehavior ?? 'continue'}
+                            onChange={(e) => updateProject(activeProject.id, { errorBehavior: e.target.value as 'stop' | 'continue' })}
+                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                          >
+                            <option value="continue">Продовжити на наступній сторінці</option>
+                            <option value="stop">Зупинити розпізнавання</option>
+                          </select>
+                        </div>
                       </div>
                     </div>
                   </motion.div>
