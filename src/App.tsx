@@ -184,13 +184,8 @@ export default function App() {
     if (saved && validModels.includes(saved)) return saved;
     return 'gemini-3-flash-preview';
   });
-  const [errorBehavior, setErrorBehavior] = useState<'stop' | 'continue'>(() => {
-    const saved = localStorage.getItem('error_behavior');
-    return saved === 'stop' ? 'stop' : 'continue';
-  });
   const geminiKeyRef = useRef(geminiKey);
   const geminiModelRef = useRef(geminiModel);
-  const errorBehaviorRef = useRef(errorBehavior);
   const errorStopRef = useRef(false);
 
   useEffect(() => {
@@ -200,10 +195,6 @@ export default function App() {
   useEffect(() => {
     geminiModelRef.current = geminiModel;
   }, [geminiModel]);
-
-  useEffect(() => {
-    errorBehaviorRef.current = errorBehavior;
-  }, [errorBehavior]);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
@@ -335,11 +326,6 @@ export default function App() {
   const saveGeminiModel = (model: string) => {
     setGeminiModel(model);
     localStorage.setItem('gemini_model', model);
-  };
-
-  const saveErrorBehavior = (behavior: 'stop' | 'continue') => {
-    setErrorBehavior(behavior);
-    localStorage.setItem('error_behavior', behavior);
   };
 
   const handleGoogleConnect = async () => {
@@ -957,7 +943,7 @@ export default function App() {
                 pageStatus.status = 'error';
                 pageStatus.message = msg;
               }
-              if (errorBehaviorRef.current === 'stop') {
+              if ((activeProject.errorBehavior ?? 'continue') === 'stop') {
                 errorStopRef.current = true;
                 stopRef.current = true;
                 addLog(`Опрацювання зупинено через помилку розпізнавання (налаштування "Зупинити розпізнавання").`, 'warn');
@@ -1181,20 +1167,6 @@ export default function App() {
                   <option value="gemini-3-flash-preview">Gemini 3 Flash (Швидка)</option>
                   <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Потужна)</option>
                   <option value="gemini-flash-latest">Gemini Flash Latest</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 px-3">Що робити при помилці розпізнавання?</label>
-              <div className="px-3">
-                <select
-                  value={errorBehavior}
-                  onChange={(e) => saveErrorBehavior(e.target.value as 'stop' | 'continue')}
-                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none appearance-none cursor-pointer"
-                >
-                  <option value="continue">Продовжити на наступній сторінці</option>
-                  <option value="stop">Зупинити розпізнавання</option>
                 </select>
               </div>
             </div>
@@ -1430,7 +1402,7 @@ export default function App() {
                               placeholder="Spreadsheet ID..."
                               className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-green-500"
                             />
-                            <input 
+                            <input
                               value={activeProject.googleSheetsSheetName || ''}
                               onChange={(e) => updateProject(activeProject.id, { googleSheetsSheetName: e.target.value })}
                               placeholder="Назва вкладки..."
@@ -1438,6 +1410,21 @@ export default function App() {
                             />
                           </div>
                         )}
+
+                        <div className="pt-2 space-y-2">
+                          <h4 className="font-bold text-sm flex items-center gap-2 text-slate-700">
+                            <AlertCircle size={16} className="text-amber-500" />
+                            Що робити при помилці розпізнавання?
+                          </h4>
+                          <select
+                            value={activeProject.errorBehavior ?? 'continue'}
+                            onChange={(e) => updateProject(activeProject.id, { errorBehavior: e.target.value as 'stop' | 'continue' })}
+                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                          >
+                            <option value="continue">Продовжити на наступній сторінці</option>
+                            <option value="stop">Зупинити розпізнавання</option>
+                          </select>
+                        </div>
                       </div>
                     </div>
                   </motion.div>

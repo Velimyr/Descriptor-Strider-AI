@@ -46,6 +46,7 @@ export interface Project {
   scenario: 'search' | 'full';
   results: ArchivalRecord[];
   processingStatus?: ProcessingStatus[];
+  errorBehavior?: 'stop' | 'continue';
   createdAt: number;
 }
 
