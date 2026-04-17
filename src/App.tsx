@@ -38,6 +38,7 @@ import {
 } from './lib/tableColumns';
 import { GeminiService } from './services/geminiService';
 import { pdfStorage } from './services/pdfStorage';
+import { MusicPanel } from './components/MusicPanel';
 
 // PDF.js worker setup
 import * as pdfjs from 'pdfjs-dist';
@@ -248,6 +249,43 @@ export default function App() {
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [isProcessing, isIndexing]);
+
+  // Screen Wake Lock: keep the screen awake while recognition is running.
+  // Browsers auto-release wake lock when the tab becomes hidden, so re-acquire on visibility change.
+  useEffect(() => {
+    if (!isProcessing && !isIndexing) return;
+    const nav = navigator as any;
+    if (!nav.wakeLock) return;
+
+    let sentinel: any = null;
+    let cancelled = false;
+
+    const acquire = async () => {
+      try {
+        sentinel = await nav.wakeLock.request('screen');
+      } catch {
+        // Permission denied or unsupported — silently ignore.
+      }
+    };
+
+    const onVisibility = () => {
+      if (!cancelled && document.visibilityState === 'visible' && !sentinel) {
+        acquire();
+      }
+    };
+
+    acquire();
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (sentinel) {
+        try { sentinel.release(); } catch {}
+        sentinel = null;
+      }
+    };
   }, [isProcessing, isIndexing]);
 
   const activeProject = projects.find(p => p.id === activeProjectId);
@@ -1188,7 +1226,9 @@ export default function App() {
             </button>
           </div>
 
-          <button 
+          <MusicPanel isProcessing={isProcessing || isIndexing} />
+
+          <button
             onClick={async () => {
               if (confirm("Ви впевнені, що хочете видалити ВСІ проекти та дані? Це неможливо скасувати.")) {
                 localStorage.removeItem('archival_projects');
