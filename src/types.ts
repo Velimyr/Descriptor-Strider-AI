@@ -47,6 +47,7 @@ export interface Project {
   results: ArchivalRecord[];
   processingStatus?: ProcessingStatus[];
   errorBehavior?: 'stop' | 'continue';
+  logs?: LogEntry[];
   createdAt: number;
 }
 

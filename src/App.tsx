@@ -178,6 +178,10 @@ const getTitleColumn = (tableStructure: TableColumn[]) =>
 export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const activeProjectIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeProjectIdRef.current = activeProjectId;
+  }, [activeProjectId]);
   const [geminiKey, setGeminiKey] = useState<string>(localStorage.getItem('gemini_key') || '');
   const [geminiModel, setGeminiModel] = useState<string>(() => {
     const saved = localStorage.getItem('gemini_model');
@@ -221,8 +225,36 @@ export default function App() {
       level,
       message
     };
-    setLogs(prev => [newLog, ...prev].slice(0, 100));
+    setLogs(prev => [newLog, ...prev].slice(0, 500));
     console.log(`[${level.toUpperCase()}] ${message}`);
+
+    const projId = activeProjectIdRef.current;
+    if (projId) {
+      setProjects(prev => prev.map(p =>
+        p.id === projId
+          ? { ...p, logs: [newLog, ...(p.logs || [])].slice(0, 500) }
+          : p
+      ));
+    }
+  };
+
+  const exportLogs = (project: Project) => {
+    const projectLogs = project.logs || [];
+    if (projectLogs.length === 0) {
+      addLog("Лог проекту порожній — нема що експортувати.", 'warn');
+      return;
+    }
+    const ordered = [...projectLogs].sort((a, b) => a.timestamp - b.timestamp);
+    const content = ordered.map(log =>
+      `[${new Date(log.timestamp).toLocaleString('uk-UA')}] [${log.level.toUpperCase()}] ${log.message}`
+    ).join('\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const downloadUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = `${project.name}_log.txt`;
+    a.click();
+    URL.revokeObjectURL(downloadUrl);
   };
 
   const logDuration = (
@@ -295,8 +327,10 @@ export default function App() {
     if (activeProject) {
       setProcessingStatus(activeProject.processingStatus || []);
       setActiveStatusTab(0);
+      setLogs(activeProject.logs || []);
     } else {
       setProcessingStatus([]);
+      setLogs([]);
     }
   }, [activeProjectId]);
 
@@ -621,32 +655,54 @@ export default function App() {
         return row;
       });
 
-      addLog(`Сторінка ${pageNum} (${url}): запис ${batchValues.length} рядків у Google Sheets...`);
-      const sheetsStartedAt = performance.now();
-      const response = await fetch('/api/sheets/append', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tokens: project.googleSheetsTokens,
-          spreadsheetId: project.googleSheetsId,
-          sheetName: project.googleSheetsSheetName,
-          headers: getExportHeaders(project.tableStructure),
-          values: batchValues
-        })
-      });
-      
-      if (!response.ok) {
-        let errMessage = 'Помилка запису в таблицю';
+      const maxAttempts = 2;
+      let lastError: Error | null = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-          const errData = await response.json();
-          errMessage = errData.error || errMessage;
-        } catch (e) {
-          errMessage = `Сервер повернув помилку ${response.status}. Можливо, бекенд не працює.`;
-        }
-        throw new Error(errMessage);
-      }
+          addLog(
+            `Сторінка ${pageNum} (${url}): запис ${batchValues.length} рядків у Google Sheets${attempt > 1 ? ` (спроба ${attempt}/${maxAttempts})` : ''}...`
+          );
+          const sheetsStartedAt = performance.now();
+          const response = await fetch('/api/sheets/append', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              tokens: project.googleSheetsTokens,
+              spreadsheetId: project.googleSheetsId,
+              sheetName: project.googleSheetsSheetName,
+              headers: getExportHeaders(project.tableStructure),
+              values: batchValues
+            })
+          });
 
-      logDuration(`Сторінка ${pageNum} (${url}): запис у Google Sheets завершено`, sheetsStartedAt, 15000);
+          if (!response.ok) {
+            let errMessage = 'Помилка запису в таблицю';
+            try {
+              const errData = await response.json();
+              errMessage = errData.error || errMessage;
+            } catch (e) {
+              errMessage = `Сервер повернув помилку ${response.status}. Можливо, бекенд не працює.`;
+            }
+            throw new Error(errMessage);
+          }
+
+          logDuration(`Сторінка ${pageNum} (${url}): запис у Google Sheets завершено`, sheetsStartedAt, 15000);
+          lastError = null;
+          break;
+        } catch (err) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (attempt < maxAttempts) {
+            addLog(
+              `Сторінка ${pageNum} (${url}): помилка експорту — повтор через 3с. ${lastError.message}`,
+              'warn'
+            );
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
+        }
+      }
+      if (lastError) {
+        throw new Error(`Експорт сторінки ${pageNum} не вдався після ${maxAttempts} спроб: ${lastError.message}`);
+      }
     }
 
     updatePageStatus(url, pageNum, { status: 'completed', progress: 100 });
@@ -1276,7 +1332,7 @@ export default function App() {
                     <SettingsIcon size={16} />
                     Налаштування
                   </button>
-                  <button 
+                  <button
                     onClick={() => exportToCSV(activeProject)}
                     className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-sm font-medium shadow-sm"
                   >
@@ -1733,8 +1789,12 @@ export default function App() {
                                       </button>
                                     )}
                                     {page.status === 'completed' && (
-                                      <button 
-                                        onClick={() => retryPage(s.pdfUrl, page.pageNumber)}
+                                      <button
+                                        onClick={() => {
+                                          if (confirm(`Переопрацювати сторінку ${page.pageNumber}? Існуючі дані буде видалено з результатів${activeProject.googleSheetsTokens && activeProject.googleSheetsId ? ' та з Google Sheets' : ''}.`)) {
+                                            retryPage(s.pdfUrl, page.pageNumber);
+                                          }
+                                        }}
                                         className="absolute inset-0 bg-indigo-600 text-white opacity-0 group-hover:opacity-100 transition-opacity rounded-lg flex items-center justify-center gap-1 font-bold"
                                       >
                                         <Play size={10} />
@@ -1909,13 +1969,21 @@ export default function App() {
                   <span className="text-xs font-bold uppercase tracking-wider">Логи системи</span>
                 </div>
                 <div className="flex items-center gap-4">
-                  <button 
+                  <button
+                    onClick={() => activeProject && exportLogs(activeProject)}
+                    disabled={!activeProject}
+                    className="text-[10px] font-bold text-indigo-400 hover:text-indigo-300 uppercase tracking-wider transition-colors disabled:opacity-40 disabled:hover:text-indigo-400"
+                    title="Експортувати лог у .txt"
+                  >
+                    Експорт логу
+                  </button>
+                  <button
                     onClick={() => setLogs([])}
                     className="text-[10px] font-bold text-slate-500 hover:text-slate-300 uppercase tracking-wider transition-colors"
                   >
                     Очистити
                   </button>
-                  <button 
+                  <button
                     onClick={() => setShowLogs(false)}
                     className="text-slate-500 hover:text-white transition-colors"
                   >
