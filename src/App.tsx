@@ -766,6 +766,8 @@ export default function App() {
       // 3. Delete old data from Google Sheets if connected
       if (activeProject.googleSheetsTokens && activeProject.googleSheetsId) {
         addLog(`Видалення старих даних сторінки ${pageNum} з Google Sheets...`);
+        const urlColumnIndex = activeProject.tableStructure.length;       // після всіх колонок таблиці
+        const pageColumnIndex = activeProject.tableStructure.length + 1;  // одразу після URL
         await fetch('/api/sheets/delete-rows', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -774,7 +776,9 @@ export default function App() {
             spreadsheetId: activeProject.googleSheetsId,
             sheetName: activeProject.googleSheetsSheetName,
             pdfUrl: url,
-            pageNumber: pageNum
+            pageNumber: pageNum,
+            urlColumnIndex,
+            pageColumnIndex
           })
         });
       }

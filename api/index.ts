@@ -185,7 +185,7 @@ app.post("/api/sheets/append", async (req, res) => {
 });
 
 app.post("/api/sheets/delete-rows", async (req, res) => {
-  const { tokens, spreadsheetId, sheetName, pdfUrl, pageNumber } = req.body;
+  const { tokens, spreadsheetId, sheetName, pdfUrl, pageNumber, urlColumnIndex, pageColumnIndex } = req.body;
   const targetSheet = sheetName || "Sheet1";
   try {
     const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
@@ -204,11 +204,31 @@ app.post("/api/sheets/delete-rows", async (req, res) => {
     const rows = response.data.values || [];
     if (rows.length === 0) return res.json({ success: true, deletedCount: 0 });
 
+    // Resolve URL/Page column indexes. If client passed them, use directly.
+    // Otherwise infer from header row by matching well-known labels.
+    const headerRow = rows[0] || [];
+    let urlIdx: number = Number.isInteger(urlColumnIndex) ? urlColumnIndex : -1;
+    let pageIdx: number = Number.isInteger(pageColumnIndex) ? pageColumnIndex : -1;
+    if (urlIdx < 0) {
+      urlIdx = headerRow.findIndex(c => typeof c === "string" && c.trim() === "Посилання на файл");
+    }
+    if (pageIdx < 0) {
+      pageIdx = headerRow.findIndex(c => typeof c === "string" && c.trim() === "Сторінка");
+    }
+
+    if (urlIdx < 0 || pageIdx < 0) {
+      return res.status(400).json({
+        error: "Не вдалося визначити колонки 'Посилання на файл' / 'Сторінка'. Передайте urlColumnIndex та pageColumnIndex.",
+      });
+    }
+
+    const pageStr = String(pageNumber);
     const rowsToDelete: number[] = [];
     rows.forEach((row, index) => {
-      const hasUrl = row.some(cell => cell === pdfUrl);
-      const hasPage = row.some(cell => cell === pageNumber.toString());
-      if (hasUrl && hasPage) {
+      if (index === 0) return; // skip header row
+      const cellUrl = row[urlIdx];
+      const cellPage = row[pageIdx];
+      if (cellUrl === pdfUrl && cellPage === pageStr) {
         rowsToDelete.push(index);
       }
     });
