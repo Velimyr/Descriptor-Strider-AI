@@ -39,6 +39,7 @@ import {
 import { GeminiService } from './services/geminiService';
 import { pdfStorage } from './services/pdfStorage';
 import { MusicPanel } from './components/MusicPanel';
+import { config } from './config';
 
 // PDF.js worker setup
 import * as pdfjs from 'pdfjs-dist';
@@ -575,7 +576,7 @@ export default function App() {
     const pdfPageStartedAt = performance.now();
     const page = await pdf.getPage(pageNum);
     logDuration(`Сторінка ${pageNum} (${url}): PDF-сторінку отримано`, pdfPageStartedAt, 5000);
-    const viewport = page.getViewport({ scale: 2 });
+    const viewport = page.getViewport({ scale: config.pdfRenderScale });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     canvas.height = viewport.height;
