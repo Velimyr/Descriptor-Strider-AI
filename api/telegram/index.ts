@@ -55,7 +55,9 @@ router.get('/cron/tick', async (req, res) => {
     return res.status(403).send('forbidden');
   }
 
-  if (!isWithinDispatchWindow()) {
+  // ?force=1 обходить перевірку вікна — для тестування з GitHub Actions "Run workflow".
+  const force = req.query.force === '1';
+  if (!force && !isWithinDispatchWindow()) {
     return res.json({ ok: true, skipped: 'outside-window-or-not-step' });
   }
 
