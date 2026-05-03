@@ -404,12 +404,15 @@ const QuestionsView: React.FC<{ initialQuestions?: TableColumn[] }> = ({ initial
 
 const RENDER_SCALE = 3.0; // високий dpi для якості кропів
 
+type Box = { x: number; y: number; w: number; h: number };
+
 const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [pdf, setPdf] = useState<any>(null);
   const [pdfName, setPdfName] = useState('');
   const [page, setPage] = useState(1);
-  const [pageImage, setPageImage] = useState<string>(''); // dataURL у високому dpi
-  const [boxes, setBoxes] = useState<{ x: number; y: number; w: number; h: number }[]>([]);
+  const [pageImage, setPageImage] = useState<string>(''); // dataURL поточної сторінки
+  // Зони по всіх сторінках. Ключ — номер сторінки (1-based).
+  const [pageBoxes, setPageBoxes] = useState<Record<number, Box[]>>({});
   const [mode, setMode] = useState<'manual' | 'auto'>('manual');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -417,7 +420,6 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [uploadDone, setUploadDone] = useState<{ count: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // Архівні реквізити — обовʼязкові для всієї пачки справ.
-  // Зберігаємо в localStorage, щоб не вводити повторно при наступному PDF.
   const [archive, setArchive] = useState(() => localStorage.getItem('tg_admin_archive') || '');
   const [fund, setFund] = useState(() => localStorage.getItem('tg_admin_fund') || '');
   const [opys, setOpys] = useState(() => localStorage.getItem('tg_admin_opys') || '');
@@ -426,6 +428,16 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const drawingRef = useRef<{ startX: number; startY: number } | null>(null);
 
   const metaValid = !!(archive.trim() && fund.trim() && opys.trim() && sprava.trim());
+  const boxes: Box[] = pageBoxes[page] || [];
+  const totalBoxes = (Object.values(pageBoxes) as Box[][]).reduce((s, b) => s + b.length, 0);
+  const pagesWithBoxes = (Object.entries(pageBoxes) as [string, Box[]][])
+    .filter(([, v]) => v.length > 0)
+    .map(([k]) => parseInt(k, 10))
+    .sort((a, b) => a - b);
+
+  const setBoxesForPage = (p: number, fn: (prev: Box[]) => Box[]) => {
+    setPageBoxes(prev => ({ ...prev, [p]: fn(prev[p] || []) }));
+  };
 
   const loadPdf = async (file: File) => {
     if (!file || file.type !== 'application/pdf') {
@@ -434,6 +446,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     }
     setMsg('');
     setUploadDone(null);
+    setPageBoxes({});
     const buf = await file.arrayBuffer();
     const doc = await pdfjs.getDocument({ data: buf }).promise;
     setPdf(doc);
@@ -450,16 +463,16 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     canvas.height = viewport.height;
     const ctx = canvas.getContext('2d')!;
     await p.render({ canvasContext: ctx, viewport, canvas }).promise;
-    // 0.92 — баланс якість/розмір
     setPageImage(canvas.toDataURL('image/jpeg', 0.92));
-    setBoxes([]);
+    // boxes беруться з pageBoxes[page] — не скидаємо.
   };
 
   useEffect(() => {
     if (pdf) renderPage(pdf, page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
-  // малювання прямокутників
+  // Перерендерим зон на canvas при зміні сторінки/боксів.
   useEffect(() => {
     if (!pageImage || !canvasRef.current) return;
     const canvas = canvasRef.current;
@@ -469,40 +482,89 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       canvas.height = img.height;
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0);
-      ctx.strokeStyle = 'rgba(99,102,241,0.9)';
-      ctx.lineWidth = 3;
       boxes.forEach((b, idx) => {
-        ctx.strokeRect(b.x * canvas.width, b.y * canvas.height, b.w * canvas.width, b.h * canvas.height);
-        ctx.fillStyle = 'rgba(99,102,241,0.9)';
-        ctx.font = '20px sans-serif';
-        ctx.fillText(String(idx + 1), b.x * canvas.width + 4, b.y * canvas.height + 22);
+        const x = b.x * canvas.width;
+        const y = b.y * canvas.height;
+        const w = b.w * canvas.width;
+        const h = b.h * canvas.height;
+        ctx.strokeStyle = 'rgba(99,102,241,0.9)';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x, y, w, h);
+        // Білий чіп з номером
+        ctx.fillStyle = 'rgba(99,102,241,0.95)';
+        ctx.fillRect(x, y, 28, 26);
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 18px sans-serif';
+        ctx.fillText(String(idx + 1), x + 7, y + 19);
+        // Червоний хрестик у правому верхньому куті зони
+        const cx = x + w - 14;
+        const cy = y + 14;
+        ctx.fillStyle = 'rgba(220,38,38,0.95)';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(cx - 5, cy - 5);
+        ctx.lineTo(cx + 5, cy + 5);
+        ctx.moveTo(cx + 5, cy - 5);
+        ctx.lineTo(cx - 5, cy + 5);
+        ctx.stroke();
       });
     };
     img.src = pageImage;
   }, [pageImage, boxes]);
 
+  // Координати в нормалізованій системі (0..1).
+  const normFromEvent = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / rect.width,
+      y: (e.clientY - rect.top) / rect.height,
+    };
+  };
+
+  // Перевірка попадання в "хрестик видалити".
+  const hitCloseHandle = (point: { x: number; y: number }, b: Box): boolean => {
+    if (!canvasRef.current) return false;
+    const W = canvasRef.current.width;
+    const H = canvasRef.current.height;
+    const cxPx = (b.x + b.w) * W - 14;
+    const cyPx = b.y * H + 14;
+    const px = point.x * W;
+    const py = point.y * H;
+    const dx = px - cxPx;
+    const dy = py - cyPx;
+    return Math.sqrt(dx * dx + dy * dy) <= 14;
+  };
+
   const onCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    drawingRef.current = {
-      startX: (e.clientX - rect.left) / rect.width,
-      startY: (e.clientY - rect.top) / rect.height,
-    };
+    const p = normFromEvent(e);
+    // Якщо клац у "хрестик" будь-якої зони — видаляємо її і не починаємо drag.
+    const idx = boxes.findIndex(b => hitCloseHandle(p, b));
+    if (idx >= 0) {
+      setBoxesForPage(page, prev => prev.filter((_, i) => i !== idx));
+      drawingRef.current = null;
+      return;
+    }
+    drawingRef.current = { startX: p.x, startY: p.y };
   };
   const onCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current || !drawingRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const endX = (e.clientX - rect.left) / rect.width;
-    const endY = (e.clientY - rect.top) / rect.height;
-    const x = Math.min(drawingRef.current.startX, endX);
-    const y = Math.min(drawingRef.current.startY, endY);
-    const w = Math.abs(endX - drawingRef.current.startX);
-    const h = Math.abs(endY - drawingRef.current.startY);
+    const p = normFromEvent(e);
+    const x = Math.min(drawingRef.current.startX, p.x);
+    const y = Math.min(drawingRef.current.startY, p.y);
+    const w = Math.abs(p.x - drawingRef.current.startX);
+    const h = Math.abs(p.y - drawingRef.current.startY);
     drawingRef.current = null;
     if (w < 0.02 || h < 0.02) return;
-    setBoxes(b => [...b, { x, y, w, h }]);
+    setBoxesForPage(page, prev => [...prev, { x, y, w, h }]);
   };
-  const removeBox = (i: number) => setBoxes(b => b.filter((_, idx) => idx !== i));
+
+  const removeBox = (i: number) => setBoxesForPage(page, prev => prev.filter((_, idx) => idx !== i));
+  const clearPage = () => setBoxesForPage(page, () => []);
 
   const runAuto = async () => {
     if (!pageImage || !geminiKey) {
@@ -513,8 +575,8 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     try {
       const base64 = pageImage.split(',')[1];
       const r = await tgApi.detectBoxes(base64, 'image/jpeg', geminiKey);
-      setBoxes(r.boxes || []);
-      setMsg(`✅ Знайдено ${r.boxes?.length || 0} справ. Перевірте і скоригуйте.`);
+      setBoxesForPage(page, () => r.boxes || []);
+      setMsg(`✅ Знайдено ${r.boxes?.length || 0} зон. Перевірте і скоригуйте.`);
     } catch (e: any) {
       setMsg('❌ ' + e.message);
     } finally {
@@ -522,7 +584,8 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     }
   };
 
-  const cropBoxToBase64 = async (box: { x: number; y: number; w: number; h: number }): Promise<string> => {
+  // Кропає bbox з заданого jpeg-dataURL (а не з поточної відкритої сторінки).
+  const cropBoxFromDataUrl = async (dataUrl: string, box: Box): Promise<string> => {
     return new Promise(resolve => {
       const img = new Image();
       img.onload = () => {
@@ -544,17 +607,31 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
         const data = canvas.toDataURL('image/jpeg', 0.85);
         resolve(data.split(',')[1]);
       };
-      img.src = pageImage;
+      img.src = dataUrl;
     });
   };
 
+  // Рендерить будь-яку сторінку PDF у JPEG-dataURL.
+  const renderPageToDataUrl = async (doc: any, pageNum: number): Promise<string> => {
+    const p = await doc.getPage(pageNum);
+    const viewport = p.getViewport({ scale: RENDER_SCALE });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d')!;
+    await p.render({ canvasContext: ctx, viewport, canvas }).promise;
+    return canvas.toDataURL('image/jpeg', 0.92);
+  };
+
   const uploadAll = async () => {
-    if (boxes.length === 0) return;
+    if (totalBoxes === 0) {
+      setMsg('Немає зон для завантаження.');
+      return;
+    }
     if (!metaValid) {
       setMsg('❌ Заповніть Архів / Фонд / Опис / Справа перед завантаженням.');
       return;
     }
-    // Запамʼятовуємо реквізити для наступного PDF — той самий фонд зазвичай.
     localStorage.setItem('tg_admin_archive', archive.trim());
     localStorage.setItem('tg_admin_fund', fund.trim());
     localStorage.setItem('tg_admin_opys', opys.trim());
@@ -563,28 +640,33 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     setBusy(true);
     setUploadDone(null);
     setMsg('');
-    const total = boxes.length;
-    setUploadProgress({ done: 0, total });
+    setUploadProgress({ done: 0, total: totalBoxes });
+    let done = 0;
     try {
-      for (let i = 0; i < total; i++) {
-        const base64 = await cropBoxToBase64(boxes[i]);
-        await tgApi.uploadCase({
-          imageBase64: base64,
-          mime: 'image/jpeg',
-          sourcePdf: pdfName,
-          page,
-          bbox: boxes[i],
-          archive: archive.trim(),
-          fund: fund.trim(),
-          opys: opys.trim(),
-          sprava: sprava.trim(),
-        });
-        setUploadProgress({ done: i + 1, total });
+      for (const pageNum of pagesWithBoxes) {
+        const dataUrl = pageNum === page ? pageImage : await renderPageToDataUrl(pdf, pageNum);
+        const items = pageBoxes[pageNum];
+        for (const box of items) {
+          const base64 = await cropBoxFromDataUrl(dataUrl, box);
+          await tgApi.uploadCase({
+            imageBase64: base64,
+            mime: 'image/jpeg',
+            sourcePdf: pdfName,
+            page: pageNum,
+            bbox: box,
+            archive: archive.trim(),
+            fund: fund.trim(),
+            opys: opys.trim(),
+            sprava: sprava.trim(),
+          });
+          done++;
+          setUploadProgress({ done, total: totalBoxes });
+        }
       }
-      setBoxes([]);
-      setUploadDone({ count: total });
+      setPageBoxes({});
+      setUploadDone({ count: done });
     } catch (e: any) {
-      setMsg('❌ ' + e.message);
+      setMsg(`❌ ${e.message}. Завантажено до помилки: ${done}/${totalBoxes}.`);
     } finally {
       setBusy(false);
       setTimeout(() => setUploadProgress(null), 800);
@@ -664,66 +746,89 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       )}
 
       {pdf && (
-        <div className="flex gap-3 items-center flex-wrap">
-          <div className="text-sm font-medium truncate max-w-xs" title={pdfName}>
-            📄 {pdfName}
-          </div>
-          <button
-            onClick={() => {
-              setPdf(null);
-              setPdfName('');
-              setPageImage('');
-              setBoxes([]);
-            }}
-            className="text-xs text-slate-500 hover:text-red-600"
-          >
-            змінити PDF
-          </button>
-          <div className="flex-1" />
-          <button onClick={() => setPage(p => Math.max(1, p - 1))} className="px-2 py-1 bg-slate-200 rounded">
-            ←
-          </button>
-          <span className="text-sm font-mono">
-            Стор. {page} / {pdf.numPages}
-          </span>
-          <button
-            onClick={() => setPage(p => Math.min(pdf.numPages, p + 1))}
-            className="px-2 py-1 bg-slate-200 rounded"
-          >
-            →
-          </button>
-          <select
-            value={mode}
-            onChange={e => setMode(e.target.value as any)}
-            className="border rounded px-2 py-1 text-sm"
-          >
-            <option value="manual">Ручний</option>
-            <option value="auto">Авто (Gemini)</option>
-          </select>
-          {mode === 'auto' && (
+        <div className="space-y-2">
+          <div className="flex gap-3 items-center flex-wrap">
+            <div className="text-sm font-medium truncate max-w-xs" title={pdfName}>
+              📄 {pdfName}
+            </div>
             <button
-              onClick={runAuto}
-              disabled={busy}
-              className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
+              onClick={() => {
+                if (totalBoxes > 0 && !confirm(`Скинути ${totalBoxes} зон і змінити PDF?`)) return;
+                setPdf(null);
+                setPdfName('');
+                setPageImage('');
+                setPageBoxes({});
+              }}
+              className="text-xs text-slate-500 hover:text-red-600"
             >
-              <Wand2 size={14} /> Розпізнати
+              змінити PDF
             </button>
+            <div className="flex-1" />
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} className="px-2 py-1 bg-slate-200 rounded">
+              ←
+            </button>
+            <span className="text-sm font-mono">
+              Стор. {page} / {pdf.numPages}
+            </span>
+            <button
+              onClick={() => setPage(p => Math.min(pdf.numPages, p + 1))}
+              className="px-2 py-1 bg-slate-200 rounded"
+            >
+              →
+            </button>
+            <select
+              value={mode}
+              onChange={e => setMode(e.target.value as any)}
+              className="border rounded px-2 py-1 text-sm"
+            >
+              <option value="manual">Ручний</option>
+              <option value="auto">Авто (Gemini)</option>
+            </select>
+            {mode === 'auto' && (
+              <button
+                onClick={runAuto}
+                disabled={busy}
+                className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
+              >
+                <Wand2 size={14} /> Розпізнати
+              </button>
+            )}
+            <button
+              onClick={uploadAll}
+              disabled={busy || totalBoxes === 0 || !metaValid}
+              title={!metaValid ? 'Заповніть Архів / Фонд / Опис / Справа' : ''}
+              className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
+            >
+              <UploadCloud size={14} /> Завантажити всі ({totalBoxes})
+            </button>
+          </div>
+
+          {/* Бейджи сторінок з зонами — швидка навігація */}
+          {pagesWithBoxes.length > 0 && (
+            <div className="flex flex-wrap gap-1 items-center text-xs text-slate-600">
+              <span>Сторінки з зонами:</span>
+              {pagesWithBoxes.map(p => (
+                <button
+                  key={p}
+                  onClick={() => setPage(p)}
+                  className={`px-2 py-0.5 rounded border ${
+                    p === page ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-slate-300 hover:border-indigo-400'
+                  }`}
+                  title={`Перейти на сторінку ${p}`}
+                >
+                  {p} <span className="opacity-70">({pageBoxes[p].length})</span>
+                </button>
+              ))}
+            </div>
           )}
-          <button
-            onClick={uploadAll}
-            disabled={busy || boxes.length === 0 || !metaValid}
-            title={!metaValid ? 'Заповніть Архів / Фонд / Опис / Справа' : ''}
-            className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
-          >
-            <UploadCloud size={14} /> Завантажити в канал ({boxes.length})
-          </button>
         </div>
       )}
 
       {pageImage && (
         <div className="space-y-2">
           <p className="text-sm text-slate-600">
-            Малюйте прямокутники мишкою навколо кожної справи. Клацніть на номер у списку, щоб видалити.
+            Малюйте прямокутники мишкою навколо кожної справи. Натисніть <span className="text-red-600 font-medium">червоний хрестик</span> у куті зони — видалити її.
+            {' '}Зони зберігаються при перемиканні сторінок.
           </p>
           <div className="border rounded bg-slate-50 max-h-[70vh] overflow-auto">
             <canvas
@@ -735,16 +840,24 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
             />
           </div>
           {boxes.length > 0 && (
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap gap-1 items-center">
+              <span className="text-xs text-slate-500 mr-1">Зони на цій сторінці:</span>
               {boxes.map((_, i) => (
                 <button
                   key={i}
                   onClick={() => removeBox(i)}
                   className="px-2 py-1 bg-indigo-100 text-indigo-700 rounded text-xs hover:bg-red-100 hover:text-red-700"
+                  title="Видалити зону"
                 >
                   #{i + 1} ✕
                 </button>
               ))}
+              <button
+                onClick={clearPage}
+                className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs hover:bg-red-100 hover:text-red-700 ml-2"
+              >
+                Очистити сторінку
+              </button>
             </div>
           )}
         </div>
