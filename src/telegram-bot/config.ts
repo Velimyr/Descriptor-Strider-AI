@@ -148,7 +148,7 @@ export const telegramBotConfig: TelegramBotConfig = {
     paused: 'Розсилку зупинено. /resume — продовжити.',
     resumed: 'Розсилку відновлено.',
     pointsEarned:
-      '✅ Записано! +{points} балів. Сьогодні: {todayCount} справ. Всього: {total} балів.',
+      '✅ Збережено! +{points} балів. Сьогодні: {todayCount} справ. Всього: {total} балів.',
     confirmHeader: 'Перевірте відповіді:',
     confirmButtons: 'Підтвердити / Виправити',
     questionPrefix: 'Питання {n}/{total}',
