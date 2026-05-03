@@ -89,12 +89,36 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] || ch));
 }
 
+// Inline-меню всередині розділу «Допомога».
+function helpMenuKeyboard(): any {
+  return {
+    inline_keyboard: [
+      [{ text: 'ℹ Про що цей бот', callback_data: 'help:about' }],
+      [{ text: '📝 Як відповідати на справу', callback_data: 'help:howto' }],
+      [{ text: '🏆 Бали і рейтинг', callback_data: 'help:points' }],
+      [{ text: '🔔 Розклад і сповіщення', callback_data: 'help:schedule' }],
+      [{ text: '💡 Поширені питання', callback_data: 'help:faq' }],
+    ],
+  };
+}
+
+function helpBackKeyboard(): any {
+  return {
+    inline_keyboard: [[{ text: T.helpBackButton, callback_data: 'help:menu' }]],
+  };
+}
+
 function keyboardForQuestion(qIndex: number): any {
-  const row1: any[] = [];
-  if (qIndex > 0) row1.push({ text: T.backButton, callback_data: 'back' });
-  row1.push({ text: T.fieldEmptyButton, callback_data: 'skip' });
-  row1.push({ text: T.cancelButton, callback_data: 'cancel' });
-  return { inline_keyboard: [row1] };
+  // Skip-кнопка в окремий ряд — її текст довгий і обрізається коли вона поряд з іншими.
+  const navRow: any[] = [];
+  if (qIndex > 0) navRow.push({ text: T.backButton, callback_data: 'back' });
+  navRow.push({ text: T.cancelButton, callback_data: 'cancel' });
+  return {
+    inline_keyboard: [
+      [{ text: T.fieldEmptyButton, callback_data: 'skip' }],
+      navRow,
+    ],
+  };
 }
 
 // Reply-клавіатура головного меню (внизу екрана). Pause/Resume — динамічно.
@@ -190,7 +214,10 @@ async function handleMessage(msg: any) {
         sendMessage(chatId, T.welcome, { reply_markup: mainMenuKeyboard(newUser as any) }),
       ]);
     } else {
-      await sendMessage(chatId, T.helpText, { reply_markup: mainMenuKeyboard(user) });
+      // Існуючий користувач натиснув /start — коротке привітання + меню.
+      await sendMessage(chatId, `З поверненням, ${user.displayName}! 👋`, {
+        reply_markup: mainMenuKeyboard(user),
+      });
     }
     return;
   }
@@ -218,7 +245,7 @@ async function handleMessage(msg: any) {
   }
 
   if (text === '/help') {
-    await sendMessage(chatId, T.helpText, { reply_markup: mainMenuKeyboard(user) });
+    await sendMessage(chatId, T.helpText, { reply_markup: helpMenuKeyboard() });
     return;
   }
   if (text === '/stop') {
@@ -255,13 +282,43 @@ async function handleMessage(msg: any) {
     return;
   }
 
-  await sendMessage(chatId, T.helpText, { reply_markup: mainMenuKeyboard(user) });
+  // Невідомий текст і немає сесії — підказка з основним меню (не повний help).
+  await sendMessage(chatId, 'Скористайтеся кнопками меню внизу.', {
+    reply_markup: mainMenuKeyboard(user),
+  });
 }
 
 async function handleCallback(cb: any) {
   const chatId = cb.message.chat.id;
   const tgId = String(cb.from.id);
+  const messageId = cb.message?.message_id;
   const data: string = cb.data || '';
+
+  // Help-навігація — не залежить від сесії, обробляємо одразу.
+  if (data.startsWith('help:')) {
+    await answerCallbackQuery(cb.id);
+    const section = data.slice(5);
+    const sections: Record<string, string> = {
+      menu: T.helpText,
+      about: T.helpAbout,
+      howto: T.helpHowToAnswer,
+      points: T.helpPoints,
+      schedule: T.helpSchedule,
+      faq: T.helpFaq,
+    };
+    const text = sections[section] || T.helpText;
+    const markup = section === 'menu' ? helpMenuKeyboard() : helpBackKeyboard();
+    if (messageId) {
+      try {
+        await editMessageText(chatId, messageId, text, { reply_markup: markup });
+        return;
+      } catch {
+        // fallback нижче
+      }
+    }
+    await sendMessage(chatId, text, { reply_markup: markup });
+    return;
+  }
 
   // ack + читання сесії і питань — паралельно
   const [, session, questions] = await Promise.all([
