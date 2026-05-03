@@ -4,6 +4,7 @@ import { google } from "googleapis";
 import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
+import telegramRouter from "./telegram/index";
 
 dotenv.config({
   path: [
@@ -19,6 +20,9 @@ const app = express();
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
+// Telegram-бот: усі маршрути під /api/telegram. Існуючий функціонал не змінюється.
+app.use('/api/telegram', telegramRouter);
 
 // Proxy for PDF files to avoid CORS
 app.get("/api/proxy-pdf", async (req, res) => {
