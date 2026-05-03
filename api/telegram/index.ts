@@ -1,5 +1,5 @@
 import express from 'express';
-import { telegramBotConfig } from '../../src/telegram-bot/config';
+import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import {
   appendCases,
   ensureAllSheets,
@@ -10,16 +10,16 @@ import {
   patchUser,
   setMeta,
   deleteSession,
-} from './storage';
-import { handleUpdate, dispatchCaseToUser } from './bot';
-import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api';
-import { detectCaseBoxes } from './slicer';
+} from './storage.js';
+import { handleUpdate, dispatchCaseToUser } from './bot.js';
+import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
+import { detectCaseBoxes } from './slicer.js';
 import {
   isWithinDispatchWindow,
   nowIsoUtc,
   progressOfAllCases,
   recomputeCaseSubmissionCount,
-} from './scheduler';
+} from './scheduler.js';
 
 const router = express.Router();
 

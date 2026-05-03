@@ -1,4 +1,4 @@
-import { telegramBotConfig } from '../../src/telegram-bot/config';
+import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import {
   BotCase,
   BotUser,
@@ -6,7 +6,7 @@ import {
   getAllCases,
   getSubmissionsForUser,
   patchCase,
-} from './storage';
+} from './storage.js';
 
 const cfg = telegramBotConfig;
 

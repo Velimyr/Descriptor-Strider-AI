@@ -1,5 +1,5 @@
-import type { TableColumn, ColumnRole } from '../../src/types';
-import { telegramBotConfig } from '../../src/telegram-bot/config';
+import type { TableColumn, ColumnRole } from '../../src/types.js';
+import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import {
   appendSubmission,
   BotSession,
@@ -17,12 +17,12 @@ import {
   getDailyCount,
   getResultsTotals,
   getAllCases,
-} from './storage';
+} from './storage.js';
 import {
   answerCallbackQuery,
   sendMessage,
   sendPhotoByFileId,
-} from './tg-api';
+} from './tg-api.js';
 import {
   computePointsForToday,
   kyivDateString,
@@ -31,7 +31,7 @@ import {
   progressOfAllCases,
   recomputeCaseSubmissionCount,
   selectNextCaseForUser,
-} from './scheduler';
+} from './scheduler.js';
 
 const T = telegramBotConfig.texts;
 

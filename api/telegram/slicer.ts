@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { telegramBotConfig } from '../../src/telegram-bot/config';
+import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 export interface BBox {
   x: number;

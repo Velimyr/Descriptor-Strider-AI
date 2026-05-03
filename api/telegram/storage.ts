@@ -6,8 +6,8 @@ import {
   ensureSheet,
   readSheet,
   updateRange,
-} from './sheets-client';
-import { telegramBotConfig } from '../../src/telegram-bot/config';
+} from './sheets-client.js';
+import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 export interface BotUser {
   rowIndex: number; // 0-based, без заголовка

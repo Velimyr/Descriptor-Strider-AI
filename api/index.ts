@@ -4,7 +4,7 @@ import { google } from "googleapis";
 import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
-import telegramRouter from "./telegram/index";
+import telegramRouter from "./telegram/index.js";
 
 dotenv.config({
   path: [

@@ -1,5 +1,5 @@
 import { google, sheets_v4 } from 'googleapis';
-import { telegramBotConfig } from '../../src/telegram-bot/config';
+import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 let cachedSheets: sheets_v4.Sheets | null = null;
 

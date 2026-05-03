@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { telegramBotConfig } from '../../src/telegram-bot/config';
+import FormData from 'form-data';
+import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 function token(): string {
   const t = process.env[telegramBotConfig.tg.botTokenEnv];
@@ -45,8 +46,6 @@ export async function sendPhotoByBuffer(
   filename: string,
   caption?: string
 ): Promise<any> {
-  // multipart/form-data
-  const FormData = require('form-data');
   const form = new FormData();
   form.append('chat_id', String(chatId));
   if (caption) form.append('caption', caption);
