@@ -333,8 +333,12 @@ router.post('/admin/detect-bboxes', async (req, res) => {
   const { imageBase64, mime, geminiKey } = req.body || {};
   if (!imageBase64 || !geminiKey) return res.status(400).json({ error: 'imageBase64 + geminiKey required' });
   try {
-    const boxes = await detectCaseBoxes(imageBase64, mime || 'image/jpeg', geminiKey);
-    res.json({ ok: true, boxes });
+    const { boxes, raw } = await detectCaseBoxes(imageBase64, mime || 'image/jpeg', geminiKey);
+    // raw повертаємо для дебагу — видно у відповіді API і в console.log на сервері.
+    if (boxes.length === 0) {
+      console.log('[detect-bboxes] empty result, raw:', raw?.slice(0, 500));
+    }
+    res.json({ ok: true, boxes, raw });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

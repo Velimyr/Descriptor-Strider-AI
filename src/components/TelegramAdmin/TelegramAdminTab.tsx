@@ -620,6 +620,13 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
           const found = r.boxes || [];
           setBoxesForPage(pageNum, () => found);
           totalFound += found.length;
+          if (pages.length === 1 && found.length === 0 && r.raw) {
+            // Покажемо адміну що повернула модель — щоб зрозуміти чому нічого не знайшло.
+            console.log('[Gemini raw response]', r.raw);
+            setMsg(
+              `⚠ Gemini не знайшла зон. Відповідь моделі (перші 300 символів):\n${String(r.raw).slice(0, 300)}`
+            );
+          }
         } catch (e: any) {
           errors++;
           console.error(`detect failed on page ${pageNum}:`, e);
