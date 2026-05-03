@@ -424,6 +424,9 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [fund, setFund] = useState(() => localStorage.getItem('tg_admin_fund') || '');
   const [opys, setOpys] = useState(() => localStorage.getItem('tg_admin_opys') || '');
   const [sprava, setSprava] = useState(() => localStorage.getItem('tg_admin_sprava') || '');
+  // Діапазон сторінок для авто-розпізнавання. Порожньо → поточна сторінка.
+  const [autoRange, setAutoRange] = useState('');
+  const [autoProgress, setAutoProgress] = useState<{ done: number; total: number; page?: number } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef<{ startX: number; startY: number } | null>(null);
 
@@ -566,21 +569,72 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const removeBox = (i: number) => setBoxesForPage(page, prev => prev.filter((_, idx) => idx !== i));
   const clearPage = () => setBoxesForPage(page, () => []);
 
+  // Парсер "1-3,5,7-9" → [1,2,3,5,7,8,9]. Дублікати прибираються, сортується.
+  const parsePageRange = (raw: string, maxPage: number): number[] => {
+    const out = new Set<number>();
+    raw.split(',').forEach(part => {
+      const t = part.trim();
+      if (!t) return;
+      const m = t.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (m) {
+        const a = Math.max(1, parseInt(m[1], 10));
+        const b = Math.min(maxPage, parseInt(m[2], 10));
+        for (let i = Math.min(a, b); i <= Math.max(a, b); i++) out.add(i);
+      } else if (/^\d+$/.test(t)) {
+        const n = parseInt(t, 10);
+        if (n >= 1 && n <= maxPage) out.add(n);
+      }
+    });
+    return [...out].sort((a, b) => a - b);
+  };
+
   const runAuto = async () => {
-    if (!pageImage || !geminiKey) {
-      setMsg('Потрібно: відкрита сторінка + Gemini API key (у головному екрані)');
+    if (!pdf || !geminiKey) {
+      setMsg('Потрібно: відкритий PDF + Gemini API key (у головному екрані)');
       return;
     }
+    const pages = autoRange.trim()
+      ? parsePageRange(autoRange, pdf.numPages)
+      : [page];
+    if (pages.length === 0) {
+      setMsg('❌ Невалідний діапазон. Приклади: "1-10", "3,5,7", "1-5, 8, 10-12"');
+      return;
+    }
+    if (pages.length > 50 && !confirm(`Розпізнати ${pages.length} сторінок? Це може зайняти час і витратити квоту Gemini.`)) {
+      return;
+    }
+
     setBusy(true);
+    setMsg('');
+    setAutoProgress({ done: 0, total: pages.length });
+    let totalFound = 0;
+    let errors = 0;
     try {
-      const base64 = pageImage.split(',')[1];
-      const r = await tgApi.detectBoxes(base64, 'image/jpeg', geminiKey);
-      setBoxesForPage(page, () => r.boxes || []);
-      setMsg(`✅ Знайдено ${r.boxes?.length || 0} зон. Перевірте і скоригуйте.`);
-    } catch (e: any) {
-      setMsg('❌ ' + e.message);
+      for (let i = 0; i < pages.length; i++) {
+        const pageNum = pages[i];
+        setAutoProgress({ done: i, total: pages.length, page: pageNum });
+        try {
+          const dataUrl = pageNum === page ? pageImage : await renderPageToDataUrl(pdf, pageNum);
+          const base64 = dataUrl.split(',')[1];
+          const r = await tgApi.detectBoxes(base64, 'image/jpeg', geminiKey);
+          const found = r.boxes || [];
+          setBoxesForPage(pageNum, () => found);
+          totalFound += found.length;
+        } catch (e: any) {
+          errors++;
+          console.error(`detect failed on page ${pageNum}:`, e);
+        }
+      }
+      setAutoProgress({ done: pages.length, total: pages.length });
+      const errSuffix = errors > 0 ? `, помилок: ${errors}` : '';
+      setMsg(
+        pages.length === 1
+          ? `✅ Знайдено ${totalFound} зон. Перевірте і скоригуйте.`
+          : `✅ Опрацьовано ${pages.length} сторінок, знайдено ${totalFound} зон${errSuffix}.`
+      );
     } finally {
       setBusy(false);
+      setTimeout(() => setAutoProgress(null), 1200);
     }
   };
 
@@ -785,13 +839,30 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
               <option value="auto">Авто (Gemini)</option>
             </select>
             {mode === 'auto' && (
-              <button
-                onClick={runAuto}
-                disabled={busy}
-                className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
-              >
-                <Wand2 size={14} /> Розпізнати
-              </button>
+              <>
+                <input
+                  value={autoRange}
+                  onChange={e => setAutoRange(e.target.value)}
+                  placeholder={`сторінки (напр. 1-${pdf.numPages})`}
+                  title={'Порожньо — поточна сторінка. Формат: "1-10", "3,5,7", "1-5,8,10-12"'}
+                  className="border rounded px-2 py-1 text-sm w-44"
+                />
+                <button
+                  onClick={() => setAutoRange(`1-${pdf.numPages}`)}
+                  className="px-2 py-1 bg-slate-100 text-slate-600 text-xs rounded hover:bg-slate-200"
+                  title="Усі сторінки PDF"
+                >
+                  усі
+                </button>
+                <button
+                  onClick={runAuto}
+                  disabled={busy}
+                  className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
+                >
+                  <Wand2 size={14} />{' '}
+                  {autoRange.trim() ? 'Розпізнати діапазон' : 'Розпізнати'}
+                </button>
+              </>
             )}
             <button
               onClick={uploadAll}
@@ -864,6 +935,26 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       )}
 
       {/* Прогрес-бар */}
+      {/* Прогрес авто-розпізнавання */}
+      {autoProgress && (
+        <div className="border rounded p-3 bg-white shadow-sm space-y-2 sticky bottom-2">
+          <div className="flex items-center justify-between text-sm">
+            <span>
+              🤖 Розпізнавання Gemini{autoProgress.page ? ` (стор. ${autoProgress.page})` : ''}…
+            </span>
+            <span className="font-mono">
+              {autoProgress.done} / {autoProgress.total}
+            </span>
+          </div>
+          <div className="h-2 bg-slate-200 rounded overflow-hidden">
+            <div
+              className="h-full bg-purple-600 transition-all"
+              style={{ width: `${(autoProgress.done / Math.max(1, autoProgress.total)) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
       {uploadProgress && (
         <div className="border rounded p-3 bg-white shadow-sm space-y-2 sticky bottom-2">
           <div className="flex items-center justify-between text-sm">
