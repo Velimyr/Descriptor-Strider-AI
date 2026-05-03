@@ -36,9 +36,13 @@ export async function detectCaseBoxes(
   const res = await axios.post(url, body, { timeout: 60000 });
   const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
   const parsed = parseAnyBboxFormat(raw);
-  // Розширюємо кожну зону на padding із конфіга — Gemini часто обрізає справу
-  // по верхньому/нижньому краю.
-  const boxes = parsed.map(b => padBox(b, cfg.bboxPaddingX, cfg.bboxPaddingY));
+
+  // Крок 1: вирівнюємо всі зони сторінки до спільної ширини (медіана лівого і правого краю).
+  // Це виправляє типову Gemini-проблему коли деякі зони охоплюють тільки одну колонку.
+  const aligned = cfg.alignBoxesHorizontally ? alignWidth(parsed) : parsed;
+
+  // Крок 2: padding на випадок зрізання верху/низу справи.
+  const boxes = aligned.map(b => padBox(b, cfg.bboxPaddingX, cfg.bboxPaddingY));
   return { boxes, raw };
 }
 
@@ -48,6 +52,30 @@ function padBox(b: BBox, padX: number, padY: number): BBox {
   const right = clamp01(b.x + b.w + padX);
   const bottom = clamp01(b.y + b.h + padY);
   return { x, y, w: clamp01(right - x), h: clamp01(bottom - y) };
+}
+
+// Вирівнює x і w усіх зон до спільних значень: медіана x та медіана (x+w).
+// Медіана (а не min/max) щоб одна "вузька" зона не псувала всім решту.
+function alignWidth(boxes: BBox[]): BBox[] {
+  if (boxes.length < 2) return boxes;
+  const lefts = boxes.map(b => b.x).sort((a, b) => a - b);
+  const rights = boxes.map(b => b.x + b.w).sort((a, b) => a - b);
+  const medianLeft = lefts[Math.floor(lefts.length / 2)];
+  const medianRight = rights[Math.floor(rights.length / 2)];
+  // Беремо мінімальний з медіан і максимальний з медіан, але обмежуємось
+  // 5%/95% перцентилями щоб не схопити викид.
+  const left = Math.min(...lefts.filter(v => v >= percentile(lefts, 0.1)));
+  const right = Math.max(...rights.filter(v => v <= percentile(rights, 0.9)));
+  // Якщо медіана дуже відрізняється від обчислених меж — використовуємо медіану.
+  const finalLeft = Math.min(medianLeft, left);
+  const finalRight = Math.max(medianRight, right);
+  const w = clamp01(finalRight - finalLeft);
+  return boxes.map(b => ({ x: clamp01(finalLeft), y: b.y, w, h: b.h }));
+}
+
+function percentile(sortedAsc: number[], p: number): number {
+  const idx = Math.max(0, Math.min(sortedAsc.length - 1, Math.floor(p * (sortedAsc.length - 1))));
+  return sortedAsc[idx];
 }
 
 // Підтримує:
