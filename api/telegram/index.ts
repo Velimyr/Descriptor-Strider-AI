@@ -64,47 +64,54 @@ router.get('/cron/tick', async (req, res) => {
   const sessions = await getAllSessions();
   const sessionMap = new Map(sessions.map(s => [s.tgId, s]));
 
+  // Діагностичні лічильники.
+  const stats = {
+    totalUsers: users.length,
+    activeUsers: 0,
+    pausedUsers: 0,
+    skippedSessionOpen: 0,
+    sent: 0,
+    noCases: 0,
+    errors: 0,
+  };
   const results: any[] = [];
+
   for (const u of users) {
-    if (u.status !== 'active') continue;
+    if (u.status !== 'active') {
+      stats.pausedUsers++;
+      continue;
+    }
+    stats.activeUsers++;
 
     const session = sessionMap.get(u.tgId);
     if (session && cfg.skipIfSessionOpen) {
-      // перевірка протермінування
       const ageMs = Date.now() - new Date(session.updatedAt || session.startedAt).getTime();
       const ttlMs = cfg.sessionTtlHours * 3600 * 1000;
       if (ageMs > ttlMs) {
         await deleteSession(u.tgId);
       } else {
+        stats.skippedSessionOpen++;
         results.push({ tgId: u.tgId, skipped: 'session-open' });
         continue;
-      }
-    }
-
-    // інкремент пропусків якщо попередня розсилка лишилася без відповіді
-    if (u.lastDispatchedCaseId) {
-      const stillSession = sessionMap.has(u.tgId);
-      if (!stillSession) {
-        // справа була надіслана, але юзер не закінчив — рахуємо як пропуск
-        // (грубо: якщо lastDispatchedAt > останнього confirm — складно дізнатись точно;
-        // використовуємо просту евристику: остання справа не була відповіджена цим юзером)
       }
     }
 
     try {
       const sent = await dispatchCaseToUser(u.tgId);
       if (sent) {
+        stats.sent++;
         results.push({ tgId: u.tgId, sent: true });
       } else {
-        const misses = u.consecutiveMisses + 0; // sent=false тут означає "немає справ"
-        results.push({ tgId: u.tgId, sent: false });
+        stats.noCases++;
+        results.push({ tgId: u.tgId, sent: false, reason: 'no-cases-or-inactive' });
       }
     } catch (e: any) {
+      stats.errors++;
       results.push({ tgId: u.tgId, error: e.message });
     }
   }
 
-  res.json({ ok: true, dispatched: results });
+  res.json({ ok: true, stats, dispatched: results });
 });
 
 // ----------- Cron cleanup (можна викликати тим самим зовнішнім cron) -----------

@@ -17,54 +17,45 @@ jobs:
     if: github.event.schedule == '0 7,10,13,16 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Validate secrets
-        env:
-          BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
-          SECRET: ${{ secrets.TELEGRAM_CRON_SECRET }}
-        run: |
-          if [ -z "$BASE_URL" ]; then
-            echo "::error::TELEGRAM_BASE_URL secret is empty or missing"
-            exit 1
-          fi
-          if [ -z "$SECRET" ]; then
-            echo "::error::TELEGRAM_CRON_SECRET secret is empty or missing"
-            exit 1
-          fi
-          case "$BASE_URL" in
-            https://*) ;;
-            *) echo "::error::TELEGRAM_BASE_URL must start with https:// (got: ${BASE_URL%%:*}://...)"; exit 1 ;;
-          esac
-          # Friendly preview (host only, secrets hidden)
-          host="${BASE_URL#https://}"
-          host="${host%%/*}"
-          echo "OK: will hit https://$host/api/telegram/cron/tick"
-
       - name: Trigger dispatch
         env:
-          BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
-          SECRET: ${{ secrets.TELEGRAM_CRON_SECRET }}
+          BASE_URL_RAW: ${{ secrets.TELEGRAM_BASE_URL }}
+          SECRET_RAW: ${{ secrets.TELEGRAM_CRON_SECRET }}
         run: |
-          # Прибираємо trailing slash
+          # Чистимо CR/LF/пробіли — частий випадок коли в GitHub Secret потрапив \n при копіюванні.
+          BASE_URL=$(printf '%s' "$BASE_URL_RAW" | tr -d '\r\n\t ' )
+          SECRET=$(printf '%s' "$SECRET_RAW" | tr -d '\r\n\t ' )
+
+          # Діагностика — без секретів, але корисна.
+          echo "BASE_URL_RAW length: ${#BASE_URL_RAW} (after trim: ${#BASE_URL})"
+          echo "SECRET_RAW length:   ${#SECRET_RAW} (after trim: ${#SECRET})"
+
+          if [ -z "$BASE_URL" ]; then echo "::error::TELEGRAM_BASE_URL is empty"; exit 1; fi
+          if [ -z "$SECRET" ];   then echo "::error::TELEGRAM_CRON_SECRET is empty"; exit 1; fi
+          case "$BASE_URL" in
+            https://*) ;;
+            *) echo "::error::TELEGRAM_BASE_URL must start with https://"; exit 1 ;;
+          esac
+
+          host="${BASE_URL#https://}"
+          host="${host%%/*}"
+          echo "POST target: https://$host/api/telegram/cron/tick"
+
           URL="${BASE_URL%/}/api/telegram/cron/tick?secret=$SECRET"
-          # -f: fail on HTTP errors, -sS: silent + show errors, --max-time 60
           curl -fsS --max-time 60 "$URL"
 
   cleanup:
     if: github.event.schedule == '15 * * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Validate secrets
-        env:
-          BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
-          SECRET: ${{ secrets.TELEGRAM_CRON_SECRET }}
-        run: |
-          [ -n "$BASE_URL" ] || { echo "::error::TELEGRAM_BASE_URL missing"; exit 1; }
-          [ -n "$SECRET" ]   || { echo "::error::TELEGRAM_CRON_SECRET missing"; exit 1; }
-
       - name: Trigger cleanup
         env:
-          BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
-          SECRET: ${{ secrets.TELEGRAM_CRON_SECRET }}
+          BASE_URL_RAW: ${{ secrets.TELEGRAM_BASE_URL }}
+          SECRET_RAW: ${{ secrets.TELEGRAM_CRON_SECRET }}
         run: |
+          BASE_URL=$(printf '%s' "$BASE_URL_RAW" | tr -d '\r\n\t ' )
+          SECRET=$(printf '%s' "$SECRET_RAW" | tr -d '\r\n\t ' )
+          [ -n "$BASE_URL" ] || { echo "::error::TELEGRAM_BASE_URL missing"; exit 1; }
+          [ -n "$SECRET" ]   || { echo "::error::TELEGRAM_CRON_SECRET missing"; exit 1; }
           URL="${BASE_URL%/}/api/telegram/cron/cleanup?secret=$SECRET"
           curl -fsS --max-time 60 "$URL"
