@@ -180,5 +180,23 @@ export const telegramBotConfig: TelegramBotConfig = {
     confirmButton: '✅ Підтвердити',
     editButton: '✏ Виправити',
     skipOptionalButton: '➡ Пропустити',
+
+    // Кнопка "Поле не заповнене" в опитуванні
+    fieldEmptyButton: '🚫 Не заповнено',
+    // Маркер, який потрапляє в Sheets коли користувач натиснув "Не заповнено"
+    fieldEmptyValue: '—',
+
+    // Головне меню (reply keyboard внизу екрану)
+    menuNext: '📥 Нова справа',
+    menuStats: '📊 Мої бали',
+    menuProgress: '📈 Прогрес',
+    menuLeaderboard: '🏆 Топ-10',
+    menuPause: '🔕 Зупинити',
+    menuResume: '🔔 Увімкнути',
+    menuHelp: '❓ Допомога',
+
+    // Швидкий фідбек
+    savingNotice: '💾 Зберігаю...',
+    processingNotice: '⏳ Обробляю...',
   },
 };

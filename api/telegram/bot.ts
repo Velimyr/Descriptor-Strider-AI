@@ -20,6 +20,7 @@ import {
 } from './storage.js';
 import {
   answerCallbackQuery,
+  editMessageText,
   sendMessage,
   sendPhotoByFileId,
 } from './tg-api.js';
@@ -89,10 +90,29 @@ function escapeHtml(s: string): string {
 }
 
 function keyboardForQuestion(qIndex: number): any {
-  const buttons: any[] = [];
-  if (qIndex > 0) buttons.push({ text: T.backButton, callback_data: 'back' });
-  buttons.push({ text: T.cancelButton, callback_data: 'cancel' });
-  return { inline_keyboard: [buttons] };
+  const row1: any[] = [];
+  if (qIndex > 0) row1.push({ text: T.backButton, callback_data: 'back' });
+  row1.push({ text: T.fieldEmptyButton, callback_data: 'skip' });
+  row1.push({ text: T.cancelButton, callback_data: 'cancel' });
+  return { inline_keyboard: [row1] };
+}
+
+// Reply-клавіатура головного меню (внизу екрана). Pause/Resume — динамічно.
+function mainMenuKeyboard(user: BotUser | null): any {
+  const pauseRow =
+    user?.status === 'paused'
+      ? [{ text: T.menuResume }]
+      : [{ text: T.menuPause }];
+  return {
+    keyboard: [
+      [{ text: T.menuNext }],
+      [{ text: T.menuStats }, { text: T.menuProgress }],
+      [{ text: T.menuLeaderboard }, { text: T.menuHelp }],
+      pauseRow,
+    ],
+    resize_keyboard: true,
+    is_persistent: true,
+  };
 }
 
 function keyboardForConfirm(): any {
@@ -131,31 +151,46 @@ export async function handleUpdate(update: any): Promise<void> {
   }
 }
 
+// Нормалізуємо текст: команда чи натискання кнопки меню → канонічна команда.
+function normalizeCommand(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed === T.menuNext) return '/next';
+  if (trimmed === T.menuStats) return '/stats';
+  if (trimmed === T.menuProgress) return '/progress';
+  if (trimmed === T.menuLeaderboard) return '/leaderboard';
+  if (trimmed === T.menuHelp) return '/help';
+  if (trimmed === T.menuPause) return '/stop';
+  if (trimmed === T.menuResume) return '/resume';
+  return trimmed;
+}
+
 async function handleMessage(msg: any) {
   const chatId = msg.chat.id;
   const tgId = String(msg.from.id);
-  const text: string = msg.text || '';
+  const rawText: string = msg.text || '';
+  const text = normalizeCommand(rawText);
 
   // Читаємо user і session паралельно — все одно потрібні для більшості шляхів.
   const [user, session] = await Promise.all([getUser(tgId), getSession(tgId)]);
 
   if (text.startsWith('/start')) {
     if (!user) {
+      const newUser: Omit<BotUser, 'rowIndex'> = {
+        tgId,
+        displayName: '',
+        totalPoints: 0,
+        lastDispatchedCaseId: '',
+        lastDispatchedAt: '',
+        consecutiveMisses: 0,
+        status: 'active',
+        createdAt: nowIsoUtc(),
+      };
       await Promise.all([
-        upsertUser({
-          tgId,
-          displayName: '',
-          totalPoints: 0,
-          lastDispatchedCaseId: '',
-          lastDispatchedAt: '',
-          consecutiveMisses: 0,
-          status: 'active',
-          createdAt: nowIsoUtc(),
-        }),
-        sendMessage(chatId, T.welcome),
+        upsertUser(newUser),
+        sendMessage(chatId, T.welcome, { reply_markup: mainMenuKeyboard(newUser as any) }),
       ]);
     } else {
-      await sendMessage(chatId, T.helpText);
+      await sendMessage(chatId, T.helpText, { reply_markup: mainMenuKeyboard(user) });
     }
     return;
   }
@@ -167,49 +202,60 @@ async function handleMessage(msg: any) {
 
   // ім'я ще не задано
   if (!user.displayName) {
-    const name = text.trim().slice(0, 32);
+    const name = rawText.trim().slice(0, 32);
     if (!name || name.startsWith('/')) {
       await sendMessage(chatId, T.namePromptInvalid);
       return;
     }
+    const updatedUser = { ...user, displayName: name };
     await Promise.all([
-      upsertUser({ ...user, displayName: name }, user.rowIndex),
-      sendMessage(chatId, fmt(T.nameSaved, { name })),
+      upsertUser(updatedUser, user.rowIndex),
+      sendMessage(chatId, fmt(T.nameSaved, { name }), {
+        reply_markup: mainMenuKeyboard(updatedUser),
+      }),
     ]);
     return;
   }
 
-  if (text === '/help') return void (await sendMessage(chatId, T.helpText));
+  if (text === '/help') {
+    await sendMessage(chatId, T.helpText, { reply_markup: mainMenuKeyboard(user) });
+    return;
+  }
   if (text === '/stop') {
+    const updated = { ...user, status: 'paused' as const };
     await Promise.all([
-      upsertUser({ ...user, status: 'paused' }, user.rowIndex),
-      sendMessage(chatId, T.paused),
+      upsertUser(updated, user.rowIndex),
+      sendMessage(chatId, T.paused, { reply_markup: mainMenuKeyboard(updated) }),
     ]);
     return;
   }
   if (text === '/resume') {
+    const updated = { ...user, status: 'active' as const, consecutiveMisses: 0 };
     await Promise.all([
-      upsertUser({ ...user, status: 'active', consecutiveMisses: 0 }, user.rowIndex),
-      sendMessage(chatId, T.resumed),
+      upsertUser(updated, user.rowIndex),
+      sendMessage(chatId, T.resumed, { reply_markup: mainMenuKeyboard(updated) }),
     ]);
     return;
   }
   if (text === '/cancel') {
     const had = await deleteSession(tgId);
-    return void (await sendMessage(chatId, had ? T.cancelled : T.nothingToCancel));
+    await sendMessage(chatId, had ? T.cancelled : T.nothingToCancel, {
+      reply_markup: mainMenuKeyboard(user),
+    });
+    return;
   }
   if (text === '/stats') return void (await cmdStats(chatId, tgId, user));
-  if (text === '/progress') return void (await cmdProgress(chatId));
-  if (text === '/leaderboard') return void (await cmdLeaderboard(chatId, tgId));
+  if (text === '/progress') return void (await cmdProgress(chatId, user));
+  if (text === '/leaderboard') return void (await cmdLeaderboard(chatId, tgId, user));
   if (text === '/next') return void (await cmdNext(chatId, tgId, session));
 
   // якщо є відкрита сесія — це відповідь на питання
   if (session) {
-    await processAnswer(chatId, tgId, session, text);
+    await processAnswer(chatId, tgId, session, rawText);
     return;
   }
 
-  await sendMessage(chatId, T.helpText);
+  await sendMessage(chatId, T.helpText, { reply_markup: mainMenuKeyboard(user) });
 }
 
 async function handleCallback(cb: any) {
@@ -234,6 +280,39 @@ async function handleCallback(cb: any) {
   if (data === 'cancel') {
     await deleteSession(tgId);
     await sendMessage(chatId, T.cancelled);
+    return;
+  }
+
+  if (data === 'skip') {
+    // Користувач підтверджує, що поле в оригінальному документі не заповнене.
+    answers[session.currentQ] = T.fieldEmptyValue || '';
+    const nextIndex = session.currentQ + 1;
+    if (nextIndex >= questions.length) {
+      const nextSession: BotSession = {
+        ...session,
+        answersJson: JSON.stringify(answers),
+        currentQ: questions.length - 1,
+        state: 'confirming',
+        updatedAt: nowIsoUtc(),
+      };
+      await Promise.all([
+        setSession(nextSession, session.rowIndex),
+        sendMessage(chatId, buildSummary(questions, answers), {
+          reply_markup: keyboardForConfirm(),
+        }),
+      ]);
+    } else {
+      const nextSession: BotSession = {
+        ...session,
+        answersJson: JSON.stringify(answers),
+        currentQ: nextIndex,
+        updatedAt: nowIsoUtc(),
+      };
+      await Promise.all([
+        setSession(nextSession, session.rowIndex),
+        askQuestion(chatId, questions, nextIndex),
+      ]);
+    }
     return;
   }
 
@@ -270,7 +349,9 @@ async function handleCallback(cb: any) {
   }
 
   if (data === 'confirm') {
-    await confirmAndSubmit(chatId, tgId, session, questions, answers);
+    // Миттєвий фідбек — щоб користувач не натискав знову поки йдуть Sheets/Telegram запити.
+    const ack = await sendMessage(chatId, T.savingNotice);
+    await confirmAndSubmit(chatId, tgId, session, questions, answers, ack?.message_id);
     return;
   }
 }
@@ -278,6 +359,9 @@ async function handleCallback(cb: any) {
 // --------- commands ---------
 
 async function cmdNext(chatId: number, tgId: string, existing: BotSession | null) {
+  // Миттєвий фідбек поки шукаємо/відкриваємо.
+  await sendMessage(chatId, T.processingNotice);
+
   if (existing) {
     const questions = await getQuestions();
     if (existing.state === 'confirming') {
@@ -316,11 +400,12 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
       multiplier: points.multiplier,
       rank: rank || all.length + 1,
       totalUsers: all.length,
-    })
+    }),
+    { reply_markup: mainMenuKeyboard(user) }
   );
 }
 
-async function cmdProgress(chatId: number) {
+async function cmdProgress(chatId: number, user: BotUser) {
   const [cases, totals] = await Promise.all([getAllCases(), getResultsTotals()]);
   const p = progressOfAllCases(cases);
   await sendMessage(
@@ -330,11 +415,12 @@ async function cmdProgress(chatId: number) {
       doneCases: p.doneCases,
       totalCases: p.totalCases,
       totalSubmissions: totals.totalSubmissions,
-    })
+    }),
+    { reply_markup: mainMenuKeyboard(user) }
   );
 }
 
-async function cmdLeaderboard(chatId: number, tgId: string) {
+async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
   const all = leaderboardSorted(await getAllUsers());
   const top = all.slice(0, 10);
   const lines = top.map(
@@ -348,7 +434,7 @@ async function cmdLeaderboard(chatId: number, tgId: string) {
       points: all[myRank].totalPoints,
     });
   }
-  await sendMessage(chatId, body);
+  await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
 }
 
 // --------- dispatch / question flow ---------
@@ -452,11 +538,12 @@ async function confirmAndSubmit(
   tgId: string,
   session: BotSession,
   questions: TableColumn[],
-  answers: string[]
+  answers: string[],
+  ackMessageId?: number
 ) {
-  const user = await getUser(tgId);
+  // user і case — паралельно
+  const [user, cse] = await Promise.all([getUser(tgId), getCase(session.caseId)]);
   if (!user) return;
-  const cse = await getCase(session.caseId);
   if (!cse) {
     await sendMessage(chatId, 'Справу видалено. Скасовано.');
     await deleteSession(tgId);
@@ -498,19 +585,22 @@ async function confirmAndSubmit(
   const pts = computePointsForToday(todayCount);
   const newTotal = Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100;
 
+  const finalText = fmt(T.pointsEarned, {
+    points: pts.pointsEarned,
+    todayCount,
+    total: newTotal,
+  });
   await Promise.all([
     upsertUser(
       { ...user, totalPoints: newTotal, consecutiveMisses: 0 },
       user.rowIndex
     ),
-    sendMessage(
-      chatId,
-      fmt(T.pointsEarned, {
-        points: pts.pointsEarned,
-        todayCount,
-        total: newTotal,
-      })
-    ),
+    // Редагуємо ack-повідомлення на фінальний текст замість надсилання нового.
+    ackMessageId
+      ? editMessageText(chatId, ackMessageId, finalText, {
+          reply_markup: mainMenuKeyboard({ ...user, totalPoints: newTotal }),
+        }).catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))
+      : sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }),
   ]);
 }
 
