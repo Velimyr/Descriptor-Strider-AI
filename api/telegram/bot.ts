@@ -136,21 +136,24 @@ async function handleMessage(msg: any) {
   const tgId = String(msg.from.id);
   const text: string = msg.text || '';
 
-  const user = await getUser(tgId);
+  // Читаємо user і session паралельно — все одно потрібні для більшості шляхів.
+  const [user, session] = await Promise.all([getUser(tgId), getSession(tgId)]);
 
   if (text.startsWith('/start')) {
     if (!user) {
-      await upsertUser({
-        tgId,
-        displayName: '',
-        totalPoints: 0,
-        lastDispatchedCaseId: '',
-        lastDispatchedAt: '',
-        consecutiveMisses: 0,
-        status: 'active',
-        createdAt: nowIsoUtc(),
-      });
-      await sendMessage(chatId, T.welcome);
+      await Promise.all([
+        upsertUser({
+          tgId,
+          displayName: '',
+          totalPoints: 0,
+          lastDispatchedCaseId: '',
+          lastDispatchedAt: '',
+          consecutiveMisses: 0,
+          status: 'active',
+          createdAt: nowIsoUtc(),
+        }),
+        sendMessage(chatId, T.welcome),
+      ]);
     } else {
       await sendMessage(chatId, T.helpText);
     }
@@ -169,31 +172,38 @@ async function handleMessage(msg: any) {
       await sendMessage(chatId, T.namePromptInvalid);
       return;
     }
-    await patchUser(tgId, { displayName: name });
-    await sendMessage(chatId, fmt(T.nameSaved, { name }));
+    await Promise.all([
+      upsertUser({ ...user, displayName: name }, user.rowIndex),
+      sendMessage(chatId, fmt(T.nameSaved, { name })),
+    ]);
     return;
   }
 
   if (text === '/help') return void (await sendMessage(chatId, T.helpText));
   if (text === '/stop') {
-    await patchUser(tgId, { status: 'paused' });
-    return void (await sendMessage(chatId, T.paused));
+    await Promise.all([
+      upsertUser({ ...user, status: 'paused' }, user.rowIndex),
+      sendMessage(chatId, T.paused),
+    ]);
+    return;
   }
   if (text === '/resume') {
-    await patchUser(tgId, { status: 'active', consecutiveMisses: 0 });
-    return void (await sendMessage(chatId, T.resumed));
+    await Promise.all([
+      upsertUser({ ...user, status: 'active', consecutiveMisses: 0 }, user.rowIndex),
+      sendMessage(chatId, T.resumed),
+    ]);
+    return;
   }
   if (text === '/cancel') {
     const had = await deleteSession(tgId);
     return void (await sendMessage(chatId, had ? T.cancelled : T.nothingToCancel));
   }
-  if (text === '/stats') return void (await cmdStats(chatId, tgId));
+  if (text === '/stats') return void (await cmdStats(chatId, tgId, user));
   if (text === '/progress') return void (await cmdProgress(chatId));
   if (text === '/leaderboard') return void (await cmdLeaderboard(chatId, tgId));
-  if (text === '/next') return void (await cmdNext(chatId, tgId));
+  if (text === '/next') return void (await cmdNext(chatId, tgId, session));
 
   // якщо є відкрита сесія — це відповідь на питання
-  const session = await getSession(tgId);
   if (session) {
     await processAnswer(chatId, tgId, session, text);
     return;
@@ -207,15 +217,18 @@ async function handleCallback(cb: any) {
   const tgId = String(cb.from.id);
   const data: string = cb.data || '';
 
-  await answerCallbackQuery(cb.id);
+  // ack + читання сесії і питань — паралельно
+  const [, session, questions] = await Promise.all([
+    answerCallbackQuery(cb.id),
+    getSession(tgId),
+    getQuestions(),
+  ]);
 
-  const session = await getSession(tgId);
   if (!session) {
     await sendMessage(chatId, T.sessionExpired);
     return;
   }
 
-  const questions = await getQuestions();
   const answers: string[] = JSON.parse(session.answersJson || '[]');
 
   if (data === 'cancel') {
@@ -232,8 +245,10 @@ async function handleCallback(cb: any) {
       state: 'asking',
       updatedAt: nowIsoUtc(),
     };
-    await setSession(next);
-    await askQuestion(chatId, questions, prev);
+    await Promise.all([
+      setSession(next, session.rowIndex),
+      askQuestion(chatId, questions, prev),
+    ]);
     return;
   }
 
@@ -247,8 +262,10 @@ async function handleCallback(cb: any) {
   if (data.startsWith('edit:')) {
     const idx = parseInt(data.split(':')[1], 10) || 0;
     const next: BotSession = { ...session, currentQ: idx, state: 'asking', updatedAt: nowIsoUtc() };
-    await setSession(next);
-    await askQuestion(chatId, questions, idx);
+    await Promise.all([
+      setSession(next, session.rowIndex),
+      askQuestion(chatId, questions, idx),
+    ]);
     return;
   }
 
@@ -260,32 +277,34 @@ async function handleCallback(cb: any) {
 
 // --------- commands ---------
 
-async function cmdNext(chatId: number, tgId: string) {
-  const existing = await getSession(tgId);
+async function cmdNext(chatId: number, tgId: string, existing: BotSession | null) {
   if (existing) {
-    await sendMessage(chatId, T.sessionAlreadyOpen);
     const questions = await getQuestions();
     if (existing.state === 'confirming') {
       const answers: string[] = JSON.parse(existing.answersJson || '[]');
-      await sendMessage(chatId, buildSummary(questions, answers), {
-        reply_markup: keyboardForConfirm(),
-      });
+      await Promise.all([
+        sendMessage(chatId, T.sessionAlreadyOpen),
+        sendMessage(chatId, buildSummary(questions, answers), {
+          reply_markup: keyboardForConfirm(),
+        }),
+      ]);
     } else {
-      await askQuestion(chatId, questions, existing.currentQ);
+      await Promise.all([
+        sendMessage(chatId, T.sessionAlreadyOpen),
+        askQuestion(chatId, questions, existing.currentQ),
+      ]);
     }
     return;
   }
   await dispatchCaseToUser(tgId);
 }
 
-async function cmdStats(chatId: number, tgId: string) {
-  const user = await getUser(tgId);
-  if (!user) return;
+async function cmdStats(chatId: number, tgId: string, user: BotUser) {
   const today = kyivDateString();
-  const todayCount = await getDailyCount(tgId, today);
+  const [todayCount, allUsers] = await Promise.all([getDailyCount(tgId, today), getAllUsers()]);
   const points = computePointsForToday(Math.max(todayCount, 1));
   const todayPoints = todayCount * points.multiplier * telegramBotConfig.points.base;
-  const all = leaderboardSorted(await getAllUsers());
+  const all = leaderboardSorted(allUsers);
   const rank = all.findIndex(u => u.tgId === tgId) + 1;
   await sendMessage(
     chatId,
@@ -302,8 +321,7 @@ async function cmdStats(chatId: number, tgId: string) {
 }
 
 async function cmdProgress(chatId: number) {
-  const cases = await getAllCases();
-  const totals = await getResultsTotals();
+  const [cases, totals] = await Promise.all([getAllCases(), getResultsTotals()]);
   const p = progressOfAllCases(cases);
   await sendMessage(
     chatId,
@@ -336,35 +354,40 @@ async function cmdLeaderboard(chatId: number, tgId: string) {
 // --------- dispatch / question flow ---------
 
 export async function dispatchCaseToUser(tgId: string): Promise<boolean> {
-  const user = await getUser(tgId);
+  // Паралельні незалежні читання.
+  const [user, next, questions] = await Promise.all([
+    getUser(tgId),
+    selectNextCaseForUser(tgId),
+    getQuestions(),
+  ]);
   if (!user || user.status !== 'active') return false;
-  const next = await selectNextCaseForUser(tgId);
   if (!next) {
     await sendMessage(tgId, T.noCasesLeft);
     return false;
   }
-
-  await sendPhotoByFileId(tgId, next.tgFileId, `Справа №${next.caseId.slice(0, 8)}`);
-
-  const session: Omit<BotSession, 'rowIndex'> = {
-    tgId,
-    caseId: next.caseId,
-    answersJson: '[]',
-    currentQ: 0,
-    startedAt: nowIsoUtc(),
-    updatedAt: nowIsoUtc(),
-    state: 'asking',
-  };
-  await setSession(session);
-  await patchUser(tgId, { lastDispatchedCaseId: next.caseId, lastDispatchedAt: nowIsoUtc() });
-
-  const questions = await getQuestions();
   if (questions.length === 0) {
     await sendMessage(tgId, 'Адмін ще не налаштував питання. Спробуйте пізніше.');
-    await deleteSession(tgId);
     return false;
   }
-  await askQuestion(tgId, questions, 0);
+
+  // Усі побічні дії — паралельно.
+  await Promise.all([
+    sendPhotoByFileId(tgId, next.tgFileId, `Справа №${next.caseId.slice(0, 8)}`),
+    setSession({
+      tgId,
+      caseId: next.caseId,
+      answersJson: '[]',
+      currentQ: 0,
+      startedAt: nowIsoUtc(),
+      updatedAt: nowIsoUtc(),
+      state: 'asking',
+    }),
+    upsertUser(
+      { ...user, lastDispatchedCaseId: next.caseId, lastDispatchedAt: nowIsoUtc() },
+      user.rowIndex
+    ),
+    askQuestion(tgId, questions, 0),
+  ]);
   return true;
 }
 
@@ -404,10 +427,12 @@ async function processAnswer(chatId: number, tgId: string, session: BotSession, 
       state: 'confirming',
       updatedAt: nowIsoUtc(),
     };
-    await setSession(next);
-    await sendMessage(chatId, buildSummary(questions, answers), {
-      reply_markup: keyboardForConfirm(),
-    });
+    await Promise.all([
+      setSession(next, session.rowIndex),
+      sendMessage(chatId, buildSummary(questions, answers), {
+        reply_markup: keyboardForConfirm(),
+      }),
+    ]);
   } else {
     const next: BotSession = {
       ...session,
@@ -415,8 +440,10 @@ async function processAnswer(chatId: number, tgId: string, session: BotSession, 
       currentQ: nextIndex,
       updatedAt: nowIsoUtc(),
     };
-    await setSession(next);
-    await askQuestion(chatId, questions, nextIndex);
+    await Promise.all([
+      setSession(next, session.rowIndex),
+      askQuestion(chatId, questions, nextIndex),
+    ]);
   }
 }
 
@@ -459,27 +486,32 @@ async function confirmAndSubmit(
     ...(sourceLinkEnabled ? [sourceLink] : []),
   ];
 
-  await appendSubmission(headerRow, dataRow);
-  await deleteSession(tgId);
-  await recomputeCaseSubmissionCount(cse.caseId);
-
-  // бали
+  // Паралельно: пишемо submission, видаляємо сесію, перераховуємо лічильник, інкрементуємо денний рахунок.
   const today = kyivDateString();
-  const todayCount = await incDailyCount(tgId, today);
-  const pts = computePointsForToday(todayCount);
-  await patchUser(tgId, {
-    totalPoints: Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100,
-    consecutiveMisses: 0,
-  });
+  const [, , , todayCount] = await Promise.all([
+    appendSubmission(headerRow, dataRow),
+    deleteSession(tgId),
+    recomputeCaseSubmissionCount(cse.caseId),
+    incDailyCount(tgId, today),
+  ]);
 
-  await sendMessage(
-    chatId,
-    fmt(T.pointsEarned, {
-      points: pts.pointsEarned,
-      todayCount,
-      total: Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100,
-    })
-  );
+  const pts = computePointsForToday(todayCount);
+  const newTotal = Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100;
+
+  await Promise.all([
+    upsertUser(
+      { ...user, totalPoints: newTotal, consecutiveMisses: 0 },
+      user.rowIndex
+    ),
+    sendMessage(
+      chatId,
+      fmt(T.pointsEarned, {
+        points: pts.pointsEarned,
+        todayCount,
+        total: newTotal,
+      })
+    ),
+  ]);
 }
 
 function buildSourceLink(cse: any): string {

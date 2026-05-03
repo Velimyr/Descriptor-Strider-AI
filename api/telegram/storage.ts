@@ -144,15 +144,33 @@ export async function ensureAllSheets() {
 
 // ---------- META ----------
 
+// Кеш у межах одного інстансу serverless. TTL 60с — questions рідко змінюються.
+const metaCache = new Map<string, { value: string; expires: number }>();
+const META_TTL_MS = 60 * 1000;
+
+export function invalidateMetaCache(key?: string) {
+  if (key) metaCache.delete(key);
+  else metaCache.clear();
+}
+
 export async function getMeta(key: string): Promise<string | null> {
+  const cached = metaCache.get(key);
+  if (cached && cached.expires > Date.now()) return cached.value;
+
   const rows = await readSheet(S.metaSheetName);
   for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === key) return rows[i][1] || '';
+    if (rows[i][0] === key) {
+      const value = rows[i][1] || '';
+      metaCache.set(key, { value, expires: Date.now() + META_TTL_MS });
+      return value;
+    }
   }
+  metaCache.set(key, { value: '', expires: Date.now() + META_TTL_MS });
   return null;
 }
 
 export async function setMeta(key: string, value: string) {
+  metaCache.set(key, { value, expires: Date.now() + META_TTL_MS });
   const rows = await readSheet(S.metaSheetName);
   for (let i = 1; i < rows.length; i++) {
     if (rows[i][0] === key) {
@@ -191,9 +209,8 @@ export async function getUser(tgId: string): Promise<BotUser | null> {
   return all.find(u => u.tgId === tgId) || null;
 }
 
-export async function upsertUser(u: Omit<BotUser, 'rowIndex'>): Promise<void> {
-  const existing = await getUser(u.tgId);
-  const row = [
+function userToRow(u: Omit<BotUser, 'rowIndex'>) {
+  return [
     u.tgId,
     u.displayName,
     u.totalPoints,
@@ -203,18 +220,33 @@ export async function upsertUser(u: Omit<BotUser, 'rowIndex'>): Promise<void> {
     u.status,
     u.createdAt,
   ];
+}
+
+// Якщо передати existingRowIndex — оновлюємо без додаткового читання.
+export async function upsertUser(
+  u: Omit<BotUser, 'rowIndex'>,
+  existingRowIndex?: number
+): Promise<void> {
+  if (existingRowIndex !== undefined && existingRowIndex >= 0) {
+    const sheetRow = existingRowIndex + 2;
+    await updateRange(S.usersSheetName, `A${sheetRow}:H${sheetRow}`, [userToRow(u)]);
+    return;
+  }
+  // fallback — викликається при створенні нового юзера / без знання rowIndex
+  const existing = await getUser(u.tgId);
   if (existing) {
-    const sheetRow = existing.rowIndex + 2; // +1 за заголовок, +1 за 1-based
-    await updateRange(S.usersSheetName, `A${sheetRow}:H${sheetRow}`, [row]);
+    const sheetRow = existing.rowIndex + 2;
+    await updateRange(S.usersSheetName, `A${sheetRow}:H${sheetRow}`, [userToRow(u)]);
   } else {
-    await appendRows(S.usersSheetName, [row]);
+    await appendRows(S.usersSheetName, [userToRow(u)]);
   }
 }
 
 export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowIndex' | 'tgId'>>) {
   const u = await getUser(tgId);
   if (!u) return;
-  await upsertUser({ ...u, ...patch });
+  // Передаємо rowIndex напряму — уникаємо повторного читання у upsertUser.
+  await upsertUser({ ...u, ...patch }, u.rowIndex);
 }
 
 // ---------- CASES ----------
@@ -307,9 +339,17 @@ export async function getSession(tgId: string): Promise<BotSession | null> {
   return null;
 }
 
-export async function setSession(s: Omit<BotSession, 'rowIndex'>) {
-  const existing = await getSession(s.tgId);
+export async function setSession(
+  s: Omit<BotSession, 'rowIndex'>,
+  existingRowIndex?: number
+) {
   const row = [s.tgId, s.caseId, s.answersJson, s.currentQ, s.startedAt, s.updatedAt, s.state];
+  if (existingRowIndex !== undefined && existingRowIndex >= 0) {
+    const sheetRow = existingRowIndex + 2;
+    await updateRange(S.sessionsSheetName, `A${sheetRow}:G${sheetRow}`, [row]);
+    return;
+  }
+  const existing = await getSession(s.tgId);
   if (existing) {
     const sheetRow = existing.rowIndex + 2;
     await updateRange(S.sessionsSheetName, `A${sheetRow}:G${sheetRow}`, [row]);
