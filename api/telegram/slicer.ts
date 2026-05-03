@@ -35,8 +35,19 @@ export async function detectCaseBoxes(
 
   const res = await axios.post(url, body, { timeout: 60000 });
   const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const boxes = parseAnyBboxFormat(raw);
+  const parsed = parseAnyBboxFormat(raw);
+  // Розширюємо кожну зону на padding із конфіга — Gemini часто обрізає справу
+  // по верхньому/нижньому краю.
+  const boxes = parsed.map(b => padBox(b, cfg.bboxPaddingX, cfg.bboxPaddingY));
   return { boxes, raw };
+}
+
+function padBox(b: BBox, padX: number, padY: number): BBox {
+  const x = clamp01(b.x - padX);
+  const y = clamp01(b.y - padY);
+  const right = clamp01(b.x + b.w + padX);
+  const bottom = clamp01(b.y + b.h + padY);
+  return { x, y, w: clamp01(right - x), h: clamp01(bottom - y) };
 }
 
 // Підтримує:
