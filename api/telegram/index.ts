@@ -33,19 +33,20 @@ async function ensureReady() {
 }
 
 // ----------- Webhook -----------
+// На Vercel serverless функція завершується після відправки відповіді,
+// тож робимо handleUpdate ДО res.sendStatus, інакше обробка може не встигнути.
+// У Telegram є 60-секундний таймаут — для нас цього більш ніж достатньо.
 router.post('/webhook', async (req, res) => {
   const expected = process.env[telegramBotConfig.tg.webhookSecretEnv];
   const got = req.header('x-telegram-bot-api-secret-token');
   if (expected && got !== expected) {
     return res.status(403).send('forbidden');
   }
-  res.sendStatus(200); // ack одразу
   try {
     await ensureReady();
     await handleUpdate(req.body);
   } catch (e: any) {
     console.error('webhook handler error', e?.stack || e);
-    // Спробуємо повідомити користувача в чат, якщо є chat_id.
     const chatId = req.body?.message?.chat?.id || req.body?.callback_query?.message?.chat?.id;
     if (chatId) {
       try {
@@ -54,6 +55,8 @@ router.post('/webhook', async (req, res) => {
       } catch {}
     }
   }
+  // 200 повертаємо завжди — інакше Telegram буде повторювати апдейт.
+  res.sendStatus(200);
 });
 
 // ----------- Cron tick (зовнішній) -----------
