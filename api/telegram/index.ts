@@ -343,6 +343,28 @@ router.post('/admin/detect-bboxes', async (req, res) => {
   }
 });
 
+router.get('/admin/results', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const limit = Math.min(parseInt((req.query.limit as string) || '500', 10) || 500, 5000);
+  try {
+    const { getRecentSubmissions, getMeta } = await import('./storage.js');
+    const [subs, qRaw] = await Promise.all([
+      getRecentSubmissions(limit),
+      getMeta('questions'),
+    ]);
+    let questions: any[] = [];
+    try {
+      questions = qRaw ? JSON.parse(qRaw) : [];
+      if (!Array.isArray(questions)) questions = [];
+    } catch {
+      questions = [];
+    }
+    res.json({ ok: true, questions, submissions: subs });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/admin/overview', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const [users, cases] = await Promise.all([getAllUsers(), getAllCases()]);

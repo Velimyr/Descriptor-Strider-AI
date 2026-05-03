@@ -11,7 +11,7 @@ interface Props {
   initialQuestions?: TableColumn[]; // зазвичай tableStructure активного проєкту
 }
 
-type TabKey = 'setup' | 'questions' | 'cases' | 'overview';
+type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'overview';
 
 export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => {
   const [tab, setTab] = useState<TabKey>('setup');
@@ -47,6 +47,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['setup', 'Налаштування'],
           ['questions', 'Питання'],
           ['cases', 'Підготовка справ'],
+          ['results', 'Результати'],
           ['overview', 'Огляд'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
@@ -65,6 +66,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         {tab === 'setup' && <SetupView />}
         {tab === 'questions' && <QuestionsView initialQuestions={initialQuestions} />}
         {tab === 'cases' && <CasesView geminiKey={geminiKey} />}
+        {tab === 'results' && <ResultsView />}
         {tab === 'overview' && <OverviewView />}
       </div>
     </div>
@@ -712,6 +714,170 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       )}
 
       {msg && <div className="text-sm">{msg}</div>}
+    </div>
+  );
+};
+
+// ==================== RESULTS ====================
+
+const ResultsView: React.FC = () => {
+  const [data, setData] = useState<{ questions: any[]; submissions: any[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [limit, setLimit] = useState(500);
+  const [filter, setFilter] = useState('');
+
+  const refresh = async () => {
+    setBusy(true);
+    setMsg('');
+    try {
+      const r = await tgApi.results(limit);
+      setData({ questions: r.questions || [], submissions: r.submissions || [] });
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const buildHeaders = (questions: any[]) => [
+    'case_id',
+    'tg_id',
+    'display_name',
+    'submitted_at',
+    ...questions.map((q: any, i: number) => q.label || `Q${i + 1}`),
+    'source_link',
+  ];
+
+  const buildRow = (s: any, questions: any[]) => {
+    const answers = Array.isArray(s.answers) ? s.answers : [];
+    return [
+      s.case_id || '',
+      s.tg_id || '',
+      s.display_name || '',
+      s.submitted_at || '',
+      ...questions.map((_: any, i: number) => String(answers[i] ?? '')),
+      s.source_link || '',
+    ];
+  };
+
+  const filtered = data
+    ? data.submissions.filter(s => {
+        if (!filter.trim()) return true;
+        const q = filter.toLowerCase();
+        const row = buildRow(s, data.questions);
+        return row.some(c => String(c).toLowerCase().includes(q));
+      })
+    : [];
+
+  const exportCsv = () => {
+    if (!data) return;
+    const headers = buildHeaders(data.questions);
+    const rows = filtered.map(s => buildRow(s, data.questions));
+    const all = [headers, ...rows];
+    const escape = (v: any) => {
+      const s = String(v ?? '');
+      // Подвоюємо лапки + загортаємо в лапки якщо є кома/перевід рядка/лапка.
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const csv = all.map(r => r.map(escape).join(',')).join('\r\n');
+    // BOM щоб Excel правильно відкривав UTF-8
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    a.href = url;
+    a.download = `descriptor-results-${ts}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2 items-center">
+        <button
+          onClick={refresh}
+          disabled={busy}
+          className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1"
+        >
+          <RefreshCw size={14} /> {busy ? 'Завантаження…' : 'Оновити'}
+        </button>
+        <label className="text-sm text-slate-600">Ліміт:</label>
+        <select
+          value={limit}
+          onChange={e => setLimit(parseInt(e.target.value, 10))}
+          className="border rounded px-2 py-1 text-sm"
+        >
+          <option value={100}>100</option>
+          <option value={500}>500</option>
+          <option value={2000}>2000</option>
+          <option value={5000}>5000</option>
+        </select>
+        <input
+          value={filter}
+          onChange={e => setFilter(e.target.value)}
+          placeholder="Фільтр (текст у будь-якій колонці)"
+          className="border rounded px-2 py-1 text-sm flex-1 min-w-[200px]"
+        />
+        <button
+          onClick={exportCsv}
+          disabled={!data || filtered.length === 0}
+          className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm disabled:opacity-50"
+        >
+          Експорт CSV ({filtered.length})
+        </button>
+      </div>
+
+      {msg && <div className="text-sm">{msg}</div>}
+
+      {data && (
+        <div className="border rounded overflow-auto max-h-[70vh]">
+          <table className="w-full text-xs border-collapse">
+            <thead className="bg-slate-100 sticky top-0">
+              <tr>
+                {buildHeaders(data.questions).map((h, i) => (
+                  <th key={i} className="text-left p-2 border-b font-medium whitespace-nowrap">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={buildHeaders(data.questions).length} className="p-4 text-center text-slate-500">
+                    Немає записів
+                  </td>
+                </tr>
+              )}
+              {filtered.map((s, idx) => {
+                const row = buildRow(s, data.questions);
+                return (
+                  <tr key={s.id ?? idx} className="border-b hover:bg-slate-50">
+                    {row.map((c, i) => (
+                      <td key={i} className="p-2 align-top max-w-xs truncate" title={String(c)}>
+                        {i === row.length - 1 && c ? (
+                          <a href={String(c)} target="_blank" rel="noreferrer" className="text-indigo-600 underline">
+                            відкрити
+                          </a>
+                        ) : (
+                          String(c)
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 };

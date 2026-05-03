@@ -64,4 +64,5 @@ export const tgApi = {
       body: JSON.stringify({ imageBase64, mime, geminiKey }),
     }),
   overview: () => call('/admin/overview'),
+  results: (limit = 500) => call(`/admin/results?limit=${limit}`),
 };
