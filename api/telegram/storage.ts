@@ -4,6 +4,8 @@ import {
   colLetter,
   deleteRowByMatch,
   ensureSheet,
+  getSheetsClient,
+  getSpreadsheetId,
   readSheet,
   updateRange,
 } from './sheets-client.js';
@@ -82,27 +84,61 @@ const DAILY_HEADER = ['tg_id', 'date_kyiv', 'count'];
 const DISPATCH_HEADER = ['tg_id', 'case_id', 'sent_at'];
 const META_HEADER = ['key', 'value'];
 
+// Один get + (опційно) один batchUpdate addSheet + один batchGet + (опційно) один batchUpdate values.
+// Замість 14+ послідовних викликів — максимум 4.
 export async function ensureAllSheets() {
-  await ensureSheet(S.metaSheetName);
-  await ensureSheet(S.usersSheetName);
-  await ensureSheet(S.casesSheetName);
-  await ensureSheet(S.sessionsSheetName);
-  await ensureSheet(S.dailyScoresSheetName);
-  await ensureSheet(S.dispatchLogSheetName);
-  await ensureSheet(S.resultsSheetName);
+  const sheets = await getSheetsClient();
+  const spreadsheetId = getSpreadsheetId();
 
-  await ensureHeader(S.metaSheetName, META_HEADER);
-  await ensureHeader(S.usersSheetName, USERS_HEADER);
-  await ensureHeader(S.casesSheetName, CASES_HEADER);
-  await ensureHeader(S.sessionsSheetName, SESSIONS_HEADER);
-  await ensureHeader(S.dailyScoresSheetName, DAILY_HEADER);
-  await ensureHeader(S.dispatchLogSheetName, DISPATCH_HEADER);
-}
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const existing = new Set(
+    (meta.data.sheets || []).map(s => s.properties?.title).filter(Boolean) as string[]
+  );
 
-async function ensureHeader(sheetName: string, header: string[]) {
-  const rows = await readSheet(sheetName);
-  if (rows.length === 0) {
-    await appendRows(sheetName, [header]);
+  const allSheets = [
+    S.metaSheetName,
+    S.usersSheetName,
+    S.casesSheetName,
+    S.sessionsSheetName,
+    S.dailyScoresSheetName,
+    S.dispatchLogSheetName,
+    S.resultsSheetName,
+  ];
+  const missing = allSheets.filter(name => !existing.has(name));
+  if (missing.length > 0) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: missing.map(title => ({ addSheet: { properties: { title } } })),
+      },
+    });
+  }
+
+  const headerMap: Record<string, string[]> = {
+    [S.metaSheetName]: META_HEADER,
+    [S.usersSheetName]: USERS_HEADER,
+    [S.casesSheetName]: CASES_HEADER,
+    [S.sessionsSheetName]: SESSIONS_HEADER,
+    [S.dailyScoresSheetName]: DAILY_HEADER,
+    [S.dispatchLogSheetName]: DISPATCH_HEADER,
+  };
+  const headerSheets = Object.keys(headerMap);
+  const ranges = headerSheets.map(n => `${n}!1:1`);
+  const batch = await sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges });
+
+  const updates: { range: string; values: string[][] }[] = [];
+  (batch.data.valueRanges || []).forEach((vr, i) => {
+    const sheetName = headerSheets[i];
+    const header = headerMap[sheetName];
+    const isEmpty = !vr.values || vr.values.length === 0 || (vr.values[0]?.length ?? 0) === 0;
+    if (isEmpty) updates.push({ range: `${sheetName}!A1`, values: [header] });
+  });
+
+  if (updates.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: { valueInputOption: 'USER_ENTERED', data: updates },
+    });
   }
 }
 
