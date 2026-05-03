@@ -40,6 +40,7 @@ import { GeminiService } from './services/geminiService';
 import { pdfStorage } from './services/pdfStorage';
 import { MusicPanel } from './components/MusicPanel';
 import { config } from './config';
+import { TelegramAdminTab } from './components/TelegramAdmin/TelegramAdminTab';
 
 // PDF.js worker setup
 import * as pdfjs from 'pdfjs-dist';
@@ -214,6 +215,20 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [activeStatusTab, setActiveStatusTab] = useState<number>(0);
+  const [showTelegramAdmin, setShowTelegramAdmin] = useState(
+    () => typeof window !== 'undefined' && window.location.hash === '#telegram-admin'
+  );
+  useEffect(() => {
+    const onHash = () => setShowTelegramAdmin(window.location.hash === '#telegram-admin');
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const closeTelegramAdmin = () => {
+    if (typeof window !== 'undefined' && window.location.hash === '#telegram-admin') {
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+    setShowTelegramAdmin(false);
+  };
 
   useEffect(() => {
     console.log(`App mounted. Current geminiModel: ${geminiModel}`);
@@ -1190,6 +1205,15 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-[#F8F9FA] text-slate-900 font-sans">
+      {showTelegramAdmin && (
+        <TelegramAdminTab
+          onClose={closeTelegramAdmin}
+          geminiKey={geminiKey}
+          initialQuestions={
+            projects.find(p => p.id === activeProjectId)?.tableStructure
+          }
+        />
+      )}
       {/* Sidebar */}
       <aside className="w-72 bg-white border-r border-slate-200 flex flex-col">
         <div className="p-6 border-b border-slate-100">

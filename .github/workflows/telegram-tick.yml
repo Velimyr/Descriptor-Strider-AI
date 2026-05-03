@@ -1,0 +1,36 @@
+name: Telegram bot tick
+
+# Розклад тригерить розсилку справ. Розклад UTC: 10/13/16/19/22 за Києвом = 7/10/13/16/19 UTC.
+# Якщо у вас зимовий час (Київ UTC+2) — підставте 8/11/14/17/20 UTC, або відкоригуйте під свій timezone.
+# Cron у GitHub Actions працює тільки в UTC.
+
+on:
+  schedule:
+    # літній час (UTC+3): 10/13/16/19 Kyiv = 7/10/13/16 UTC
+    - cron: '0 7,10,13,16 * * *'
+    # cleanup протермінованих сесій — раз на годину
+    - cron: '15 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  dispatch:
+    if: github.event.schedule == '0 7,10,13,16 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger dispatch
+        env:
+          BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
+          SECRET: ${{ secrets.TELEGRAM_CRON_SECRET }}
+        run: |
+          curl -fsS -m 60 "$BASE_URL/api/telegram/cron/tick?secret=$SECRET" || echo "tick failed (non-fatal)"
+
+  cleanup:
+    if: github.event.schedule == '15 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger cleanup
+        env:
+          BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
+          SECRET: ${{ secrets.TELEGRAM_CRON_SECRET }}
+        run: |
+          curl -fsS -m 60 "$BASE_URL/api/telegram/cron/cleanup?secret=$SECRET" || echo "cleanup failed (non-fatal)"
