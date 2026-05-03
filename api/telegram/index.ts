@@ -25,6 +25,13 @@ const router = express.Router();
 
 // raw json parser is set by parent app
 
+// Лінива ініціалізація: при першому виклику бекенду створюємо аркуші.
+let sheetsReady: Promise<void> | null = null;
+async function ensureReady() {
+  if (!sheetsReady) sheetsReady = ensureAllSheets();
+  await sheetsReady;
+}
+
 // ----------- Webhook -----------
 router.post('/webhook', async (req, res) => {
   const expected = process.env[telegramBotConfig.tg.webhookSecretEnv];
@@ -34,9 +41,18 @@ router.post('/webhook', async (req, res) => {
   }
   res.sendStatus(200); // ack одразу
   try {
+    await ensureReady();
     await handleUpdate(req.body);
-  } catch (e) {
-    console.error('webhook handler error', e);
+  } catch (e: any) {
+    console.error('webhook handler error', e?.stack || e);
+    // Спробуємо повідомити користувача в чат, якщо є chat_id.
+    const chatId = req.body?.message?.chat?.id || req.body?.callback_query?.message?.chat?.id;
+    if (chatId) {
+      try {
+        const { sendMessage } = await import('./tg-api.js');
+        await sendMessage(chatId, '⚠ Бот тимчасово недоступний. Адміна вже сповіщено.');
+      } catch {}
+    }
   }
 });
 
@@ -161,9 +177,34 @@ router.post('/admin/login', (req, res) => {
   res.json({ ok: true, token: cronSecret });
 });
 
-router.get('/admin/health', (req, res) => {
+// Тестовий ендпоінт: пише в чат "ping" — щоб переконатися що бот має токен і канал ОК.
+router.post('/admin/ping-chat', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { chatId, text } = req.body || {};
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  try {
+    const { sendMessage } = await import('./tg-api.js');
+    await sendMessage(chatId, text || 'ping від адмінки');
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/admin/health', async (req, res) => {
+  let webhook: any = null;
+  let webhookErr: string | null = null;
+  try {
+    if (process.env[telegramBotConfig.tg.botTokenEnv]) {
+      webhook = await getWebhookInfo();
+    }
+  } catch (e: any) {
+    webhookErr = e.message;
+  }
   res.json({
     ok: true,
+    webhook,
+    webhookErr,
     env: {
       botToken: !!process.env[telegramBotConfig.tg.botTokenEnv],
       channelId: !!process.env[telegramBotConfig.tg.channelIdEnv],

@@ -205,6 +205,27 @@ const SetupView: React.FC = () => {
         </section>
       )}
 
+      {/* Webhook стан */}
+      {health?.webhook && (
+        <section className="border rounded p-3 bg-slate-50 space-y-1 text-sm">
+          <div className="font-medium">Webhook Telegram</div>
+          <div>
+            URL:{' '}
+            {health.webhook.url ? (
+              <code className="text-xs break-all">{health.webhook.url}</code>
+            ) : (
+              <span className="text-red-600">не встановлено — натисніть «Ініціалізувати»</span>
+            )}
+          </div>
+          {health.webhook.pending_update_count > 0 && (
+            <div className="text-amber-600">⚠ Накопичилось апдейтів: {health.webhook.pending_update_count}</div>
+          )}
+          {health.webhook.last_error_message && (
+            <div className="text-red-600">Остання помилка: {health.webhook.last_error_message}</div>
+          )}
+        </section>
+      )}
+
       {/* Одна кнопка ініціалізації */}
       {allEnvOk && (
         <section className="space-y-2">
@@ -343,20 +364,30 @@ const QuestionsView: React.FC<{ initialQuestions?: TableColumn[] }> = ({ initial
 
 // ==================== CASES PREPARER ====================
 
+const RENDER_SCALE = 3.0; // високий dpi для якості кропів
+
 const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [pdf, setPdf] = useState<any>(null);
   const [pdfName, setPdfName] = useState('');
   const [page, setPage] = useState(1);
-  const [pageImage, setPageImage] = useState<string>(''); // dataURL для прев'ю
+  const [pageImage, setPageImage] = useState<string>(''); // dataURL у високому dpi
   const [boxes, setBoxes] = useState<{ x: number; y: number; w: number; h: number }[]>([]);
   const [mode, setMode] = useState<'manual' | 'auto'>('manual');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  const [uploadDone, setUploadDone] = useState<{ count: number } | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef<{ startX: number; startY: number } | null>(null);
 
   const loadPdf = async (file: File) => {
+    if (!file || file.type !== 'application/pdf') {
+      setMsg('❌ Це не PDF-файл.');
+      return;
+    }
+    setMsg('');
+    setUploadDone(null);
     const buf = await file.arrayBuffer();
     const doc = await pdfjs.getDocument({ data: buf }).promise;
     setPdf(doc);
@@ -367,13 +398,14 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
 
   const renderPage = async (doc: any, pageNum: number) => {
     const p = await doc.getPage(pageNum);
-    const viewport = p.getViewport({ scale: 1.5 });
+    const viewport = p.getViewport({ scale: RENDER_SCALE });
     const canvas = document.createElement('canvas');
     canvas.width = viewport.width;
     canvas.height = viewport.height;
     const ctx = canvas.getContext('2d')!;
     await p.render({ canvasContext: ctx, viewport, canvas }).promise;
-    setPageImage(canvas.toDataURL('image/jpeg', 0.85));
+    // 0.92 — баланс якість/розмір
+    setPageImage(canvas.toDataURL('image/jpeg', 0.92));
     setBoxes([]);
   };
 
@@ -473,9 +505,12 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const uploadAll = async () => {
     if (boxes.length === 0) return;
     setBusy(true);
-    setUploadProgress({ done: 0, total: boxes.length });
+    setUploadDone(null);
+    setMsg('');
+    const total = boxes.length;
+    setUploadProgress({ done: 0, total });
     try {
-      for (let i = 0; i < boxes.length; i++) {
+      for (let i = 0; i < total; i++) {
         const base64 = await cropBoxToBase64(boxes[i]);
         await tgApi.uploadCase({
           imageBase64: base64,
@@ -484,81 +519,120 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
           page,
           bbox: boxes[i],
         });
-        setUploadProgress({ done: i + 1, total: boxes.length });
+        setUploadProgress({ done: i + 1, total });
       }
-      setMsg(`✅ Завантажено ${boxes.length} справ у канал.`);
       setBoxes([]);
+      setUploadDone({ count: total });
     } catch (e: any) {
       setMsg('❌ ' + e.message);
     } finally {
       setBusy(false);
-      setUploadProgress(null);
+      setTimeout(() => setUploadProgress(null), 800);
     }
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex gap-3 items-center flex-wrap">
-        <input
-          type="file"
-          accept="application/pdf"
-          onChange={e => e.target.files && loadPdf(e.target.files[0])}
-        />
-        {pdf && (
-          <>
-            <span className="text-sm">Сторінка:</span>
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} className="px-2 py-1 bg-slate-200 rounded">
-              ←
-            </button>
-            <span className="text-sm font-mono">
-              {page} / {pdf.numPages}
-            </span>
+      {/* Дропзона */}
+      {!pdf && (
+        <label
+          onDragOver={e => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => {
+            e.preventDefault();
+            setDragOver(false);
+            const f = e.dataTransfer.files?.[0];
+            if (f) loadPdf(f);
+          }}
+          className={`flex flex-col items-center justify-center gap-2 p-10 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
+            dragOver ? 'bg-indigo-50 border-indigo-400' : 'bg-slate-50 border-slate-300 hover:bg-slate-100'
+          }`}
+        >
+          <UploadCloud size={36} className="text-slate-400" />
+          <div className="text-sm font-medium">Натисніть або перетягніть PDF сюди</div>
+          <div className="text-xs text-slate-500">Файл буде нарізано на справи і завантажено в канал</div>
+          <input
+            type="file"
+            accept="application/pdf"
+            className="hidden"
+            onChange={e => e.target.files?.[0] && loadPdf(e.target.files[0])}
+          />
+        </label>
+      )}
+
+      {pdf && (
+        <div className="flex gap-3 items-center flex-wrap">
+          <div className="text-sm font-medium truncate max-w-xs" title={pdfName}>
+            📄 {pdfName}
+          </div>
+          <button
+            onClick={() => {
+              setPdf(null);
+              setPdfName('');
+              setPageImage('');
+              setBoxes([]);
+            }}
+            className="text-xs text-slate-500 hover:text-red-600"
+          >
+            змінити PDF
+          </button>
+          <div className="flex-1" />
+          <button onClick={() => setPage(p => Math.max(1, p - 1))} className="px-2 py-1 bg-slate-200 rounded">
+            ←
+          </button>
+          <span className="text-sm font-mono">
+            Стор. {page} / {pdf.numPages}
+          </span>
+          <button
+            onClick={() => setPage(p => Math.min(pdf.numPages, p + 1))}
+            className="px-2 py-1 bg-slate-200 rounded"
+          >
+            →
+          </button>
+          <select
+            value={mode}
+            onChange={e => setMode(e.target.value as any)}
+            className="border rounded px-2 py-1 text-sm"
+          >
+            <option value="manual">Ручний</option>
+            <option value="auto">Авто (Gemini)</option>
+          </select>
+          {mode === 'auto' && (
             <button
-              onClick={() => setPage(p => Math.min(pdf.numPages, p + 1))}
-              className="px-2 py-1 bg-slate-200 rounded"
+              onClick={runAuto}
+              disabled={busy}
+              className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
             >
-              →
+              <Wand2 size={14} /> Розпізнати
             </button>
-            <select
-              value={mode}
-              onChange={e => setMode(e.target.value as any)}
-              className="border rounded px-2 py-1 text-sm"
-            >
-              <option value="manual">Ручний</option>
-              <option value="auto">Авто (Gemini)</option>
-            </select>
-            {mode === 'auto' && (
-              <button
-                onClick={runAuto}
-                disabled={busy}
-                className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded flex items-center gap-1"
-              >
-                <Wand2 size={14} /> Розпізнати
-              </button>
-            )}
-            <button
-              onClick={uploadAll}
-              disabled={busy || boxes.length === 0}
-              className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
-            >
-              <UploadCloud size={14} /> Завантажити в канал ({boxes.length})
-            </button>
-          </>
-        )}
-      </div>
+          )}
+          <button
+            onClick={uploadAll}
+            disabled={busy || boxes.length === 0}
+            className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
+          >
+            <UploadCloud size={14} /> Завантажити в канал ({boxes.length})
+          </button>
+        </div>
+      )}
 
       {pageImage && (
         <div className="space-y-2">
           <p className="text-sm text-slate-600">
-            Малюйте прямокутники мишкою. Клац на номер у списку — видалити.
+            Малюйте прямокутники мишкою навколо кожної справи. Клацніть на номер у списку, щоб видалити.
           </p>
-          <canvas
-            ref={canvasRef}
-            onMouseDown={onCanvasMouseDown}
-            onMouseUp={onCanvasMouseUp}
-            className="border max-w-full cursor-crosshair"
-            style={{ width: '100%', height: 'auto' }}
-          />
+          <div className="border rounded bg-slate-50 max-h-[70vh] overflow-auto">
+            <canvas
+              ref={canvasRef}
+              onMouseDown={onCanvasMouseDown}
+              onMouseUp={onCanvasMouseUp}
+              className="cursor-crosshair block mx-auto"
+              style={{ maxWidth: '100%', height: 'auto' }}
+            />
+          </div>
           {boxes.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {boxes.map((_, i) => (
@@ -575,11 +649,32 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
         </div>
       )}
 
+      {/* Прогрес-бар */}
       {uploadProgress && (
-        <div className="text-sm">
-          Завантажено {uploadProgress.done} / {uploadProgress.total}
+        <div className="border rounded p-3 bg-white shadow-sm space-y-2 sticky bottom-2">
+          <div className="flex items-center justify-between text-sm">
+            <span>Завантаження в канал…</span>
+            <span className="font-mono">
+              {uploadProgress.done} / {uploadProgress.total}
+            </span>
+          </div>
+          <div className="h-2 bg-slate-200 rounded overflow-hidden">
+            <div
+              className="h-full bg-indigo-600 transition-all"
+              style={{
+                width: `${(uploadProgress.done / Math.max(1, uploadProgress.total)) * 100}%`,
+              }}
+            />
+          </div>
         </div>
       )}
+
+      {uploadDone && (
+        <div className="border-2 border-green-500 bg-green-50 rounded p-3 text-sm text-green-800 font-medium">
+          ✅ Готово: завантажено {uploadDone.count} справ у канал.
+        </div>
+      )}
+
       {msg && <div className="text-sm">{msg}</div>}
     </div>
   );
