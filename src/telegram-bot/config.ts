@@ -11,6 +11,10 @@ export interface TelegramBotConfig {
     serviceAccountJsonEnv: string; // вміст JSON-ключа service account (raw або base64)
     spreadsheetIdEnv: string;
   };
+  supabase: {
+    urlEnv: string;
+    serviceKeyEnv: string; // service_role key (повний доступ)
+  };
   cronSecretEnv: string;        // секрет для зовнішнього cron-тригера
   adminLoginEnv: string;        // логін адміна
   adminPasswordEnv: string;     // пароль адміна
@@ -77,6 +81,10 @@ export const telegramBotConfig: TelegramBotConfig = {
   google: {
     serviceAccountJsonEnv: 'TELEGRAM_GOOGLE_SERVICE_ACCOUNT',
     spreadsheetIdEnv: 'TELEGRAM_SPREADSHEET_ID',
+  },
+  supabase: {
+    urlEnv: 'SUPABASE_URL',
+    serviceKeyEnv: 'SUPABASE_SERVICE_KEY',
   },
   cronSecretEnv: 'TELEGRAM_CRON_SECRET',
   adminLoginEnv: 'TELEGRAM_ADMIN_LOGIN',

@@ -42,6 +42,7 @@ async function call(path: string, init?: RequestInit) {
 
 export const tgApi = {
   health: () => call('/admin/health'),
+  checkDb: () => call('/admin/check-db'),
   initSheets: () => call('/admin/init-sheets', { method: 'POST', body: '{}' }),
   saveQuestions: (questions: any[]) =>
     call('/admin/save-questions', { method: 'POST', body: JSON.stringify({ questions }) }),

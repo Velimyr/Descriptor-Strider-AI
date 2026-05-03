@@ -1,18 +1,28 @@
-// Усі читання/запис стану бота. Кожна "таблиця" — окремий аркуш у Google Spreadsheet.
-import {
-  appendRows,
-  colLetter,
-  deleteRowByMatch,
-  ensureSheet,
-  getSheetsClient,
-  getSpreadsheetId,
-  readSheet,
-  updateRange,
-} from './sheets-client.js';
+// Сховище стану бота — Postgres через Supabase. Один файл, інтерфейс зберігається.
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
+let cachedClient: SupabaseClient | null = null;
+
+export function db(): SupabaseClient {
+  if (cachedClient) return cachedClient;
+  const url = process.env[telegramBotConfig.supabase.urlEnv];
+  const key = process.env[telegramBotConfig.supabase.serviceKeyEnv];
+  if (!url || !key) {
+    throw new Error(
+      `Missing env ${telegramBotConfig.supabase.urlEnv} / ${telegramBotConfig.supabase.serviceKeyEnv}`
+    );
+  }
+  cachedClient = createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  return cachedClient;
+}
+
+// rowIndex більше не потрібен (PK = tg_id / case_id), але лишаємо у типі
+// для backward-compat з bot.ts, який передає його як другий аргумент upsertUser/setSession.
 export interface BotUser {
-  rowIndex: number; // 0-based, без заголовка
+  rowIndex: number; // legacy, не використовується
   tgId: string;
   displayName: string;
   totalPoints: number;
@@ -41,110 +51,63 @@ export interface BotSession {
   rowIndex: number;
   tgId: string;
   caseId: string;
-  answersJson: string; // JSON-масив відповідей по індексу питання
+  answersJson: string;
   currentQ: number;
   startedAt: string;
   updatedAt: string;
   state: 'asking' | 'confirming';
 }
 
-export interface BotMeta {
-  questionsJson: string; // JSON: TableColumn[]
-  schemaVersion: string;
-}
-
-const S = telegramBotConfig.sheets;
-
-const USERS_HEADER = [
-  'tg_id',
-  'display_name',
-  'total_points',
-  'last_dispatched_case_id',
-  'last_dispatched_at',
-  'consecutive_misses',
-  'status',
-  'created_at',
-];
-
-const CASES_HEADER = [
-  'case_id',
-  'tg_file_id',
-  'tg_chat_id',
-  'tg_message_id',
-  'source_pdf',
-  'page',
-  'bbox',
-  'submissions_count',
-  'status',
-  'created_at',
-];
-
-const SESSIONS_HEADER = ['tg_id', 'case_id', 'answers_json', 'current_q', 'started_at', 'updated_at', 'state'];
-const DAILY_HEADER = ['tg_id', 'date_kyiv', 'count'];
-const DISPATCH_HEADER = ['tg_id', 'case_id', 'sent_at'];
-const META_HEADER = ['key', 'value'];
-
-// Один get + (опційно) один batchUpdate addSheet + один batchGet + (опційно) один batchUpdate values.
-// Замість 14+ послідовних викликів — максимум 4.
-export async function ensureAllSheets() {
-  const sheets = await getSheetsClient();
-  const spreadsheetId = getSpreadsheetId();
-
-  const meta = await sheets.spreadsheets.get({ spreadsheetId });
-  const existing = new Set(
-    (meta.data.sheets || []).map(s => s.properties?.title).filter(Boolean) as string[]
-  );
-
-  const allSheets = [
-    S.metaSheetName,
-    S.usersSheetName,
-    S.casesSheetName,
-    S.sessionsSheetName,
-    S.dailyScoresSheetName,
-    S.dispatchLogSheetName,
-    S.resultsSheetName,
-  ];
-  const missing = allSheets.filter(name => !existing.has(name));
-  if (missing.length > 0) {
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        requests: missing.map(title => ({ addSheet: { properties: { title } } })),
-      },
-    });
-  }
-
-  const headerMap: Record<string, string[]> = {
-    [S.metaSheetName]: META_HEADER,
-    [S.usersSheetName]: USERS_HEADER,
-    [S.casesSheetName]: CASES_HEADER,
-    [S.sessionsSheetName]: SESSIONS_HEADER,
-    [S.dailyScoresSheetName]: DAILY_HEADER,
-    [S.dispatchLogSheetName]: DISPATCH_HEADER,
+// Маперивчасть тут — нижче є мапери row → доменна модель.
+function mapUser(r: any): BotUser {
+  return {
+    rowIndex: 0,
+    tgId: r.tg_id,
+    displayName: r.display_name || '',
+    totalPoints: Number(r.total_points || 0),
+    lastDispatchedCaseId: r.last_dispatched_case_id || '',
+    lastDispatchedAt: r.last_dispatched_at || '',
+    consecutiveMisses: r.consecutive_misses || 0,
+    status: (r.status || 'active') as 'active' | 'paused',
+    createdAt: r.created_at || '',
   };
-  const headerSheets = Object.keys(headerMap);
-  const ranges = headerSheets.map(n => `${n}!1:1`);
-  const batch = await sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges });
-
-  const updates: { range: string; values: string[][] }[] = [];
-  (batch.data.valueRanges || []).forEach((vr, i) => {
-    const sheetName = headerSheets[i];
-    const header = headerMap[sheetName];
-    const isEmpty = !vr.values || vr.values.length === 0 || (vr.values[0]?.length ?? 0) === 0;
-    if (isEmpty) updates.push({ range: `${sheetName}!A1`, values: [header] });
-  });
-
-  if (updates.length > 0) {
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId,
-      requestBody: { valueInputOption: 'USER_ENTERED', data: updates },
-    });
-  }
 }
 
-// ---------- META ----------
+function mapCase(r: any): BotCase {
+  return {
+    rowIndex: 0,
+    caseId: r.case_id,
+    tgFileId: r.tg_file_id || '',
+    tgChatId: r.tg_chat_id || '',
+    tgMessageId: r.tg_message_id || '',
+    sourcePdf: r.source_pdf || '',
+    page: r.page || '',
+    bbox: r.bbox || '',
+    submissionsCount: r.submissions_count || 0,
+    status: (r.status || 'open') as 'open' | 'done',
+    createdAt: r.created_at || '',
+  };
+}
 
-// Кеш у межах одного інстансу serverless. TTL 60с — questions рідко змінюються.
+function mapSession(r: any): BotSession {
+  return {
+    rowIndex: 0,
+    tgId: r.tg_id,
+    caseId: r.case_id || '',
+    answersJson: r.answers_json || '[]',
+    currentQ: r.current_q || 0,
+    startedAt: r.started_at || '',
+    updatedAt: r.updated_at || '',
+    state: (r.state || 'asking') as 'asking' | 'confirming',
+  };
+}
+
+// ---------- "ensureAllSheets" — no-op під Supabase, лишаємо для backward-compat ----------
+export async function ensureAllSheets() {
+  // Схема створюється один раз через supabase/schema.sql; на runtime нічого не робимо.
+}
+
+// ---------- META (з кешем) ----------
 const metaCache = new Map<string, { value: string; expires: number }>();
 const META_TTL_MS = 60 * 1000;
 
@@ -155,299 +118,253 @@ export function invalidateMetaCache(key?: string) {
 
 export async function getMeta(key: string): Promise<string | null> {
   const cached = metaCache.get(key);
-  if (cached && cached.expires > Date.now()) return cached.value;
+  if (cached && cached.expires > Date.now()) return cached.value || null;
 
-  const rows = await readSheet(S.metaSheetName);
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === key) {
-      const value = rows[i][1] || '';
-      metaCache.set(key, { value, expires: Date.now() + META_TTL_MS });
-      return value;
-    }
-  }
-  metaCache.set(key, { value: '', expires: Date.now() + META_TTL_MS });
-  return null;
+  const { data, error } = await db().from('bot_meta').select('value').eq('key', key).maybeSingle();
+  if (error) throw error;
+  const value = data?.value ?? '';
+  metaCache.set(key, { value, expires: Date.now() + META_TTL_MS });
+  return value || null;
 }
 
 export async function setMeta(key: string, value: string) {
   metaCache.set(key, { value, expires: Date.now() + META_TTL_MS });
-  const rows = await readSheet(S.metaSheetName);
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === key) {
-      await updateRange(S.metaSheetName, `B${i + 1}`, [[value]]);
-      return;
-    }
-  }
-  await appendRows(S.metaSheetName, [[key, value]]);
+  const { error } = await db().from('bot_meta').upsert({ key, value }, { onConflict: 'key' });
+  if (error) throw error;
 }
 
 // ---------- USERS ----------
-
 export async function getAllUsers(): Promise<BotUser[]> {
-  const rows = await readSheet(S.usersSheetName);
-  const users: BotUser[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r[0]) continue;
-    users.push({
-      rowIndex: i - 1,
-      tgId: r[0],
-      displayName: r[1] || '',
-      totalPoints: parseFloat(r[2] || '0') || 0,
-      lastDispatchedCaseId: r[3] || '',
-      lastDispatchedAt: r[4] || '',
-      consecutiveMisses: parseInt(r[5] || '0', 10) || 0,
-      status: (r[6] as any) || 'active',
-      createdAt: r[7] || '',
-    });
-  }
-  return users;
+  const { data, error } = await db().from('bot_users').select('*');
+  if (error) throw error;
+  return (data || []).map(mapUser);
 }
 
 export async function getUser(tgId: string): Promise<BotUser | null> {
-  const all = await getAllUsers();
-  return all.find(u => u.tgId === tgId) || null;
+  const { data, error } = await db().from('bot_users').select('*').eq('tg_id', tgId).maybeSingle();
+  if (error) throw error;
+  return data ? mapUser(data) : null;
 }
 
-function userToRow(u: Omit<BotUser, 'rowIndex'>) {
-  return [
-    u.tgId,
-    u.displayName,
-    u.totalPoints,
-    u.lastDispatchedCaseId,
-    u.lastDispatchedAt,
-    u.consecutiveMisses,
-    u.status,
-    u.createdAt,
-  ];
-}
-
-// Якщо передати existingRowIndex — оновлюємо без додаткового читання.
 export async function upsertUser(
   u: Omit<BotUser, 'rowIndex'>,
-  existingRowIndex?: number
+  _existingRowIndex?: number // legacy, ігнорується
 ): Promise<void> {
-  if (existingRowIndex !== undefined && existingRowIndex >= 0) {
-    const sheetRow = existingRowIndex + 2;
-    await updateRange(S.usersSheetName, `A${sheetRow}:H${sheetRow}`, [userToRow(u)]);
-    return;
-  }
-  // fallback — викликається при створенні нового юзера / без знання rowIndex
-  const existing = await getUser(u.tgId);
-  if (existing) {
-    const sheetRow = existing.rowIndex + 2;
-    await updateRange(S.usersSheetName, `A${sheetRow}:H${sheetRow}`, [userToRow(u)]);
-  } else {
-    await appendRows(S.usersSheetName, [userToRow(u)]);
-  }
+  const { error } = await db()
+    .from('bot_users')
+    .upsert(
+      {
+        tg_id: u.tgId,
+        display_name: u.displayName,
+        total_points: u.totalPoints,
+        last_dispatched_case_id: u.lastDispatchedCaseId,
+        last_dispatched_at: u.lastDispatchedAt || null,
+        consecutive_misses: u.consecutiveMisses,
+        status: u.status,
+        // created_at — не оновлюємо при апдейті, але дамо при insert
+        ...(u.createdAt ? { created_at: u.createdAt } : {}),
+      },
+      { onConflict: 'tg_id' }
+    );
+  if (error) throw error;
 }
 
 export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowIndex' | 'tgId'>>) {
-  const u = await getUser(tgId);
-  if (!u) return;
-  // Передаємо rowIndex напряму — уникаємо повторного читання у upsertUser.
-  await upsertUser({ ...u, ...patch }, u.rowIndex);
+  const dbPatch: any = {};
+  if (patch.displayName !== undefined) dbPatch.display_name = patch.displayName;
+  if (patch.totalPoints !== undefined) dbPatch.total_points = patch.totalPoints;
+  if (patch.lastDispatchedCaseId !== undefined) dbPatch.last_dispatched_case_id = patch.lastDispatchedCaseId;
+  if (patch.lastDispatchedAt !== undefined) dbPatch.last_dispatched_at = patch.lastDispatchedAt || null;
+  if (patch.consecutiveMisses !== undefined) dbPatch.consecutive_misses = patch.consecutiveMisses;
+  if (patch.status !== undefined) dbPatch.status = patch.status;
+  if (Object.keys(dbPatch).length === 0) return;
+  const { error } = await db().from('bot_users').update(dbPatch).eq('tg_id', tgId);
+  if (error) throw error;
 }
 
 // ---------- CASES ----------
-
 export async function getAllCases(): Promise<BotCase[]> {
-  const rows = await readSheet(S.casesSheetName);
-  const cases: BotCase[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r[0]) continue;
-    cases.push({
-      rowIndex: i - 1,
-      caseId: r[0],
-      tgFileId: r[1] || '',
-      tgChatId: r[2] || '',
-      tgMessageId: r[3] || '',
-      sourcePdf: r[4] || '',
-      page: r[5] || '',
-      bbox: r[6] || '',
-      submissionsCount: parseInt(r[7] || '0', 10) || 0,
-      status: (r[8] as any) || 'open',
-      createdAt: r[9] || '',
-    });
-  }
-  return cases;
+  const { data, error } = await db().from('bot_cases').select('*');
+  if (error) throw error;
+  return (data || []).map(mapCase);
 }
 
 export async function getCase(caseId: string): Promise<BotCase | null> {
-  const all = await getAllCases();
-  return all.find(c => c.caseId === caseId) || null;
+  const { data, error } = await db().from('bot_cases').select('*').eq('case_id', caseId).maybeSingle();
+  if (error) throw error;
+  return data ? mapCase(data) : null;
 }
 
 export async function appendCases(items: Omit<BotCase, 'rowIndex'>[]) {
   if (items.length === 0) return;
-  const rows = items.map(c => [
-    c.caseId,
-    c.tgFileId,
-    c.tgChatId,
-    c.tgMessageId,
-    c.sourcePdf,
-    c.page,
-    c.bbox,
-    c.submissionsCount,
-    c.status,
-    c.createdAt,
-  ]);
-  await appendRows(S.casesSheetName, rows);
+  const { error } = await db().from('bot_cases').insert(
+    items.map(c => ({
+      case_id: c.caseId,
+      tg_file_id: c.tgFileId,
+      tg_chat_id: c.tgChatId,
+      tg_message_id: c.tgMessageId,
+      source_pdf: c.sourcePdf,
+      page: c.page,
+      bbox: c.bbox,
+      submissions_count: c.submissionsCount,
+      status: c.status,
+      ...(c.createdAt ? { created_at: c.createdAt } : {}),
+    }))
+  );
+  if (error) throw error;
 }
 
 export async function patchCase(caseId: string, patch: Partial<Omit<BotCase, 'rowIndex' | 'caseId'>>) {
-  const c = await getCase(caseId);
-  if (!c) return;
-  const updated = { ...c, ...patch };
-  const sheetRow = c.rowIndex + 2;
-  await updateRange(S.casesSheetName, `A${sheetRow}:J${sheetRow}`, [
-    [
-      updated.caseId,
-      updated.tgFileId,
-      updated.tgChatId,
-      updated.tgMessageId,
-      updated.sourcePdf,
-      updated.page,
-      updated.bbox,
-      updated.submissionsCount,
-      updated.status,
-      updated.createdAt,
-    ],
-  ]);
+  const dbPatch: any = {};
+  if (patch.tgFileId !== undefined) dbPatch.tg_file_id = patch.tgFileId;
+  if (patch.tgChatId !== undefined) dbPatch.tg_chat_id = patch.tgChatId;
+  if (patch.tgMessageId !== undefined) dbPatch.tg_message_id = patch.tgMessageId;
+  if (patch.sourcePdf !== undefined) dbPatch.source_pdf = patch.sourcePdf;
+  if (patch.page !== undefined) dbPatch.page = patch.page;
+  if (patch.bbox !== undefined) dbPatch.bbox = patch.bbox;
+  if (patch.submissionsCount !== undefined) dbPatch.submissions_count = patch.submissionsCount;
+  if (patch.status !== undefined) dbPatch.status = patch.status;
+  if (Object.keys(dbPatch).length === 0) return;
+  const { error } = await db().from('bot_cases').update(dbPatch).eq('case_id', caseId);
+  if (error) throw error;
 }
 
 // ---------- SESSIONS ----------
-
 export async function getSession(tgId: string): Promise<BotSession | null> {
-  const rows = await readSheet(S.sessionsSheetName);
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (r[0] === tgId) {
-      return {
-        rowIndex: i - 1,
-        tgId: r[0],
-        caseId: r[1] || '',
-        answersJson: r[2] || '[]',
-        currentQ: parseInt(r[3] || '0', 10) || 0,
-        startedAt: r[4] || '',
-        updatedAt: r[5] || '',
-        state: (r[6] as any) || 'asking',
-      };
-    }
-  }
-  return null;
+  const { data, error } = await db().from('bot_sessions').select('*').eq('tg_id', tgId).maybeSingle();
+  if (error) throw error;
+  return data ? mapSession(data) : null;
 }
 
-export async function setSession(
-  s: Omit<BotSession, 'rowIndex'>,
-  existingRowIndex?: number
-) {
-  const row = [s.tgId, s.caseId, s.answersJson, s.currentQ, s.startedAt, s.updatedAt, s.state];
-  if (existingRowIndex !== undefined && existingRowIndex >= 0) {
-    const sheetRow = existingRowIndex + 2;
-    await updateRange(S.sessionsSheetName, `A${sheetRow}:G${sheetRow}`, [row]);
-    return;
-  }
-  const existing = await getSession(s.tgId);
-  if (existing) {
-    const sheetRow = existing.rowIndex + 2;
-    await updateRange(S.sessionsSheetName, `A${sheetRow}:G${sheetRow}`, [row]);
-  } else {
-    await appendRows(S.sessionsSheetName, [row]);
-  }
+export async function setSession(s: Omit<BotSession, 'rowIndex'>, _existingRowIndex?: number) {
+  const { error } = await db()
+    .from('bot_sessions')
+    .upsert(
+      {
+        tg_id: s.tgId,
+        case_id: s.caseId,
+        answers_json: s.answersJson,
+        current_q: s.currentQ,
+        started_at: s.startedAt || new Date().toISOString(),
+        updated_at: s.updatedAt || new Date().toISOString(),
+        state: s.state,
+      },
+      { onConflict: 'tg_id' }
+    );
+  if (error) throw error;
 }
 
 export async function deleteSession(tgId: string): Promise<boolean> {
-  return deleteRowByMatch(S.sessionsSheetName, row => row[0] === tgId);
+  const { error, count } = await db()
+    .from('bot_sessions')
+    .delete({ count: 'exact' })
+    .eq('tg_id', tgId);
+  if (error) throw error;
+  return (count || 0) > 0;
 }
 
 export async function getAllSessions(): Promise<BotSession[]> {
-  const rows = await readSheet(S.sessionsSheetName);
-  const out: BotSession[] = [];
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    if (!r[0]) continue;
-    out.push({
-      rowIndex: i - 1,
-      tgId: r[0],
-      caseId: r[1] || '',
-      answersJson: r[2] || '[]',
-      currentQ: parseInt(r[3] || '0', 10) || 0,
-      startedAt: r[4] || '',
-      updatedAt: r[5] || '',
-      state: (r[6] as any) || 'asking',
-    });
-  }
-  return out;
+  const { data, error } = await db().from('bot_sessions').select('*');
+  if (error) throw error;
+  return (data || []).map(mapSession);
 }
 
 // ---------- DAILY SCORES ----------
-
 export async function incDailyCount(tgId: string, dateKyiv: string): Promise<number> {
-  const rows = await readSheet(S.dailyScoresSheetName);
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === tgId && rows[i][1] === dateKyiv) {
-      const next = (parseInt(rows[i][2] || '0', 10) || 0) + 1;
-      await updateRange(S.dailyScoresSheetName, `C${i + 1}`, [[next]]);
-      return next;
-    }
-  }
-  await appendRows(S.dailyScoresSheetName, [[tgId, dateKyiv, 1]]);
-  return 1;
+  const { data, error } = await db().rpc('bot_inc_daily', { p_tg_id: tgId, p_date: dateKyiv });
+  if (error) throw error;
+  return Number(data || 0);
 }
 
 export async function getDailyCount(tgId: string, dateKyiv: string): Promise<number> {
-  const rows = await readSheet(S.dailyScoresSheetName);
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === tgId && rows[i][1] === dateKyiv) {
-      return parseInt(rows[i][2] || '0', 10) || 0;
-    }
-  }
-  return 0;
+  const { data, error } = await db()
+    .from('bot_daily_scores')
+    .select('count')
+    .eq('tg_id', tgId)
+    .eq('date_kyiv', dateKyiv)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.count || 0;
 }
 
 // ---------- DISPATCH LOG ----------
-
 export async function logDispatch(tgId: string, caseId: string, sentAtIso: string) {
-  await appendRows(S.dispatchLogSheetName, [[tgId, caseId, sentAtIso]]);
+  const { error } = await db().from('bot_dispatch_log').insert({
+    tg_id: tgId,
+    case_id: caseId,
+    sent_at: sentAtIso,
+  });
+  if (error) throw error;
 }
 
-// ---------- RESULTS ----------
+// ---------- SUBMISSIONS (Results) ----------
+// Сумісність: bot.ts передає (headerRow, dataRow). Парсимо за позиціями.
+export async function appendSubmission(
+  _headerRow: string[],
+  dataRow: (string | number)[]
+) {
+  const cfg = telegramBotConfig.sheets;
+  const beforeCount = cfg.serviceColumnsBefore.length; // 4
+  const sourceEnabled = cfg.sourceLink.mode !== 'none';
+  const tail = sourceEnabled ? 1 : 0;
+  const answers = dataRow.slice(beforeCount, dataRow.length - tail).map(v => String(v ?? ''));
 
-export async function appendSubmission(headerColumns: string[], row: (string | number)[]) {
-  const rows = await readSheet(S.resultsSheetName);
-  if (rows.length === 0) {
-    await appendRows(S.resultsSheetName, [headerColumns, row]);
-  } else {
-    await appendRows(S.resultsSheetName, [row]);
-  }
+  const caseId = String(dataRow[0] || '');
+  const tgId = String(dataRow[1] || '');
+  const displayName = String(dataRow[2] || '');
+  const sourceLink = sourceEnabled ? String(dataRow[dataRow.length - 1] || '') : '';
+
+  const { error } = await db().from('bot_submissions').insert({
+    case_id: caseId,
+    tg_id: tgId,
+    display_name: displayName,
+    answers,
+    source_link: sourceLink,
+  });
+  if (error) throw error;
 }
 
 export async function countSubmissionsByCase(caseId: string): Promise<number> {
-  const rows = await readSheet(S.resultsSheetName);
-  if (rows.length < 2) return 0;
-  let count = 0;
-  // case_id — перша колонка з serviceColumnsBefore
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === caseId) count++;
-  }
-  return count;
+  const { count, error } = await db()
+    .from('bot_submissions')
+    .select('id', { count: 'exact', head: true })
+    .eq('case_id', caseId);
+  if (error) throw error;
+  return count || 0;
 }
 
 export async function getSubmissionsForUser(tgId: string): Promise<string[]> {
-  const rows = await readSheet(S.resultsSheetName);
-  const seen: string[] = [];
-  // case_id col 0, telegram_user_id col 1
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][1] === tgId) seen.push(rows[i][0]);
-  }
-  return seen;
+  const { data, error } = await db().from('bot_submissions').select('case_id').eq('tg_id', tgId);
+  if (error) throw error;
+  return (data || []).map((r: any) => r.case_id);
 }
 
 export async function getResultsTotals(): Promise<{ totalSubmissions: number }> {
-  const rows = await readSheet(S.resultsSheetName);
-  return { totalSubmissions: Math.max(0, rows.length - 1) };
+  const { count, error } = await db()
+    .from('bot_submissions')
+    .select('id', { count: 'exact', head: true });
+  if (error) throw error;
+  return { totalSubmissions: count || 0 };
 }
 
-export { colLetter };
+// Експортуємо submissions для адмінського перегляду / експорту.
+export async function getRecentSubmissions(limit = 100) {
+  const { data, error } = await db()
+    .from('bot_submissions')
+    .select('*')
+    .order('submitted_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data || [];
+}
+
+// ---------- утиліти, що раніше експортувались зі sheets-client ----------
+export function colLetter(index: number): string {
+  let column = '';
+  let i = index;
+  while (i >= 0) {
+    column = String.fromCharCode((i % 26) + 65) + column;
+    i = Math.floor(i / 26) - 1;
+  }
+  return column;
+}

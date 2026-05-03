@@ -142,6 +142,7 @@ const LoginGate: React.FC<{ onSuccess: () => void; onClose: () => void }> = ({ o
 
 const SetupView: React.FC = () => {
   const [health, setHealth] = useState<any>(null);
+  const [dbCheck, setDbCheck] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [showDetails, setShowDetails] = useState(false);
@@ -149,8 +150,12 @@ const SetupView: React.FC = () => {
   const refresh = async () => {
     try {
       setBusy(true);
-      const h = await tgApi.health();
+      const [h, db] = await Promise.all([
+        tgApi.health(),
+        tgApi.checkDb().catch(e => ({ ok: false, error: e.message })),
+      ]);
       setHealth(h);
+      setDbCheck(db);
     } catch {
       setHealth(null);
     } finally {
@@ -163,15 +168,15 @@ const SetupView: React.FC = () => {
   }, []);
 
   const allEnvOk = health?.env && Object.values(health.env).every(Boolean);
+  const dbOk = dbCheck?.ok === true;
 
   const initialize = async () => {
     setBusy(true);
     setMsg('');
     try {
-      await tgApi.initSheets();
       const url = `${window.location.origin}/api/telegram/webhook`;
       await tgApi.setWebhook(url);
-      setMsg('✅ Готово: аркуші створено, webhook встановлено.');
+      setMsg(`✅ Webhook встановлено: ${url}`);
       await refresh();
     } catch (e: any) {
       setMsg('❌ ' + e.message);
@@ -205,6 +210,37 @@ const SetupView: React.FC = () => {
         </section>
       )}
 
+      {/* Стан Supabase */}
+      {dbCheck && (
+        <section className="border rounded p-3 bg-slate-50 space-y-1 text-sm">
+          <div className="font-medium">
+            {dbOk ? '✅ Supabase: схема на місці' : '❌ Supabase: проблема'}
+          </div>
+          {!dbOk && dbCheck.error && (
+            <div className="text-red-600 text-xs">{dbCheck.error}</div>
+          )}
+          {!dbOk && dbCheck.tables && (
+            <div className="text-xs space-y-0.5">
+              {Object.entries(dbCheck.tables).map(([t, v]: any) => (
+                <div key={t}>
+                  <span className={v.ok ? 'text-green-600' : 'text-red-600'}>
+                    {v.ok ? '✓' : '✗'}
+                  </span>{' '}
+                  <code>{t}</code>
+                  {!v.ok && v.error ? <span className="text-red-600 ml-2">— {v.error}</span> : null}
+                </div>
+              ))}
+            </div>
+          )}
+          {!dbOk && (
+            <div className="text-xs text-slate-600 mt-2">
+              Запустіть <code>supabase/schema.sql</code> у Supabase → SQL Editor, або перевірте{' '}
+              <code>SUPABASE_URL</code> / <code>SUPABASE_SERVICE_KEY</code>.
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Webhook стан */}
       {health?.webhook && (
         <section className="border rounded p-3 bg-slate-50 space-y-1 text-sm">
@@ -214,7 +250,7 @@ const SetupView: React.FC = () => {
             {health.webhook.url ? (
               <code className="text-xs break-all">{health.webhook.url}</code>
             ) : (
-              <span className="text-red-600">не встановлено — натисніть «Ініціалізувати»</span>
+              <span className="text-red-600">не встановлено — натисніть «Налаштувати webhook»</span>
             )}
           </div>
           {health.webhook.pending_update_count > 0 && (
@@ -226,20 +262,20 @@ const SetupView: React.FC = () => {
         </section>
       )}
 
-      {/* Одна кнопка ініціалізації */}
-      {allEnvOk && (
+      {/* Налаштування webhook */}
+      {allEnvOk && dbOk && (
         <section className="space-y-2">
           <button
             onClick={initialize}
             disabled={busy}
             className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-sm font-medium disabled:opacity-50"
           >
-            {busy ? 'Працюю…' : 'Ініціалізувати бота (аркуші + webhook)'}
+            {busy ? 'Працюю…' : 'Налаштувати webhook на цей домен'}
           </button>
           <p className="text-xs text-slate-500">
-            Створить службові аркуші у вашій Spreadsheet і налаштує Telegram webhook на{' '}
+            Скаже Telegram-у слати апдейти на{' '}
             <code>{typeof window !== 'undefined' ? window.location.origin : ''}/api/telegram/webhook</code>.
-            Виконуйте, коли вперше налаштовуєте бота або після зміни домену.
+            Виконуйте при першому налаштуванні і після зміни домену.
           </p>
         </section>
       )}

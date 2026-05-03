@@ -215,12 +215,13 @@ router.get('/admin/health', async (req, res) => {
       cronSecret: !!process.env[telegramBotConfig.cronSecretEnv],
       adminLogin: !!process.env[telegramBotConfig.adminLoginEnv],
       adminPassword: !!process.env[telegramBotConfig.adminPasswordEnv],
-      googleServiceAccount: !!process.env[telegramBotConfig.google.serviceAccountJsonEnv],
-      spreadsheetId: !!process.env[telegramBotConfig.google.spreadsheetIdEnv],
+      supabaseUrl: !!process.env[telegramBotConfig.supabase.urlEnv],
+      supabaseServiceKey: !!process.env[telegramBotConfig.supabase.serviceKeyEnv],
     },
   });
 });
 
+// Залишено для backward-compat; під Supabase ensureAllSheets — no-op.
 router.post('/admin/init-sheets', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   try {
@@ -228,6 +229,24 @@ router.post('/admin/init-sheets', async (req, res) => {
     res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Перевірити, що Supabase налаштовано: схема запущена, ключ правильний.
+router.get('/admin/check-db', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { db } = await import('./storage.js');
+    const tables = ['bot_users', 'bot_cases', 'bot_sessions', 'bot_submissions', 'bot_meta'];
+    const results: Record<string, { ok: boolean; error?: string }> = {};
+    for (const t of tables) {
+      const { error } = await db().from(t).select('*', { count: 'exact', head: true });
+      results[t] = error ? { ok: false, error: error.message } : { ok: true };
+    }
+    const allOk = Object.values(results).every(r => r.ok);
+    res.json({ ok: allOk, tables: results });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
