@@ -21,10 +21,19 @@ create table if not exists bot_cases (
   source_pdf         text        not null default '',
   page               text        not null default '',
   bbox               text        not null default '',
+  archive            text        not null default '',
+  fund               text        not null default '',
+  opys               text        not null default '',
+  sprava             text        not null default '',
   submissions_count  int         not null default 0,
   status             text        not null default 'open' check (status in ('open','done')),
   created_at         timestamptz not null default now()
 );
+-- Міграція для існуючих установок (no-op якщо колонки вже є)
+alter table bot_cases add column if not exists archive text not null default '';
+alter table bot_cases add column if not exists fund    text not null default '';
+alter table bot_cases add column if not exists opys    text not null default '';
+alter table bot_cases add column if not exists sprava  text not null default '';
 create index if not exists idx_cases_status on bot_cases(status);
 create index if not exists idx_cases_count  on bot_cases(submissions_count);
 
@@ -39,6 +48,8 @@ create table if not exists bot_sessions (
 );
 
 -- Підтверджені відповіді. answers — jsonb-масив у тому самому порядку, що bot_meta.questions.
+-- Метадані справи (archive/fund/opys/sprava/source_pdf/page) денормалізовані сюди,
+-- щоб «Результати» були самодостатні навіть якщо bot_cases поправлять/чистять.
 create table if not exists bot_submissions (
   id            bigserial primary key,
   case_id       text        not null,
@@ -46,10 +57,23 @@ create table if not exists bot_submissions (
   display_name  text        not null default '',
   submitted_at  timestamptz not null default now(),
   answers       jsonb       not null default '[]'::jsonb,
-  source_link   text        not null default ''
+  source_link   text        not null default '',
+  archive       text        not null default '',
+  fund          text        not null default '',
+  opys          text        not null default '',
+  sprava        text        not null default '',
+  source_pdf    text        not null default '',
+  page          text        not null default ''
 );
 create index if not exists idx_subs_case on bot_submissions(case_id);
 create index if not exists idx_subs_user on bot_submissions(tg_id);
+-- Міграція для існуючих установок
+alter table bot_submissions add column if not exists archive    text not null default '';
+alter table bot_submissions add column if not exists fund       text not null default '';
+alter table bot_submissions add column if not exists opys       text not null default '';
+alter table bot_submissions add column if not exists sprava     text not null default '';
+alter table bot_submissions add column if not exists source_pdf text not null default '';
+alter table bot_submissions add column if not exists page       text not null default '';
 
 create table if not exists bot_daily_scores (
   tg_id      text not null,

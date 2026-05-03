@@ -607,33 +607,25 @@ async function confirmAndSubmit(
     return;
   }
 
-  // побудувати рядок для Results
-  const cfg = telegramBotConfig.sheets;
-  const before = cfg.serviceColumnsBefore; // case_id, telegram_user_id, display_name, submitted_at
-  const after = cfg.serviceColumnsAfter;
-  const sourceLinkEnabled = cfg.sourceLink.mode !== 'none';
-
-  const headerRow = [
-    ...before,
-    ...questions.map(q => q.label),
-    ...(sourceLinkEnabled ? [cfg.sourceLink.columnLabel] : []),
-    ...after,
-  ];
-
+  const sourceLinkEnabled = telegramBotConfig.sheets.sourceLink.mode !== 'none';
   const sourceLink = sourceLinkEnabled ? buildSourceLink(cse) : '';
-  const dataRow: (string | number)[] = [
-    cse.caseId,
-    tgId,
-    user.displayName,
-    nowIsoUtc(),
-    ...questions.map((_, i) => answers[i] ?? ''),
-    ...(sourceLinkEnabled ? [sourceLink] : []),
-  ];
 
   // Паралельно: пишемо submission, видаляємо сесію, перераховуємо лічильник, інкрементуємо денний рахунок.
   const today = kyivDateString();
   const [, , , todayCount] = await Promise.all([
-    appendSubmission(headerRow, dataRow),
+    appendSubmission({
+      caseId: cse.caseId,
+      tgId,
+      displayName: user.displayName,
+      answers: questions.map((_, i) => answers[i] ?? ''),
+      sourceLink,
+      archive: cse.archive,
+      fund: cse.fund,
+      opys: cse.opys,
+      sprava: cse.sprava,
+      sourcePdf: cse.sourcePdf,
+      page: cse.page,
+    }),
     deleteSession(tgId),
     recomputeCaseSubmissionCount(cse.caseId),
     incDailyCount(tgId, today),

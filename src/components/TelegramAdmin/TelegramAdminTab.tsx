@@ -416,8 +416,16 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [uploadDone, setUploadDone] = useState<{ count: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // Архівні реквізити — обовʼязкові для всієї пачки справ.
+  // Зберігаємо в localStorage, щоб не вводити повторно при наступному PDF.
+  const [archive, setArchive] = useState(() => localStorage.getItem('tg_admin_archive') || '');
+  const [fund, setFund] = useState(() => localStorage.getItem('tg_admin_fund') || '');
+  const [opys, setOpys] = useState(() => localStorage.getItem('tg_admin_opys') || '');
+  const [sprava, setSprava] = useState(() => localStorage.getItem('tg_admin_sprava') || '');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef<{ startX: number; startY: number } | null>(null);
+
+  const metaValid = !!(archive.trim() && fund.trim() && opys.trim() && sprava.trim());
 
   const loadPdf = async (file: File) => {
     if (!file || file.type !== 'application/pdf') {
@@ -542,6 +550,16 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
 
   const uploadAll = async () => {
     if (boxes.length === 0) return;
+    if (!metaValid) {
+      setMsg('❌ Заповніть Архів / Фонд / Опис / Справа перед завантаженням.');
+      return;
+    }
+    // Запамʼятовуємо реквізити для наступного PDF — той самий фонд зазвичай.
+    localStorage.setItem('tg_admin_archive', archive.trim());
+    localStorage.setItem('tg_admin_fund', fund.trim());
+    localStorage.setItem('tg_admin_opys', opys.trim());
+    localStorage.setItem('tg_admin_sprava', sprava.trim());
+
     setBusy(true);
     setUploadDone(null);
     setMsg('');
@@ -556,6 +574,10 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
           sourcePdf: pdfName,
           page,
           bbox: boxes[i],
+          archive: archive.trim(),
+          fund: fund.trim(),
+          opys: opys.trim(),
+          sprava: sprava.trim(),
         });
         setUploadProgress({ done: i + 1, total });
       }
@@ -571,6 +593,46 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
 
   return (
     <div className="space-y-4">
+      {/* Архівні реквізити — обовʼязкові, спільні для всієї пачки */}
+      <section className={`border rounded p-3 ${metaValid ? 'bg-slate-50' : 'bg-amber-50 border-amber-300'}`}>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm font-medium">Архівні реквізити (обовʼязкові)</div>
+          {!metaValid && (
+            <div className="text-xs text-amber-700">⚠ Заповніть усі 4 поля перед завантаженням</div>
+          )}
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <input
+            value={archive}
+            onChange={e => setArchive(e.target.value)}
+            placeholder="Архів *"
+            className={`border rounded px-2 py-1.5 text-sm ${!archive.trim() ? 'border-amber-400' : ''}`}
+          />
+          <input
+            value={fund}
+            onChange={e => setFund(e.target.value)}
+            placeholder="Фонд *"
+            className={`border rounded px-2 py-1.5 text-sm ${!fund.trim() ? 'border-amber-400' : ''}`}
+          />
+          <input
+            value={opys}
+            onChange={e => setOpys(e.target.value)}
+            placeholder="Опис *"
+            className={`border rounded px-2 py-1.5 text-sm ${!opys.trim() ? 'border-amber-400' : ''}`}
+          />
+          <input
+            value={sprava}
+            onChange={e => setSprava(e.target.value)}
+            placeholder="Справа *"
+            className={`border rounded px-2 py-1.5 text-sm ${!sprava.trim() ? 'border-amber-400' : ''}`}
+          />
+        </div>
+        <div className="text-xs text-slate-500 mt-1.5">
+          Ці значення додаються до кожної справи з цього PDF і потрапляють у Результати разом з імʼям файлу і номером сторінки.
+          Зберігаються між сесіями.
+        </div>
+      </section>
+
       {/* Дропзона */}
       {!pdf && (
         <label
@@ -649,7 +711,8 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
           )}
           <button
             onClick={uploadAll}
-            disabled={busy || boxes.length === 0}
+            disabled={busy || boxes.length === 0 || !metaValid}
+            title={!metaValid ? 'Заповніть Архів / Фонд / Опис / Справа' : ''}
             className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
           >
             <UploadCloud size={14} /> Завантажити в канал ({boxes.length})
@@ -746,22 +809,34 @@ const ResultsView: React.FC = () => {
   }, []);
 
   const buildHeaders = (questions: any[]) => [
-    'case_id',
-    'tg_id',
-    'display_name',
     'submitted_at',
+    'display_name',
+    'tg_id',
+    'Архів',
+    'Фонд',
+    'Опис',
+    'Справа',
+    'Файл',
+    'Сторінка',
     ...questions.map((q: any, i: number) => q.label || `Q${i + 1}`),
+    'case_id',
     'source_link',
   ];
 
   const buildRow = (s: any, questions: any[]) => {
     const answers = Array.isArray(s.answers) ? s.answers : [];
     return [
-      s.case_id || '',
-      s.tg_id || '',
-      s.display_name || '',
       s.submitted_at || '',
+      s.display_name || '',
+      s.tg_id || '',
+      s.archive || '',
+      s.fund || '',
+      s.opys || '',
+      s.sprava || '',
+      s.source_pdf || '',
+      s.page || '',
       ...questions.map((_: any, i: number) => String(answers[i] ?? '')),
+      s.case_id || '',
       s.source_link || '',
     ];
   };

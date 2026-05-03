@@ -43,7 +43,6 @@ async function call(path: string, init?: RequestInit) {
 export const tgApi = {
   health: () => call('/admin/health'),
   checkDb: () => call('/admin/check-db'),
-  initSheets: () => call('/admin/init-sheets', { method: 'POST', body: '{}' }),
   saveQuestions: (questions: any[]) =>
     call('/admin/save-questions', { method: 'POST', body: JSON.stringify({ questions }) }),
   getQuestions: () => call('/admin/questions'),
@@ -57,6 +56,10 @@ export const tgApi = {
     sourcePdf?: string;
     page?: number | string;
     bbox?: any;
+    archive: string;
+    fund: string;
+    opys: string;
+    sprava: string;
   }) => call('/admin/upload-case', { method: 'POST', body: JSON.stringify(payload) }),
   detectBoxes: (imageBase64: string, mime: string, geminiKey: string) =>
     call('/admin/detect-bboxes', {

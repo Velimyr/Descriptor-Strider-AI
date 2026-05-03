@@ -2,7 +2,6 @@ import express from 'express';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import {
   appendCases,
-  ensureAllSheets,
   getAllCases,
   getAllSessions,
   getAllUsers,
@@ -23,15 +22,6 @@ import {
 
 const router = express.Router();
 
-// raw json parser is set by parent app
-
-// Лінива ініціалізація: при першому виклику бекенду створюємо аркуші.
-let sheetsReady: Promise<void> | null = null;
-async function ensureReady() {
-  if (!sheetsReady) sheetsReady = ensureAllSheets();
-  await sheetsReady;
-}
-
 // ----------- Webhook -----------
 // На Vercel serverless функція завершується після відправки відповіді,
 // тож робимо handleUpdate ДО res.sendStatus, інакше обробка може не встигнути.
@@ -43,7 +33,6 @@ router.post('/webhook', async (req, res) => {
     return res.status(403).send('forbidden');
   }
   try {
-    await ensureReady();
     await handleUpdate(req.body);
   } catch (e: any) {
     console.error('webhook handler error', e?.stack || e);
@@ -221,17 +210,6 @@ router.get('/admin/health', async (req, res) => {
   });
 });
 
-// Залишено для backward-compat; під Supabase ensureAllSheets — no-op.
-router.post('/admin/init-sheets', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
-  try {
-    await ensureAllSheets();
-    res.json({ ok: true });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
 // Перевірити, що Supabase налаштовано: схема запущена, ключ правильний.
 router.get('/admin/check-db', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
@@ -298,8 +276,14 @@ router.post('/admin/delete-webhook', async (req, res) => {
 // Завантаження картинки в канал. Приймає base64 PNG/JPEG.
 router.post('/admin/upload-case', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { imageBase64, mime, sourcePdf, page, bbox } = req.body || {};
+  const { imageBase64, sourcePdf, page, bbox, archive, fund, opys, sprava } = req.body || {};
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
+  // Архівні реквізити обов'язкові — без них результати не мають сенсу.
+  for (const [k, v] of [['archive', archive], ['fund', fund], ['opys', opys], ['sprava', sprava]] as const) {
+    if (!v || !String(v).trim()) {
+      return res.status(400).json({ error: `Field "${k}" is required` });
+    }
+  }
   const channelId = process.env[telegramBotConfig.tg.channelIdEnv];
   if (!channelId) return res.status(400).json({ error: `Missing ${telegramBotConfig.tg.channelIdEnv}` });
 
@@ -319,6 +303,10 @@ router.post('/admin/upload-case', async (req, res) => {
         sourcePdf: sourcePdf || '',
         page: String(page || ''),
         bbox: bbox ? JSON.stringify(bbox) : '',
+        archive: String(archive).trim(),
+        fund: String(fund).trim(),
+        opys: String(opys).trim(),
+        sprava: String(sprava).trim(),
         submissionsCount: 0,
         status: 'open',
         createdAt: nowIsoUtc(),

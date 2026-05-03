@@ -7,10 +7,6 @@ export interface TelegramBotConfig {
     channelIdEnv: string;       // назва env-змінної з ID приватного каналу
     webhookSecretEnv: string;   // секрет webhook
   };
-  google: {
-    serviceAccountJsonEnv: string; // вміст JSON-ключа service account (raw або base64)
-    spreadsheetIdEnv: string;
-  };
   supabase: {
     urlEnv: string;
     serviceKeyEnv: string; // service_role key (повний доступ)
@@ -77,10 +73,6 @@ export const telegramBotConfig: TelegramBotConfig = {
     botTokenEnv: 'TELEGRAM_BOT_TOKEN',
     channelIdEnv: 'TELEGRAM_CHANNEL_ID',
     webhookSecretEnv: 'TELEGRAM_WEBHOOK_SECRET',
-  },
-  google: {
-    serviceAccountJsonEnv: 'TELEGRAM_GOOGLE_SERVICE_ACCOUNT',
-    spreadsheetIdEnv: 'TELEGRAM_SPREADSHEET_ID',
   },
   supabase: {
     urlEnv: 'SUPABASE_URL',
@@ -163,7 +155,6 @@ export const telegramBotConfig: TelegramBotConfig = {
     pointsEarned:
       '✅ Збережено! +{points} балів. Сьогодні: {todayCount} справ. Всього: {total} балів.',
     confirmHeader: 'Перевірте відповіді:',
-    confirmButtons: 'Підтвердити / Виправити',
     questionPrefix: 'Питання {n}/{total}',
     helpText:
       '<b>❓ Допомога</b>\n\n' +
@@ -173,7 +164,6 @@ export const telegramBotConfig: TelegramBotConfig = {
       '<b>ℹ Про що цей бот</b>\n\n' +
       'Архівні описи — це переліки справ, що зберігаються в архіві. ' +
       'Кожна справа має кілька реквізитів (номер, назва, роки, кількість аркушів тощо). ' +
-      'Ці описи скануються і розпізнаються автоматично, але потім потребують перевірки людиною.\n\n' +
       'Я надсилаю вам по одній справі (фото фрагмента документа), а ви розписуєте її реквізити. ' +
       'Кожну справу перевіряють кілька людей — щоб результат був надійним.',
     helpHowToAnswer:
@@ -228,7 +218,6 @@ export const telegramBotConfig: TelegramBotConfig = {
     cancelButton: '❌ Скасувати',
     confirmButton: '✅ Підтвердити',
     editButton: '✏ Виправити',
-    skipOptionalButton: '➡ Пропустити',
 
     // Кнопка "Поле не заповнене" в опитуванні
     fieldEmptyButton: '🚫 Не заповнено',

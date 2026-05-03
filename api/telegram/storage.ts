@@ -42,6 +42,10 @@ export interface BotCase {
   sourcePdf: string;
   page: string;
   bbox: string;
+  archive: string;
+  fund: string;
+  opys: string;
+  sprava: string;
   submissionsCount: number;
   status: 'open' | 'done';
   createdAt: string;
@@ -83,6 +87,10 @@ function mapCase(r: any): BotCase {
     sourcePdf: r.source_pdf || '',
     page: r.page || '',
     bbox: r.bbox || '',
+    archive: r.archive || '',
+    fund: r.fund || '',
+    opys: r.opys || '',
+    sprava: r.sprava || '',
     submissionsCount: r.submissions_count || 0,
     status: (r.status || 'open') as 'open' | 'done',
     createdAt: r.created_at || '',
@@ -100,11 +108,6 @@ function mapSession(r: any): BotSession {
     updatedAt: r.updated_at || '',
     state: (r.state || 'asking') as 'asking' | 'confirming',
   };
-}
-
-// ---------- "ensureAllSheets" — no-op під Supabase, лишаємо для backward-compat ----------
-export async function ensureAllSheets() {
-  // Схема створюється один раз через supabase/schema.sql; на runtime нічого не робимо.
 }
 
 // ---------- META (з кешем) ----------
@@ -206,6 +209,10 @@ export async function appendCases(items: Omit<BotCase, 'rowIndex'>[]) {
       source_pdf: c.sourcePdf,
       page: c.page,
       bbox: c.bbox,
+      archive: c.archive,
+      fund: c.fund,
+      opys: c.opys,
+      sprava: c.sprava,
       submissions_count: c.submissionsCount,
       status: c.status,
       ...(c.createdAt ? { created_at: c.createdAt } : {}),
@@ -287,39 +294,34 @@ export async function getDailyCount(tgId: string, dateKyiv: string): Promise<num
   return data?.count || 0;
 }
 
-// ---------- DISPATCH LOG ----------
-export async function logDispatch(tgId: string, caseId: string, sentAtIso: string) {
-  const { error } = await db().from('bot_dispatch_log').insert({
-    tg_id: tgId,
-    case_id: caseId,
-    sent_at: sentAtIso,
-  });
-  if (error) throw error;
+// ---------- SUBMISSIONS (Results) ----------
+export interface SubmissionInput {
+  caseId: string;
+  tgId: string;
+  displayName: string;
+  answers: string[];
+  sourceLink: string;
+  archive: string;
+  fund: string;
+  opys: string;
+  sprava: string;
+  sourcePdf: string;
+  page: string;
 }
 
-// ---------- SUBMISSIONS (Results) ----------
-// Сумісність: bot.ts передає (headerRow, dataRow). Парсимо за позиціями.
-export async function appendSubmission(
-  _headerRow: string[],
-  dataRow: (string | number)[]
-) {
-  const cfg = telegramBotConfig.sheets;
-  const beforeCount = cfg.serviceColumnsBefore.length; // 4
-  const sourceEnabled = cfg.sourceLink.mode !== 'none';
-  const tail = sourceEnabled ? 1 : 0;
-  const answers = dataRow.slice(beforeCount, dataRow.length - tail).map(v => String(v ?? ''));
-
-  const caseId = String(dataRow[0] || '');
-  const tgId = String(dataRow[1] || '');
-  const displayName = String(dataRow[2] || '');
-  const sourceLink = sourceEnabled ? String(dataRow[dataRow.length - 1] || '') : '';
-
+export async function appendSubmission(s: SubmissionInput) {
   const { error } = await db().from('bot_submissions').insert({
-    case_id: caseId,
-    tg_id: tgId,
-    display_name: displayName,
-    answers,
-    source_link: sourceLink,
+    case_id: s.caseId,
+    tg_id: s.tgId,
+    display_name: s.displayName,
+    answers: s.answers,
+    source_link: s.sourceLink,
+    archive: s.archive,
+    fund: s.fund,
+    opys: s.opys,
+    sprava: s.sprava,
+    source_pdf: s.sourcePdf,
+    page: s.page,
   });
   if (error) throw error;
 }
@@ -358,13 +360,3 @@ export async function getRecentSubmissions(limit = 100) {
   return data || [];
 }
 
-// ---------- утиліти, що раніше експортувались зі sheets-client ----------
-export function colLetter(index: number): string {
-  let column = '';
-  let i = index;
-  while (i >= 0) {
-    column = String.fromCharCode((i % 26) + 65) + column;
-    i = Math.floor(i / 26) - 1;
-  }
-  return column;
-}
