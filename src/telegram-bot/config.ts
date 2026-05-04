@@ -58,9 +58,10 @@ export interface TelegramBotConfig {
 
   slicing: {
     defaultMode: 'manual' | 'auto';
-    defaultProvider: 'gemini' | 'claude';
+    defaultProvider: 'gemini' | 'claude' | 'groq';
     geminiModel: string;
     claudeModel: string;
+    groqModel: string;
     autoModel: string; // legacy, дублює geminiModel
     detectionStrategy: 'boxes' | 'separators';
     autoPrompt: string;
@@ -133,6 +134,7 @@ export const telegramBotConfig: TelegramBotConfig = {
     defaultProvider: 'gemini',
     geminiModel: 'gemini-2.5-flash',
     claudeModel: 'claude-opus-4-7',
+    groqModel: 'meta-llama/llama-4-scout-17b-16e-instruct',
     autoModel: 'gemini-2.5-flash',
     detectionStrategy: 'separators' as const,
     autoPromptSeparators:

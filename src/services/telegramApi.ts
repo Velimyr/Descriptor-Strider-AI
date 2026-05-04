@@ -65,7 +65,7 @@ export const tgApi = {
     imageBase64: string,
     mime: string,
     apiKey: string,
-    provider: 'gemini' | 'claude' = 'gemini'
+    provider: 'gemini' | 'claude' | 'groq' = 'gemini'
   ) =>
     call('/admin/detect-bboxes', {
       method: 'POST',

@@ -336,7 +336,8 @@ router.post('/admin/detect-bboxes', async (req, res) => {
   if (!imageBase64 || !key) {
     return res.status(400).json({ error: 'imageBase64 + apiKey required' });
   }
-  const prov = (provider === 'claude' ? 'claude' : 'gemini') as 'gemini' | 'claude';
+  const prov: 'gemini' | 'claude' | 'groq' =
+    provider === 'claude' ? 'claude' : provider === 'groq' ? 'groq' : 'gemini';
   try {
     const result = await detectCaseBoxes(imageBase64, mime || 'image/jpeg', key, prov);
     if (result.boxes.length === 0) {

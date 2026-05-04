@@ -8,7 +8,7 @@ export interface BBox {
   h: number;
 }
 
-export type SlicingProvider = 'gemini' | 'claude';
+export type SlicingProvider = 'gemini' | 'claude' | 'groq';
 
 export interface DetectResult {
   boxes: BBox[];
@@ -39,6 +39,9 @@ export async function detectCaseBoxes(
   if (provider === 'claude') {
     model = cfg.claudeModel;
     raw = await callClaude(imageBase64, mime, apiKey, prompt, model);
+  } else if (provider === 'groq') {
+    model = cfg.groqModel;
+    raw = await callGroq(imageBase64, mime, apiKey, prompt, model);
   } else {
     model = cfg.geminiModel || cfg.autoModel;
     raw = await callGemini(imageBase64, mime, apiKey, prompt, model);
@@ -73,6 +76,40 @@ async function callGemini(
   };
   const res = await axios.post(url, body, { timeout: 90000 });
   return res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+async function callGroq(
+  imageBase64: string,
+  mime: string,
+  apiKey: string,
+  prompt: string,
+  model: string
+): Promise<string> {
+  // OpenAI-compatible API.
+  const url = 'https://api.groq.com/openai/v1/chat/completions';
+  const body = {
+    model,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: `data:${mime};base64,${imageBase64}` } },
+        ],
+      },
+    ],
+    temperature: 0,
+    response_format: { type: 'json_object' },
+    max_tokens: 4096,
+  };
+  const res = await axios.post(url, body, {
+    timeout: 90000,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  return res.data?.choices?.[0]?.message?.content || '';
 }
 
 async function callClaude(

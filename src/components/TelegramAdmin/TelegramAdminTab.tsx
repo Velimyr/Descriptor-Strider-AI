@@ -406,6 +406,33 @@ const RENDER_SCALE = 3.0; // високий dpi для якості кропів
 
 type Box = { x: number; y: number; w: number; h: number };
 
+const SESSION_VERSION = 1;
+interface SessionFile {
+  version: number;
+  savedAt: string;
+  pdfName: string;
+  pdfBase64: string; // вміст PDF
+  pageBoxes: Record<number, Box[]>;
+  meta: { archive: string; fund: string; opys: string; sprava: string };
+}
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
 const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [pdf, setPdf] = useState<any>(null);
   const [pdfName, setPdfName] = useState('');
@@ -428,10 +455,16 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [autoRange, setAutoRange] = useState('');
   const [autoProgress, setAutoProgress] = useState<{ done: number; total: number; page?: number } | null>(null);
   // Провайдер для авто-розпізнавання.
-  const [provider, setProvider] = useState<'gemini' | 'claude'>(
-    (localStorage.getItem('tg_admin_provider') as 'gemini' | 'claude') || 'gemini'
+  type Provider = 'gemini' | 'claude' | 'groq';
+  const [provider, setProvider] = useState<Provider>(
+    (localStorage.getItem('tg_admin_provider') as Provider) || 'gemini'
   );
   const [claudeKey, setClaudeKey] = useState(() => localStorage.getItem('tg_admin_claude_key') || '');
+  const [groqKey, setGroqKey] = useState(() => localStorage.getItem('tg_admin_groq_key') || '');
+  const [skipExisting, setSkipExisting] = useState(true);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  // Кеш бінарного PDF для повторного відкриття після імпорту і експорту.
+  const [pdfBase64, setPdfBase64] = useState<string>('');
   const [showLog, setShowLog] = useState(false);
   type LogEntry = {
     page: number;
@@ -444,7 +477,8 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   };
   const [recogLog, setRecogLog] = useState<LogEntry[]>([]);
 
-  const activeApiKey = provider === 'claude' ? claudeKey : geminiKey;
+  const activeApiKey =
+    provider === 'claude' ? claudeKey : provider === 'groq' ? groqKey : geminiKey;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef<{ startX: number; startY: number } | null>(null);
 
@@ -469,6 +503,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     setUploadDone(null);
     setPageBoxes({});
     const buf = await file.arrayBuffer();
+    setPdfBase64(arrayBufferToBase64(buf));
     const doc = await pdfjs.getDocument({ data: buf }).promise;
     setPdf(doc);
     setPdfName(file.name);
@@ -587,6 +622,70 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const removeBox = (i: number) => setBoxesForPage(page, prev => prev.filter((_, idx) => idx !== i));
   const clearPage = () => setBoxesForPage(page, () => []);
 
+  // ---------- Експорт / імпорт сесії ----------
+  const exportSession = () => {
+    if (!pdfBase64 || !pdfName) {
+      setMsg('Немає PDF для експорту.');
+      return;
+    }
+    const data: SessionFile = {
+      version: SESSION_VERSION,
+      savedAt: new Date().toISOString(),
+      pdfName,
+      pdfBase64,
+      pageBoxes,
+      meta: { archive, fund, opys, sprava },
+    };
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const baseName = pdfName.replace(/\.pdf$/i, '');
+    a.href = url;
+    a.download = `${baseName}__session-${ts}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setMsg(`✅ Сесія експортована (${totalBoxes} зон на ${pagesWithBoxes.length} стор.)`);
+  };
+
+  const importSession = async (file: File) => {
+    setMsg('');
+    try {
+      const text = await file.text();
+      const data: SessionFile = JSON.parse(text);
+      if (!data?.pdfBase64 || !data?.pdfName) {
+        throw new Error('Файл сесії пошкоджений (немає PDF)');
+      }
+      const buf = base64ToArrayBuffer(data.pdfBase64);
+      const doc = await pdfjs.getDocument({ data: buf }).promise;
+      setPdf(doc);
+      setPdfName(data.pdfName);
+      setPdfBase64(data.pdfBase64);
+      // Конвертуємо ключі обʼєкта (рядки) у числа.
+      const restored: Record<number, Box[]> = {};
+      Object.entries(data.pageBoxes || {}).forEach(([k, v]) => {
+        restored[parseInt(k, 10)] = (v as Box[]) || [];
+      });
+      setPageBoxes(restored);
+      if (data.meta) {
+        if (data.meta.archive) setArchive(data.meta.archive);
+        if (data.meta.fund) setFund(data.meta.fund);
+        if (data.meta.opys) setOpys(data.meta.opys);
+        if (data.meta.sprava) setSprava(data.meta.sprava);
+      }
+      setPage(1);
+      await renderPage(doc, 1);
+      const totalRestored = Object.values(restored).reduce((s, b) => s + b.length, 0);
+      setMsg(
+        `✅ Сесія імпортована: ${totalRestored} зон на ${
+          Object.keys(restored).filter(k => restored[+k].length > 0).length
+        } стор.`
+      );
+    } catch (e: any) {
+      setMsg('❌ Не вдалося імпортувати: ' + e.message);
+    }
+  };
+
   // Парсер "1-3,5,7-9" → [1,2,3,5,7,8,9]. Дублікати прибираються, сортується.
   const parsePageRange = (raw: string, maxPage: number): number[] => {
     const out = new Set<number>();
@@ -608,19 +707,28 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
 
   const runAuto = async () => {
     if (!pdf || !activeApiKey) {
-      setMsg(
-        provider === 'claude'
-          ? 'Потрібно: відкритий PDF + Claude API key (введіть нижче в полі провайдера)'
-          : 'Потрібно: відкритий PDF + Gemini API key (у головному екрані)'
-      );
+      const which =
+        provider === 'claude' ? 'Claude' : provider === 'groq' ? 'Groq' : 'Gemini';
+      const where =
+        provider === 'gemini' ? '(у головному екрані)' : '(введіть нижче в полі провайдера)';
+      setMsg(`Потрібно: відкритий PDF + ${which} API key ${where}`);
       return;
     }
-    const pages = autoRange.trim()
+    let pages = autoRange.trim()
       ? parsePageRange(autoRange, pdf.numPages)
       : [page];
     if (pages.length === 0) {
       setMsg('❌ Невалідний діапазон. Приклади: "1-10", "3,5,7", "1-5, 8, 10-12"');
       return;
+    }
+    // Опція «продовжити» — пропускаємо сторінки які вже мають зони.
+    if (skipExisting) {
+      const before = pages.length;
+      pages = pages.filter(p => !(pageBoxes[p] && pageBoxes[p].length > 0));
+      if (pages.length === 0) {
+        setMsg(`Усі ${before} сторінок діапазону вже мають зони. Зніміть «пропускати» щоб переробити.`);
+        return;
+      }
     }
     if (
       pages.length > 50 &&
@@ -632,6 +740,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     // Запам'ятовуємо вибір провайдера.
     localStorage.setItem('tg_admin_provider', provider);
     if (provider === 'claude' && claudeKey) localStorage.setItem('tg_admin_claude_key', claudeKey);
+    if (provider === 'groq' && groqKey) localStorage.setItem('tg_admin_groq_key', groqKey);
 
     setBusy(true);
     setMsg('');
@@ -821,32 +930,50 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
 
       {/* Дропзона */}
       {!pdf && (
-        <label
-          onDragOver={e => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={e => {
-            e.preventDefault();
-            setDragOver(false);
-            const f = e.dataTransfer.files?.[0];
-            if (f) loadPdf(f);
-          }}
-          className={`flex flex-col items-center justify-center gap-2 p-10 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
-            dragOver ? 'bg-indigo-50 border-indigo-400' : 'bg-slate-50 border-slate-300 hover:bg-slate-100'
-          }`}
-        >
-          <UploadCloud size={36} className="text-slate-400" />
-          <div className="text-sm font-medium">Натисніть або перетягніть PDF сюди</div>
-          <div className="text-xs text-slate-500">Файл буде нарізано на справи і завантажено в канал</div>
-          <input
-            type="file"
-            accept="application/pdf"
-            className="hidden"
-            onChange={e => e.target.files?.[0] && loadPdf(e.target.files[0])}
-          />
-        </label>
+        <div className="space-y-2">
+          <label
+            onDragOver={e => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={e => {
+              e.preventDefault();
+              setDragOver(false);
+              const f = e.dataTransfer.files?.[0];
+              if (f) loadPdf(f);
+            }}
+            className={`flex flex-col items-center justify-center gap-2 p-10 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
+              dragOver ? 'bg-indigo-50 border-indigo-400' : 'bg-slate-50 border-slate-300 hover:bg-slate-100'
+            }`}
+          >
+            <UploadCloud size={36} className="text-slate-400" />
+            <div className="text-sm font-medium">Натисніть або перетягніть PDF сюди</div>
+            <div className="text-xs text-slate-500">Файл буде нарізано на справи і завантажено в канал</div>
+            <input
+              type="file"
+              accept="application/pdf"
+              className="hidden"
+              onChange={e => e.target.files?.[0] && loadPdf(e.target.files[0])}
+            />
+          </label>
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span>або</span>
+            <button
+              onClick={() => importInputRef.current?.click()}
+              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-medium"
+            >
+              📂 Відновити збережену сесію (.json)
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={e => e.target.files?.[0] && importSession(e.target.files[0])}
+            />
+          </div>
+        </div>
       )}
 
       {pdf && (
@@ -892,13 +1019,25 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
               <>
                 <select
                   value={provider}
-                  onChange={e => setProvider(e.target.value as 'gemini' | 'claude')}
+                  onChange={e => setProvider(e.target.value as Provider)}
                   className="border rounded px-2 py-1 text-sm"
                   title="Модель для розпізнавання"
                 >
                   <option value="gemini">Gemini Flash</option>
                   <option value="claude">Claude Opus</option>
+                  <option value="groq">Llama (Groq, free)</option>
                 </select>
+                <label
+                  className="flex items-center gap-1 text-xs text-slate-600"
+                  title="Не запускати розпізнавання на сторінках, які вже мають зони"
+                >
+                  <input
+                    type="checkbox"
+                    checked={skipExisting}
+                    onChange={e => setSkipExisting(e.target.checked)}
+                  />
+                  пропускати
+                </label>
                 <input
                   value={autoRange}
                   onChange={e => setAutoRange(e.target.value)}
@@ -916,7 +1055,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
                 <button
                   onClick={runAuto}
                   disabled={busy || !activeApiKey}
-                  title={!activeApiKey ? `Введіть ${provider === 'claude' ? 'Claude' : 'Gemini'} API key` : ''}
+                  title={!activeApiKey ? `Введіть ${provider === 'claude' ? 'Claude' : provider === 'groq' ? 'Groq' : 'Gemini'} API key` : ''}
                   className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
                 >
                   <Wand2 size={14} />{' '}
@@ -924,6 +1063,14 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
                 </button>
               </>
             )}
+            <button
+              onClick={exportSession}
+              disabled={!pdfBase64}
+              className="px-2.5 py-1.5 bg-slate-200 text-slate-700 text-xs rounded hover:bg-slate-300 disabled:opacity-50"
+              title="Зберегти PDF + усі зони у файл .json для продовження пізніше"
+            >
+              💾 Експорт
+            </button>
             <button
               onClick={uploadAll}
               disabled={busy || totalBoxes === 0 || !metaValid}
@@ -934,7 +1081,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
             </button>
           </div>
 
-          {/* Поле ключа Claude — показується лише якщо обрано claude і немає збереженого */}
+          {/* Поле ключа Claude */}
           {mode === 'auto' && provider === 'claude' && (
             <div className="flex gap-2 items-center text-xs">
               <span className="text-slate-600">Claude API key:</span>
@@ -947,6 +1094,29 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
                 className="flex-1 max-w-md border rounded px-2 py-1"
               />
               {claudeKey && <span className="text-green-600">✓ збережено</span>}
+            </div>
+          )}
+          {/* Поле ключа Groq */}
+          {mode === 'auto' && provider === 'groq' && (
+            <div className="flex gap-2 items-center text-xs">
+              <span className="text-slate-600">Groq API key:</span>
+              <input
+                type="password"
+                value={groqKey}
+                onChange={e => setGroqKey(e.target.value)}
+                onBlur={() => localStorage.setItem('tg_admin_groq_key', groqKey)}
+                placeholder="gsk_..."
+                className="flex-1 max-w-md border rounded px-2 py-1"
+              />
+              {groqKey && <span className="text-green-600">✓ збережено</span>}
+              <a
+                href="https://console.groq.com/keys"
+                target="_blank"
+                rel="noreferrer"
+                className="text-indigo-600 underline"
+              >
+                отримати безкоштовно
+              </a>
             </div>
           )}
 
