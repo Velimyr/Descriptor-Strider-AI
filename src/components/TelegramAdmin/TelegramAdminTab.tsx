@@ -1068,12 +1068,23 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
         });
         done++;
         setUploadProgress({ done, total });
+        // Прибираємо успішно завантажені зони з UI — щоб ретрай не дублював.
+        setPageBoxes(prev => {
+          const next: Record<number, Box[]> = {};
+          for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
+            const filtered = list.filter(b => b.groupId !== gid);
+            if (filtered.length > 0) next[+k] = filtered;
+          }
+          return next;
+        });
       }
-      setPageBoxes({});
       setSelectedIds(new Set());
       setUploadDone({ count: done });
     } catch (e: any) {
-      setMsg(`❌ ${e.message}. Завантажено до помилки: ${done}/${total}.`);
+      setMsg(
+        `❌ ${e.message}\nЗавантажено: ${done}/${total} справ. ` +
+          `Незавантажені зони лишилися — натисніть «Завантажити» ще раз, продовжимо з того ж місця.`
+      );
     } finally {
       setBusy(false);
       setTimeout(() => setUploadProgress(null), 800);
