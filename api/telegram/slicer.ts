@@ -9,9 +9,11 @@ export interface BBox {
 }
 
 /**
- * Просить Gemini повернути bbox-и кожної справи на сторінці.
- * Очікує base64-PNG/JPEG (без prefix `data:`).
- * Повертає { boxes, raw } — raw для діагностики коли boxes порожні.
+ * Просить Gemini знайти "якорі" справ (Y-координати початків) та межі таблиці.
+ * Зони ми будуємо самі — це надійніше за пряме bbox-detect для табличних описів.
+ *
+ * Підтримує fallback: якщо модель повернула не anchor-формат, а старий box-формат —
+ * парсимо як раніше.
  */
 export async function detectCaseBoxes(
   imageBase64: string,
@@ -35,67 +37,72 @@ export async function detectCaseBoxes(
 
   const res = await axios.post(url, body, { timeout: 60000 });
   const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const parsed = parseAnyBboxFormat(raw);
 
-  // Крок 1: вирівнюємо всі зони сторінки до спільної ширини (медіана лівого і правого краю).
-  // Це виправляє типову Gemini-проблему коли деякі зони охоплюють тільки одну колонку.
-  const aligned = cfg.alignBoxesHorizontally ? alignWidth(parsed) : parsed;
+  // 1. Пробуємо anchor-формат (наш основний).
+  let boxes = boxesFromAnchors(raw);
 
-  // Крок 2: padding на випадок зрізання верху/низу справи.
-  const boxes = aligned.map(b => padBox(b, cfg.bboxPaddingX, cfg.bboxPaddingY));
+  // 2. Якщо anchor не вийшов — пробуємо старий bbox-формат.
+  if (boxes.length === 0) {
+    const parsed = parseAnyBboxFormat(raw);
+    const aligned = cfg.alignBoxesHorizontally ? alignWidth(parsed) : parsed;
+    boxes = aligned.map(b => padBox(b, cfg.bboxPaddingX, cfg.bboxPaddingY));
+  }
+
   return { boxes, raw };
 }
 
-function padBox(b: BBox, padX: number, padY: number): BBox {
-  const x = clamp01(b.x - padX);
-  const y = clamp01(b.y - padY);
-  const right = clamp01(b.x + b.w + padX);
-  const bottom = clamp01(b.y + b.h + padY);
-  return { x, y, w: clamp01(right - x), h: clamp01(bottom - y) };
+// =============== Anchor-based ===============
+
+function boxesFromAnchors(text: string): BBox[] {
+  const data = safeJson(stripMarkdown(text));
+  if (!data || typeof data !== 'object') return [];
+  const cases = Array.isArray(data.cases) ? data.cases : null;
+  if (!cases || cases.length === 0) return [];
+
+  const cfg = telegramBotConfig.slicing;
+  const scaleNeeded = guessScale([data.table_left, data.table_right, data.table_top, data.table_bottom]);
+  const tableLeft = clamp01(toNum(data.table_left, 0) / scaleNeeded);
+  const tableRight = clamp01(toNum(data.table_right, scaleNeeded) / scaleNeeded);
+  const tableTop = clamp01(toNum(data.table_top, 0) / scaleNeeded);
+  const tableBottom = clamp01(toNum(data.table_bottom, scaleNeeded) / scaleNeeded);
+
+  // Збираємо y_top для кожної справи у нормалізовані [0..1].
+  const yScale = guessScale(cases.map((c: any) => toNum(c.y_top, 0)));
+  const tops = cases
+    .map((c: any) => clamp01(toNum(c.y_top, 0) / yScale))
+    .filter((y: number) => y > 0)
+    .sort((a: number, b: number) => a - b);
+  if (tops.length === 0) return [];
+
+  const left = clamp01(tableLeft - cfg.bboxPaddingX);
+  const width = clamp01(tableRight - tableLeft + cfg.bboxPaddingX * 2);
+  const finalLeft = left;
+  const finalWidth = clamp01(Math.min(width, 1 - finalLeft));
+
+  // Будуємо bbox між сусідніми y_top, останній — до tableBottom.
+  const bottomLimit = tableBottom > 0 && tableBottom > tops[tops.length - 1] ? tableBottom : 1;
+
+  const boxes: BBox[] = [];
+  for (let i = 0; i < tops.length; i++) {
+    const yTop = tops[i];
+    const yBot = i + 1 < tops.length ? tops[i + 1] : bottomLimit;
+    const yStart = clamp01(yTop - cfg.bboxPaddingY);
+    const yEnd = clamp01(yBot - cfg.bboxPaddingY * 0.5); // невеликий нижній padding щоб не залазити на наступну
+    const h = clamp01(yEnd - yStart);
+    if (h < 0.005) continue;
+    boxes.push({ x: finalLeft, y: yStart, w: finalWidth, h });
+  }
+  return boxes;
 }
 
-// Вирівнює x і w усіх зон до спільних значень: медіана x та медіана (x+w).
-// Медіана (а не min/max) щоб одна "вузька" зона не псувала всім решту.
-function alignWidth(boxes: BBox[]): BBox[] {
-  if (boxes.length < 2) return boxes;
-  const lefts = boxes.map(b => b.x).sort((a, b) => a - b);
-  const rights = boxes.map(b => b.x + b.w).sort((a, b) => a - b);
-  const medianLeft = lefts[Math.floor(lefts.length / 2)];
-  const medianRight = rights[Math.floor(rights.length / 2)];
-  // Беремо мінімальний з медіан і максимальний з медіан, але обмежуємось
-  // 5%/95% перцентилями щоб не схопити викид.
-  const left = Math.min(...lefts.filter(v => v >= percentile(lefts, 0.1)));
-  const right = Math.max(...rights.filter(v => v <= percentile(rights, 0.9)));
-  // Якщо медіана дуже відрізняється від обчислених меж — використовуємо медіану.
-  const finalLeft = Math.min(medianLeft, left);
-  const finalRight = Math.max(medianRight, right);
-  const w = clamp01(finalRight - finalLeft);
-  return boxes.map(b => ({ x: clamp01(finalLeft), y: b.y, w, h: b.h }));
-}
+// =============== Старий bbox-парсер (fallback) ===============
 
-function percentile(sortedAsc: number[], p: number): number {
-  const idx = Math.max(0, Math.min(sortedAsc.length - 1, Math.floor(p * (sortedAsc.length - 1))));
-  return sortedAsc[idx];
-}
-
-// Підтримує:
-// 1) Gemini detect:  [{ "box_2d": [ymin, xmin, ymax, xmax] }] (0..1000)
-// 2) Старий формат:  [{ "x":..., "y":..., "w":..., "h":... }] (0..1 або 0..1000)
-// 3) Об'єкт з полем boxes/results: { "boxes": [...] }
 export function parseAnyBboxFormat(text: string): BBox[] {
   if (!text) return [];
-  // Інколи модель загортає у markdown — приберемо ```json ... ```
-  const cleaned = text
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
-  let parsed: any;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    return [];
-  }
+  const cleaned = stripMarkdown(text);
+  const parsed = safeJson(cleaned);
+  if (!parsed) return [];
+
   const arr: any[] = Array.isArray(parsed)
     ? parsed
     : Array.isArray(parsed?.boxes)
@@ -116,8 +123,6 @@ export function parseAnyBboxFormat(text: string): BBox[] {
 
 function normalizeOne(item: any): BBox | null {
   if (!item || typeof item !== 'object') return null;
-
-  // Gemini detect: box_2d = [ymin, xmin, ymax, xmax] у 0..1000
   if (Array.isArray(item.box_2d) && item.box_2d.length === 4) {
     const [ymin, xmin, ymax, xmax] = item.box_2d.map(Number);
     if ([ymin, xmin, ymax, xmax].some(n => !isFinite(n))) return null;
@@ -128,8 +133,6 @@ function normalizeOne(item: any): BBox | null {
     const y2 = Math.max(ymin, ymax) / scale;
     return clampBox({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
   }
-
-  // Старий формат {x,y,w,h}
   if (
     typeof item.x === 'number' &&
     typeof item.y === 'number' &&
@@ -137,15 +140,8 @@ function normalizeOne(item: any): BBox | null {
     typeof item.h === 'number'
   ) {
     const scale = guessScale([item.x, item.y, item.x + item.w, item.y + item.h]);
-    return clampBox({
-      x: item.x / scale,
-      y: item.y / scale,
-      w: item.w / scale,
-      h: item.h / scale,
-    });
+    return clampBox({ x: item.x / scale, y: item.y / scale, w: item.w / scale, h: item.h / scale });
   }
-
-  // Альтернатива: bbox: [x1,y1,x2,y2]
   if (Array.isArray(item.bbox) && item.bbox.length === 4) {
     const [x1, y1, x2, y2] = item.bbox.map(Number);
     if ([x1, y1, x2, y2].some(n => !isFinite(n))) return null;
@@ -157,13 +153,61 @@ function normalizeOne(item: any): BBox | null {
       h: Math.abs(y2 - y1) / scale,
     });
   }
-
   return null;
 }
 
-// Якщо хоч одне число > 1 — припускаємо 0..1000 (Gemini), інакше 0..1.
+function alignWidth(boxes: BBox[]): BBox[] {
+  if (boxes.length < 2) return boxes;
+  const lefts = boxes.map(b => b.x).sort((a, b) => a - b);
+  const rights = boxes.map(b => b.x + b.w).sort((a, b) => a - b);
+  const medianLeft = lefts[Math.floor(lefts.length / 2)];
+  const medianRight = rights[Math.floor(rights.length / 2)];
+  const left = Math.min(...lefts.filter(v => v >= percentile(lefts, 0.1)));
+  const right = Math.max(...rights.filter(v => v <= percentile(rights, 0.9)));
+  const finalLeft = Math.min(medianLeft, left);
+  const finalRight = Math.max(medianRight, right);
+  const w = clamp01(finalRight - finalLeft);
+  return boxes.map(b => ({ x: clamp01(finalLeft), y: b.y, w, h: b.h }));
+}
+
+function padBox(b: BBox, padX: number, padY: number): BBox {
+  const x = clamp01(b.x - padX);
+  const y = clamp01(b.y - padY);
+  const right = clamp01(b.x + b.w + padX);
+  const bottom = clamp01(b.y + b.h + padY);
+  return { x, y, w: clamp01(right - x), h: clamp01(bottom - y) };
+}
+
+// =============== Утиліти ===============
+
+function stripMarkdown(text: string): string {
+  return text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+}
+
+function safeJson(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function toNum(v: any, fallback: number): number {
+  const n = Number(v);
+  return isFinite(n) ? n : fallback;
+}
+
 function guessScale(values: number[]): number {
-  return values.some(v => v > 1.001) ? 1000 : 1;
+  return values.some(v => isFinite(v) && v > 1.001) ? 1000 : 1;
+}
+
+function percentile(sortedAsc: number[], p: number): number {
+  const idx = Math.max(0, Math.min(sortedAsc.length - 1, Math.floor(p * (sortedAsc.length - 1))));
+  return sortedAsc[idx];
 }
 
 function clampBox(b: BBox): BBox {
@@ -174,6 +218,7 @@ function clampBox(b: BBox): BBox {
     h: clamp01(b.h),
   };
 }
+
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
 }
