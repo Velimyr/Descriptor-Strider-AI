@@ -404,7 +404,30 @@ const QuestionsView: React.FC<{ initialQuestions?: TableColumn[] }> = ({ initial
 
 const RENDER_SCALE = 3.0; // високий dpi для якості кропів
 
-type Box = { x: number; y: number; w: number; h: number };
+type Box = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  id: string;
+  // Якщо groupId === id — зона у власній групі (одна справа = одна зона).
+  // Якщо у кількох зон однаковий groupId — це частини однієї справи (можливо на різних сторінках),
+  // які при завантаженні склеюються в одне зображення і одну справу.
+  groupId: string;
+};
+
+const newId = () =>
+  (typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `b_${Date.now()}_${Math.random().toString(36).slice(2)}`
+  ).replace(/-/g, '').slice(0, 12);
+
+// Стійкий колір з groupId — щоб зони однієї групи виглядали однаково.
+function colorFromId(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360}, 70%, 50%)`;
+}
 
 const SESSION_VERSION = 1;
 interface SessionFile {
@@ -465,6 +488,8 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const importInputRef = useRef<HTMLInputElement>(null);
   // Кеш бінарного PDF для повторного відкриття після імпорту і експорту.
   const [pdfBase64, setPdfBase64] = useState<string>('');
+  // Виділені зони (id) — для обʼєднання у крос-сторінкові групи.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showLog, setShowLog] = useState(false);
   type LogEntry = {
     page: number;
@@ -543,16 +568,31 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
         const y = b.y * canvas.height;
         const w = b.w * canvas.width;
         const h = b.h * canvas.height;
-        ctx.strokeStyle = 'rgba(99,102,241,0.9)';
-        ctx.lineWidth = 3;
+        // Якщо зона у крос-сторінковій групі — її колір унікальний за groupId.
+        const inGroup = (groups.get(b.groupId)?.length || 0) > 1;
+        const color = inGroup ? colorFromId(b.groupId) : 'rgba(99,102,241,0.95)';
+        const isSelected = selectedIds.has(b.id);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = isSelected ? 6 : 3;
+        if (isSelected) {
+          ctx.setLineDash([10, 6]);
+        } else {
+          ctx.setLineDash([]);
+        }
         ctx.strokeRect(x, y, w, h);
-        // Білий чіп з номером
-        ctx.fillStyle = 'rgba(99,102,241,0.95)';
-        ctx.fillRect(x, y, 28, 26);
+        ctx.setLineDash([]);
+        // Чіп номера + позначка групи
+        ctx.fillStyle = color;
+        const chipW = inGroup ? 56 : 28;
+        ctx.fillRect(x, y, chipW, 26);
         ctx.fillStyle = 'white';
         ctx.font = 'bold 18px sans-serif';
         ctx.fillText(String(idx + 1), x + 7, y + 19);
-        // Червоний хрестик у правому верхньому куті зони
+        if (inGroup) {
+          ctx.font = 'bold 14px sans-serif';
+          ctx.fillText('🔗', x + 30, y + 19);
+        }
+        // Хрестик «видалити»
         const cx = x + w - 14;
         const cy = y + 14;
         ctx.fillStyle = 'rgba(220,38,38,0.95)';
@@ -570,7 +610,9 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       });
     };
     img.src = pageImage;
-  }, [pageImage, boxes]);
+    // selectedIds + groups впливають на стиль рендеру
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageImage, boxes, selectedIds, pageBoxes]);
 
   // Координати в нормалізованій системі (0..1).
   const normFromEvent = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -601,12 +643,24 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     // Якщо клац у "хрестик" будь-якої зони — видаляємо її і не починаємо drag.
     const idx = boxes.findIndex(b => hitCloseHandle(p, b));
     if (idx >= 0) {
-      setBoxesForPage(page, prev => prev.filter((_, i) => i !== idx));
+      removeBox(idx);
       drawingRef.current = null;
       return;
     }
     drawingRef.current = { startX: p.x, startY: p.y };
   };
+  const pointInsideBox = (point: { x: number; y: number }, b: Box): boolean =>
+    point.x >= b.x && point.x <= b.x + b.w && point.y >= b.y && point.y <= b.y + b.h;
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const onCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current || !drawingRef.current) return;
     const p = normFromEvent(e);
@@ -615,12 +669,94 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     const w = Math.abs(p.x - drawingRef.current.startX);
     const h = Math.abs(p.y - drawingRef.current.startY);
     drawingRef.current = null;
-    if (w < 0.02 || h < 0.02) return;
-    setBoxesForPage(page, prev => [...prev, { x, y, w, h }]);
+    // Малий жест → клік: toggle selection якщо потрапили в існуючу зону.
+    if (w < 0.02 || h < 0.02) {
+      const hit = boxes.find(b => pointInsideBox(p, b));
+      if (hit) toggleSelected(hit.id);
+      return;
+    }
+    const id = newId();
+    setBoxesForPage(page, prev => [...prev, { x, y, w, h, id, groupId: id }]);
   };
 
-  const removeBox = (i: number) => setBoxesForPage(page, prev => prev.filter((_, idx) => idx !== i));
-  const clearPage = () => setBoxesForPage(page, () => []);
+  const removeBox = (i: number) => {
+    setBoxesForPage(page, prev => {
+      const removed = prev[i];
+      if (removed) {
+        setSelectedIds(s => {
+          const n = new Set(s);
+          n.delete(removed.id);
+          return n;
+        });
+      }
+      return prev.filter((_, idx) => idx !== i);
+    });
+  };
+  const clearPage = () => {
+    const ids = (pageBoxes[page] || []).map(b => b.id);
+    setSelectedIds(s => {
+      const n = new Set(s);
+      ids.forEach(id => n.delete(id));
+      return n;
+    });
+    setBoxesForPage(page, () => []);
+  };
+
+  // ---------- Групування зон (одна справа на кількох сторінках) ----------
+  // Збираємо всі зони з усіх сторінок для зручної ітерації.
+  const allBoxesWithPage = (Object.entries(pageBoxes) as [string, Box[]][])
+    .flatMap(([p, list]) => list.map(b => ({ page: parseInt(p, 10), box: b })));
+
+  // groups: groupId → масив {page, box}, відсортований по (page, y).
+  const groups = (() => {
+    const map = new Map<string, { page: number; box: Box }[]>();
+    for (const item of allBoxesWithPage) {
+      const arr = map.get(item.box.groupId) || [];
+      arr.push(item);
+      map.set(item.box.groupId, arr);
+    }
+    for (const arr of map.values()) {
+      arr.sort((a, b) => a.page - b.page || a.box.y - b.box.y);
+    }
+    return map;
+  })();
+
+  // Групи з > 1 зон — те, що цікаво показати у панелі.
+  const multiBoxGroups = [...groups.entries()].filter(([, items]) => items.length > 1);
+
+  const mergeSelected = () => {
+    if (selectedIds.size < 2) return;
+    // Як спільний groupId беремо groupId першої виділеної зони.
+    const firstId = [...selectedIds][0];
+    let target = '';
+    for (const arr of Object.values(pageBoxes) as Box[][]) {
+      const found = arr.find(b => b.id === firstId);
+      if (found) {
+        target = found.groupId;
+        break;
+      }
+    }
+    if (!target) return;
+    setPageBoxes(prev => {
+      const next: Record<number, Box[]> = {};
+      for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
+        next[+k] = list.map(b => (selectedIds.has(b.id) ? { ...b, groupId: target } : b));
+      }
+      return next;
+    });
+    setSelectedIds(new Set());
+    setMsg(`✅ Обʼєднано ${selectedIds.size} зон в одну справу.`);
+  };
+
+  const ungroupAll = (groupId: string) => {
+    setPageBoxes(prev => {
+      const next: Record<number, Box[]> = {};
+      for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
+        next[+k] = list.map(b => (b.groupId === groupId ? { ...b, groupId: b.id } : b));
+      }
+      return next;
+    });
+  };
 
   // ---------- Експорт / імпорт сесії ----------
   const exportSession = () => {
@@ -664,7 +800,12 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       // Конвертуємо ключі обʼєкта (рядки) у числа.
       const restored: Record<number, Box[]> = {};
       Object.entries(data.pageBoxes || {}).forEach(([k, v]) => {
-        restored[parseInt(k, 10)] = (v as Box[]) || [];
+        const arr = (v as any[]) || [];
+        // Backward-compat: старі сесії без id/groupId — генеруємо.
+        restored[parseInt(k, 10)] = arr.map(b => {
+          const id = b.id || newId();
+          return { x: b.x, y: b.y, w: b.w, h: b.h, id, groupId: b.groupId || id };
+        });
       });
       setPageBoxes(restored);
       if (data.meta) {
@@ -756,7 +897,10 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
           const dataUrl = pageNum === page ? pageImage : await renderPageToDataUrl(pdf, pageNum);
           const base64 = dataUrl.split(',')[1];
           const r = await tgApi.detectBoxes(base64, 'image/jpeg', activeApiKey, provider);
-          const found = r.boxes || [];
+          const found: Box[] = (r.boxes || []).map((b: any) => {
+            const id = newId();
+            return { x: b.x, y: b.y, w: b.w, h: b.h, id, groupId: id };
+          });
           setBoxesForPage(pageNum, () => found);
           totalFound += found.length;
           newLogs.push({
@@ -798,7 +942,20 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   };
 
   // Кропає bbox з заданого jpeg-dataURL (а не з поточної відкритої сторінки).
-  const cropBoxFromDataUrl = async (dataUrl: string, box: Box): Promise<string> => {
+  // Рендерить будь-яку сторінку PDF у JPEG-dataURL.
+  const renderPageToDataUrl = async (doc: any, pageNum: number): Promise<string> => {
+    const p = await doc.getPage(pageNum);
+    const viewport = p.getViewport({ scale: RENDER_SCALE });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d')!;
+    await p.render({ canvasContext: ctx, viewport, canvas }).promise;
+    return canvas.toDataURL('image/jpeg', 0.92);
+  };
+
+  // Кропає bbox і повертає JPEG-dataURL (з префіксом).
+  const cropBoxToDataUrl = async (sourceDataUrl: string, box: Box): Promise<string> => {
     return new Promise(resolve => {
       const img = new Image();
       img.onload = () => {
@@ -817,23 +974,41 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
           canvas.width,
           canvas.height
         );
-        const data = canvas.toDataURL('image/jpeg', 0.85);
-        resolve(data.split(',')[1]);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
       };
-      img.src = dataUrl;
+      img.src = sourceDataUrl;
     });
   };
 
-  // Рендерить будь-яку сторінку PDF у JPEG-dataURL.
-  const renderPageToDataUrl = async (doc: any, pageNum: number): Promise<string> => {
-    const p = await doc.getPage(pageNum);
-    const viewport = p.getViewport({ scale: RENDER_SCALE });
+  // Склеює кілька JPEG-зображень вертикально в одне (нормалізує ширину).
+  const stackImagesVertically = async (dataUrls: string[]): Promise<string> => {
+    if (dataUrls.length === 1) return dataUrls[0].split(',')[1];
+    const imgs = await Promise.all(
+      dataUrls.map(
+        src =>
+          new Promise<HTMLImageElement>(res => {
+            const im = new Image();
+            im.onload = () => res(im);
+            im.src = src;
+          })
+      )
+    );
+    const targetWidth = Math.max(...imgs.map(im => im.width));
+    const totalHeight = imgs.reduce(
+      (s, im) => s + Math.round(im.height * (targetWidth / im.width)),
+      0
+    );
     const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+    canvas.width = targetWidth;
+    canvas.height = totalHeight;
     const ctx = canvas.getContext('2d')!;
-    await p.render({ canvasContext: ctx, viewport, canvas }).promise;
-    return canvas.toDataURL('image/jpeg', 0.92);
+    let y = 0;
+    for (const im of imgs) {
+      const h = Math.round(im.height * (targetWidth / im.width));
+      ctx.drawImage(im, 0, y, targetWidth, h);
+      y += h;
+    }
+    return canvas.toDataURL('image/jpeg', 0.88).split(',')[1];
   };
 
   const uploadAll = async () => {
@@ -850,36 +1025,55 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     localStorage.setItem('tg_admin_opys', opys.trim());
     localStorage.setItem('tg_admin_sprava', sprava.trim());
 
+    // Кешуємо зображення сторінок щоб не рендерити одну і ту саму двічі
+    // (у випадку груп з кількома зонами на одній сторінці).
+    const pageCache = new Map<number, string>();
+    const getPageImage = async (p: number): Promise<string> => {
+      if (pageCache.has(p)) return pageCache.get(p)!;
+      const dataUrl = p === page ? pageImage : await renderPageToDataUrl(pdf, p);
+      pageCache.set(p, dataUrl);
+      return dataUrl;
+    };
+
+    // Збираємо групи (одна група = одна справа в каналі).
+    const groupsArr = [...groups.entries()].map(([gid, items]) => ({ gid, items }));
+    const total = groupsArr.length;
+
     setBusy(true);
     setUploadDone(null);
     setMsg('');
-    setUploadProgress({ done: 0, total: totalBoxes });
+    setUploadProgress({ done: 0, total });
     let done = 0;
     try {
-      for (const pageNum of pagesWithBoxes) {
-        const dataUrl = pageNum === page ? pageImage : await renderPageToDataUrl(pdf, pageNum);
-        const items = pageBoxes[pageNum];
-        for (const box of items) {
-          const base64 = await cropBoxFromDataUrl(dataUrl, box);
-          await tgApi.uploadCase({
-            imageBase64: base64,
-            mime: 'image/jpeg',
-            sourcePdf: pdfName,
-            page: pageNum,
-            bbox: box,
-            archive: archive.trim(),
-            fund: fund.trim(),
-            opys: opys.trim(),
-            sprava: sprava.trim(),
-          });
-          done++;
-          setUploadProgress({ done, total: totalBoxes });
+      for (const { gid, items } of groupsArr) {
+        // items уже відсортовані по (page, y).
+        const crops: string[] = [];
+        for (const it of items) {
+          const dataUrl = await getPageImage(it.page);
+          crops.push(await cropBoxToDataUrl(dataUrl, it.box));
         }
+        const finalBase64 = await stackImagesVertically(crops);
+        const firstPage = items[0].page;
+        const allPages = [...new Set(items.map(i => i.page))];
+        await tgApi.uploadCase({
+          imageBase64: finalBase64,
+          mime: 'image/jpeg',
+          sourcePdf: pdfName,
+          page: allPages.length > 1 ? allPages.join(',') : firstPage,
+          bbox: { groupId: gid, parts: items.map(i => ({ page: i.page, ...i.box })) },
+          archive: archive.trim(),
+          fund: fund.trim(),
+          opys: opys.trim(),
+          sprava: sprava.trim(),
+        });
+        done++;
+        setUploadProgress({ done, total });
       }
       setPageBoxes({});
+      setSelectedIds(new Set());
       setUploadDone({ count: done });
     } catch (e: any) {
-      setMsg(`❌ ${e.message}. Завантажено до помилки: ${done}/${totalBoxes}.`);
+      setMsg(`❌ ${e.message}. Завантажено до помилки: ${done}/${total}.`);
     } finally {
       setBusy(false);
       setTimeout(() => setUploadProgress(null), 800);
@@ -1077,7 +1271,10 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
               title={!metaValid ? 'Заповніть Архів / Фонд / Опис / Справа' : ''}
               className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
             >
-              <UploadCloud size={14} /> Завантажити всі ({totalBoxes})
+              <UploadCloud size={14} />{' '}
+              {totalBoxes !== groups.size
+                ? `Завантажити (${groups.size} справ із ${totalBoxes} зон)`
+                : `Завантажити всі (${totalBoxes})`}
             </button>
           </div>
 
@@ -1156,25 +1353,86 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
               style={{ maxWidth: '100%', height: 'auto' }}
             />
           </div>
+          {/* Панель виділення / обʼєднання */}
+          {selectedIds.size > 0 && (
+            <div className="flex flex-wrap gap-2 items-center bg-amber-50 border border-amber-300 rounded p-2 text-sm">
+              <span className="font-medium">Виділено: {selectedIds.size}</span>
+              <button
+                onClick={mergeSelected}
+                disabled={selectedIds.size < 2}
+                className="px-3 py-1 bg-amber-600 text-white rounded text-xs disabled:opacity-50"
+                title="Обʼєднати всі виділені зони в одну справу (склеяться як одне зображення)"
+              >
+                🔗 Обʼєднати в одну справу
+              </button>
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="px-3 py-1 bg-slate-200 rounded text-xs"
+              >
+                Зняти виділення
+              </button>
+              <span className="text-xs text-slate-600">
+                Підказка: клац всередині зони — виділити; клац на хрестик — видалити; зони можна виділяти на різних сторінках.
+              </span>
+            </div>
+          )}
+
           {boxes.length > 0 && (
             <div className="flex flex-wrap gap-1 items-center">
               <span className="text-xs text-slate-500 mr-1">Зони на цій сторінці:</span>
-              {boxes.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => removeBox(i)}
-                  className="px-2 py-1 bg-indigo-100 text-indigo-700 rounded text-xs hover:bg-red-100 hover:text-red-700"
-                  title="Видалити зону"
-                >
-                  #{i + 1} ✕
-                </button>
-              ))}
+              {boxes.map((b, i) => {
+                const inGroup = (groups.get(b.groupId)?.length || 0) > 1;
+                const sel = selectedIds.has(b.id);
+                return (
+                  <button
+                    key={b.id}
+                    onClick={() => toggleSelected(b.id)}
+                    onDoubleClick={() => removeBox(i)}
+                    className={`px-2 py-1 rounded text-xs ${
+                      sel ? 'bg-amber-300 text-amber-900' : 'bg-indigo-100 text-indigo-700 hover:bg-amber-100'
+                    }`}
+                    title="Клац — виділити; Подвійний клац — видалити"
+                    style={inGroup ? { borderLeft: `3px solid ${colorFromId(b.groupId)}` } : undefined}
+                  >
+                    #{i + 1}
+                    {inGroup && ' 🔗'}
+                  </button>
+                );
+              })}
               <button
                 onClick={clearPage}
                 className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs hover:bg-red-100 hover:text-red-700 ml-2"
               >
                 Очистити сторінку
               </button>
+            </div>
+          )}
+
+          {/* Панель крос-сторінкових груп */}
+          {multiBoxGroups.length > 0 && (
+            <div className="border rounded p-2 bg-slate-50 space-y-1 text-xs">
+              <div className="font-medium text-slate-700">
+                🔗 Обʼєднані справи ({multiBoxGroups.length})
+              </div>
+              {multiBoxGroups.map(([gid, items]) => (
+                <div
+                  key={gid}
+                  className="flex items-center gap-2 py-1 border-l-4 pl-2"
+                  style={{ borderColor: colorFromId(gid) }}
+                >
+                  <span className="text-slate-700">
+                    {items.length} зон:{' '}
+                    {items.map(it => `стор. ${it.page}`).join(' + ')}
+                  </span>
+                  <button
+                    onClick={() => ungroupAll(gid)}
+                    className="ml-auto text-slate-500 hover:text-red-600"
+                    title="Розгрупувати — кожна зона стане окремою справою"
+                  >
+                    розгрупувати
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>
