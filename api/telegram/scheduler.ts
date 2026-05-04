@@ -25,22 +25,6 @@ export function kyivDateString(date: Date = new Date()): string {
   return fmt.format(date);
 }
 
-export function kyivHour(date: Date = new Date()): number {
-  const fmt = new Intl.DateTimeFormat('en-GB', {
-    timeZone: cfg.dispatch.timezone,
-    hour: '2-digit',
-    hour12: false,
-  });
-  return parseInt(fmt.format(date), 10);
-}
-
-export function isWithinDispatchWindow(date: Date = new Date()): boolean {
-  const h = kyivHour(date);
-  const { startHourKyiv, endHourKyiv, intervalHours } = cfg.dispatch;
-  if (h < startHourKyiv || h > endHourKyiv) return false;
-  return (h - startHourKyiv) % intervalHours === 0;
-}
-
 export async function selectNextCaseForUser(tgId: string): Promise<BotCase | null> {
   const [allCases, seenIds] = await Promise.all([getAllCases(), getSubmissionsForUser(tgId)]);
   const seen = new Set(seenIds);

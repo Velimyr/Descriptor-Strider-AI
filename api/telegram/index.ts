@@ -14,7 +14,6 @@ import { handleUpdate, dispatchCaseToUser } from './bot.js';
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
 import { detectCaseBoxes } from './slicer.js';
 import {
-  isWithinDispatchWindow,
   nowIsoUtc,
   progressOfAllCases,
   recomputeCaseSubmissionCount,
@@ -53,12 +52,6 @@ router.get('/cron/tick', async (req, res) => {
   const expected = process.env[telegramBotConfig.cronSecretEnv];
   if (expected && req.query.secret !== expected) {
     return res.status(403).send('forbidden');
-  }
-
-  // ?force=1 обходить перевірку вікна — для тестування з GitHub Actions "Run workflow".
-  const force = req.query.force === '1';
-  if (!force && !isWithinDispatchWindow()) {
-    return res.json({ ok: true, skipped: 'outside-window-or-not-step' });
   }
 
   const cfg = telegramBotConfig.dispatch;

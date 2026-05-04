@@ -1,7 +1,7 @@
 name: Telegram bot tick
 
-# Розклад тригерить розсилку справ. Розклад UTC: 10/13/16/19/22 за Києвом = 7/10/13/16/19 UTC.
-# Якщо у вас зимовий час (Київ UTC+2) — підставте 8/11/14/17/20 UTC, або відкоригуйте під свій timezone.
+# Розклад тригерить розсилку справ. Поточні слоти: 10/13/16/19 за Києвом = 7/10/13/16 UTC у літній час.
+# Якщо у вас зимовий час (Київ UTC+2) — підставте 8/11/14/17 UTC, або відкоригуйте під свій timezone.
 # Cron у GitHub Actions працює тільки в UTC.
 
 on:
@@ -39,7 +39,7 @@ jobs:
 
           host="${BASE_URL#https://}"
           host="${host%%/*}"
-          echo "POST target: https://$host/api/telegram/cron/tick"
+          echo "GET target: https://$host/api/telegram/cron/tick"
 
           URL="${BASE_URL%/}/api/telegram/cron/tick?secret=$SECRET"
           curl -fsS --max-time 60 "$URL"
