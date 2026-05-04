@@ -61,10 +61,15 @@ export const tgApi = {
     opys: string;
     sprava: string;
   }) => call('/admin/upload-case', { method: 'POST', body: JSON.stringify(payload) }),
-  detectBoxes: (imageBase64: string, mime: string, geminiKey: string) =>
+  detectBoxes: (
+    imageBase64: string,
+    mime: string,
+    apiKey: string,
+    provider: 'gemini' | 'claude' = 'gemini'
+  ) =>
     call('/admin/detect-bboxes', {
       method: 'POST',
-      body: JSON.stringify({ imageBase64, mime, geminiKey }),
+      body: JSON.stringify({ imageBase64, mime, apiKey, provider }),
     }),
   overview: () => call('/admin/overview'),
   results: (limit = 500) => call(`/admin/results?limit=${limit}`),

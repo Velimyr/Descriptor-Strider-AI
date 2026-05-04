@@ -8,47 +8,115 @@ export interface BBox {
   h: number;
 }
 
+export type SlicingProvider = 'gemini' | 'claude';
+
+export interface DetectResult {
+  boxes: BBox[];
+  raw: string;
+  provider: SlicingProvider;
+  model: string;
+}
+
 /**
- * Просить Gemini знайти "якорі" справ (Y-координати початків) та межі таблиці.
- * Зони ми будуємо самі — це надійніше за пряме bbox-detect для табличних описів.
+ * Розпізнає справи на сторінці. Підтримує два провайдери:
+ *  - 'gemini' — Google Gemini (швидкий, дешевий).
+ *  - 'claude' — Anthropic Claude (точніший на складних таблицях, але повільніший).
  *
- * Підтримує fallback: якщо модель повернула не anchor-формат, а старий box-формат —
- * парсимо як раніше.
+ * Зони будуються з anchor-формату ({table_*, cases:[{y_top}]}); якщо не вийшло —
+ * fallback на старий bbox-формат.
  */
 export async function detectCaseBoxes(
   imageBase64: string,
   mime: string,
-  apiKey: string
-): Promise<{ boxes: BBox[]; raw: string }> {
+  apiKey: string,
+  provider: SlicingProvider = 'gemini'
+): Promise<DetectResult> {
   const cfg = telegramBotConfig.slicing;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${cfg.autoModel}:generateContent?key=${apiKey}`;
-  const body = {
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { inline_data: { mime_type: mime, data: imageBase64 } },
-          { text: cfg.autoPrompt },
-        ],
-      },
-    ],
-    generationConfig: { temperature: 0, responseMimeType: 'application/json' },
-  };
+  const prompt = cfg.detectionStrategy === 'separators' ? cfg.autoPromptSeparators : cfg.autoPrompt;
 
-  const res = await axios.post(url, body, { timeout: 60000 });
-  const raw = res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  let raw = '';
+  let model = '';
+  if (provider === 'claude') {
+    model = cfg.claudeModel;
+    raw = await callClaude(imageBase64, mime, apiKey, prompt, model);
+  } else {
+    model = cfg.geminiModel || cfg.autoModel;
+    raw = await callGemini(imageBase64, mime, apiKey, prompt, model);
+  }
 
-  // 1. Пробуємо anchor-формат (наш основний).
   let boxes = boxesFromAnchors(raw);
-
-  // 2. Якщо anchor не вийшов — пробуємо старий bbox-формат.
   if (boxes.length === 0) {
     const parsed = parseAnyBboxFormat(raw);
     const aligned = cfg.alignBoxesHorizontally ? alignWidth(parsed) : parsed;
     boxes = aligned.map(b => padBox(b, cfg.bboxPaddingX, cfg.bboxPaddingY));
   }
 
-  return { boxes, raw };
+  return { boxes, raw, provider, model };
+}
+
+async function callGemini(
+  imageBase64: string,
+  mime: string,
+  apiKey: string,
+  prompt: string,
+  model: string
+): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const body = {
+    contents: [
+      {
+        role: 'user',
+        parts: [{ inline_data: { mime_type: mime, data: imageBase64 } }, { text: prompt }],
+      },
+    ],
+    generationConfig: { temperature: 0, responseMimeType: 'application/json' },
+  };
+  const res = await axios.post(url, body, { timeout: 90000 });
+  return res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+async function callClaude(
+  imageBase64: string,
+  mime: string,
+  apiKey: string,
+  prompt: string,
+  model: string
+): Promise<string> {
+  const url = 'https://api.anthropic.com/v1/messages';
+  const body = {
+    model,
+    max_tokens: 4096,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mime, data: imageBase64 },
+          },
+          { type: 'text', text: prompt },
+        ],
+      },
+    ],
+  };
+  const res = await axios.post(url, body, {
+    timeout: 120000,
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+  });
+  // Збираємо весь текст з content.
+  const content = res.data?.content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((c: any) => c?.type === 'text')
+      .map((c: any) => c.text || '')
+      .join('\n')
+      .trim();
+  }
+  return '';
 }
 
 // =============== Anchor-based ===============

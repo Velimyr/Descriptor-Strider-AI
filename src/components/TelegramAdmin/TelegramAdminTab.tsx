@@ -427,6 +427,24 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   // Діапазон сторінок для авто-розпізнавання. Порожньо → поточна сторінка.
   const [autoRange, setAutoRange] = useState('');
   const [autoProgress, setAutoProgress] = useState<{ done: number; total: number; page?: number } | null>(null);
+  // Провайдер для авто-розпізнавання.
+  const [provider, setProvider] = useState<'gemini' | 'claude'>(
+    (localStorage.getItem('tg_admin_provider') as 'gemini' | 'claude') || 'gemini'
+  );
+  const [claudeKey, setClaudeKey] = useState(() => localStorage.getItem('tg_admin_claude_key') || '');
+  const [showLog, setShowLog] = useState(false);
+  type LogEntry = {
+    page: number;
+    provider: string;
+    model: string;
+    count: number;
+    raw: string;
+    error?: string;
+    ts: string;
+  };
+  const [recogLog, setRecogLog] = useState<LogEntry[]>([]);
+
+  const activeApiKey = provider === 'claude' ? claudeKey : geminiKey;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef<{ startX: number; startY: number } | null>(null);
 
@@ -589,8 +607,12 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   };
 
   const runAuto = async () => {
-    if (!pdf || !geminiKey) {
-      setMsg('Потрібно: відкритий PDF + Gemini API key (у головному екрані)');
+    if (!pdf || !activeApiKey) {
+      setMsg(
+        provider === 'claude'
+          ? 'Потрібно: відкритий PDF + Claude API key (введіть нижче в полі провайдера)'
+          : 'Потрібно: відкритий PDF + Gemini API key (у головному екрані)'
+      );
       return;
     }
     const pages = autoRange.trim()
@@ -600,15 +622,23 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       setMsg('❌ Невалідний діапазон. Приклади: "1-10", "3,5,7", "1-5, 8, 10-12"');
       return;
     }
-    if (pages.length > 50 && !confirm(`Розпізнати ${pages.length} сторінок? Це може зайняти час і витратити квоту Gemini.`)) {
+    if (
+      pages.length > 50 &&
+      !confirm(`Розпізнати ${pages.length} сторінок через ${provider}? Це може зайняти час і витратити квоту.`)
+    ) {
       return;
     }
+
+    // Запам'ятовуємо вибір провайдера.
+    localStorage.setItem('tg_admin_provider', provider);
+    if (provider === 'claude' && claudeKey) localStorage.setItem('tg_admin_claude_key', claudeKey);
 
     setBusy(true);
     setMsg('');
     setAutoProgress({ done: 0, total: pages.length });
     let totalFound = 0;
     let errors = 0;
+    const newLogs: LogEntry[] = [];
     try {
       for (let i = 0; i < pages.length; i++) {
         const pageNum = pages[i];
@@ -616,28 +646,41 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
         try {
           const dataUrl = pageNum === page ? pageImage : await renderPageToDataUrl(pdf, pageNum);
           const base64 = dataUrl.split(',')[1];
-          const r = await tgApi.detectBoxes(base64, 'image/jpeg', geminiKey);
+          const r = await tgApi.detectBoxes(base64, 'image/jpeg', activeApiKey, provider);
           const found = r.boxes || [];
           setBoxesForPage(pageNum, () => found);
           totalFound += found.length;
-          if (pages.length === 1 && found.length === 0 && r.raw) {
-            // Покажемо адміну що повернула модель — щоб зрозуміти чому нічого не знайшло.
-            console.log('[Gemini raw response]', r.raw);
-            setMsg(
-              `⚠ Gemini не знайшла зон. Відповідь моделі (перші 300 символів):\n${String(r.raw).slice(0, 300)}`
-            );
-          }
+          newLogs.push({
+            page: pageNum,
+            provider: r.provider || provider,
+            model: r.model || '',
+            count: found.length,
+            raw: r.raw || '',
+            ts: new Date().toLocaleTimeString(),
+          });
         } catch (e: any) {
           errors++;
           console.error(`detect failed on page ${pageNum}:`, e);
+          newLogs.push({
+            page: pageNum,
+            provider,
+            model: '',
+            count: 0,
+            raw: '',
+            error: e?.message || 'unknown',
+            ts: new Date().toLocaleTimeString(),
+          });
         }
       }
       setAutoProgress({ done: pages.length, total: pages.length });
+      // Показуємо лог автоматично після першого запуску
+      setRecogLog(prev => [...newLogs, ...prev].slice(0, 50));
+      setShowLog(true);
       const errSuffix = errors > 0 ? `, помилок: ${errors}` : '';
       setMsg(
         pages.length === 1
-          ? `✅ Знайдено ${totalFound} зон. Перевірте і скоригуйте.`
-          : `✅ Опрацьовано ${pages.length} сторінок, знайдено ${totalFound} зон${errSuffix}.`
+          ? `✅ Знайдено ${totalFound} зон. Перевірте і скоригуйте. Деталі в розділі «Лог».`
+          : `✅ Опрацьовано ${pages.length} сторінок, знайдено ${totalFound} зон${errSuffix}. Деталі в розділі «Лог».`
       );
     } finally {
       setBusy(false);
@@ -843,10 +886,19 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
               className="border rounded px-2 py-1 text-sm"
             >
               <option value="manual">Ручний</option>
-              <option value="auto">Авто (Gemini)</option>
+              <option value="auto">Авто (AI)</option>
             </select>
             {mode === 'auto' && (
               <>
+                <select
+                  value={provider}
+                  onChange={e => setProvider(e.target.value as 'gemini' | 'claude')}
+                  className="border rounded px-2 py-1 text-sm"
+                  title="Модель для розпізнавання"
+                >
+                  <option value="gemini">Gemini Flash</option>
+                  <option value="claude">Claude Opus</option>
+                </select>
                 <input
                   value={autoRange}
                   onChange={e => setAutoRange(e.target.value)}
@@ -863,7 +915,8 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
                 </button>
                 <button
                   onClick={runAuto}
-                  disabled={busy}
+                  disabled={busy || !activeApiKey}
+                  title={!activeApiKey ? `Введіть ${provider === 'claude' ? 'Claude' : 'Gemini'} API key` : ''}
                   className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
                 >
                   <Wand2 size={14} />{' '}
@@ -880,6 +933,22 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
               <UploadCloud size={14} /> Завантажити всі ({totalBoxes})
             </button>
           </div>
+
+          {/* Поле ключа Claude — показується лише якщо обрано claude і немає збереженого */}
+          {mode === 'auto' && provider === 'claude' && (
+            <div className="flex gap-2 items-center text-xs">
+              <span className="text-slate-600">Claude API key:</span>
+              <input
+                type="password"
+                value={claudeKey}
+                onChange={e => setClaudeKey(e.target.value)}
+                onBlur={() => localStorage.setItem('tg_admin_claude_key', claudeKey)}
+                placeholder="sk-ant-..."
+                className="flex-1 max-w-md border rounded px-2 py-1"
+              />
+              {claudeKey && <span className="text-green-600">✓ збережено</span>}
+            </div>
+          )}
 
           {/* Бейджи сторінок з зонами — швидка навігація */}
           {pagesWithBoxes.length > 0 && (
@@ -942,12 +1011,60 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       )}
 
       {/* Прогрес-бар */}
+      {/* Лог розпізнавання */}
+      {recogLog.length > 0 && (
+        <div className="border rounded">
+          <button
+            onClick={() => setShowLog(s => !s)}
+            className="w-full flex items-center justify-between px-3 py-2 text-sm bg-slate-50 hover:bg-slate-100"
+          >
+            <span className="font-medium">
+              📜 Лог розпізнавання ({recogLog.length})
+            </span>
+            <span className="text-xs text-slate-500">
+              {showLog ? 'сховати ▲' : 'показати ▼'}
+            </span>
+          </button>
+          {showLog && (
+            <div className="p-3 space-y-2 max-h-96 overflow-auto">
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setRecogLog([])}
+                  className="text-xs text-slate-500 hover:text-red-600"
+                >
+                  очистити лог
+                </button>
+              </div>
+              {recogLog.map((l, i) => (
+                <details key={i} className="border rounded">
+                  <summary className="cursor-pointer px-2 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50">
+                    <span className="font-mono text-slate-500">{l.ts}</span>
+                    <span className="font-medium">стор. {l.page}</span>
+                    <span className="text-slate-500">{l.provider}/{l.model}</span>
+                    {l.error ? (
+                      <span className="text-red-600">❌ {l.error}</span>
+                    ) : (
+                      <span className={l.count > 0 ? 'text-green-700' : 'text-amber-700'}>
+                        {l.count > 0 ? `✅ ${l.count} зон` : '⚠ 0 зон'}
+                      </span>
+                    )}
+                  </summary>
+                  <pre className="text-[11px] bg-slate-50 p-2 overflow-auto whitespace-pre-wrap max-h-60">
+                    {l.raw || '(порожня відповідь)'}
+                  </pre>
+                </details>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Прогрес авто-розпізнавання */}
       {autoProgress && (
         <div className="border rounded p-3 bg-white shadow-sm space-y-2 sticky bottom-2">
           <div className="flex items-center justify-between text-sm">
             <span>
-              🤖 Розпізнавання Gemini{autoProgress.page ? ` (стор. ${autoProgress.page})` : ''}…
+              🤖 Розпізнавання {provider === 'claude' ? 'Claude' : 'Gemini'}{autoProgress.page ? ` (стор. ${autoProgress.page})` : ''}…
             </span>
             <span className="font-mono">
               {autoProgress.done} / {autoProgress.total}

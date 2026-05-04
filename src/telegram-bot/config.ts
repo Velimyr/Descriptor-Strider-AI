@@ -58,14 +58,13 @@ export interface TelegramBotConfig {
 
   slicing: {
     defaultMode: 'manual' | 'auto';
-    autoModel: string;
-    // 'boxes' — Gemini повертає bbox для кожної справи (часто плутається у таблицях).
-    // 'separators' — Gemini повертає лише Y-координати горизонтальних меж між справами.
-    //                Ми будуємо зони самі: ширина = вся таблиця, висота = між меж.
-    //                Це значно надійніше для табличних описів.
+    defaultProvider: 'gemini' | 'claude';
+    geminiModel: string;
+    claudeModel: string;
+    autoModel: string; // legacy, дублює geminiModel
     detectionStrategy: 'boxes' | 'separators';
-    autoPrompt: string;          // промпт для стратегії 'boxes'
-    autoPromptSeparators: string; // промпт для стратегії 'separators'
+    autoPrompt: string;
+    autoPromptSeparators: string;
     renderScale: number;
     imageMaxWidthPx: number;
     jpegQuality: number;
@@ -131,6 +130,9 @@ export const telegramBotConfig: TelegramBotConfig = {
 
   slicing: {
     defaultMode: 'manual',
+    defaultProvider: 'gemini',
+    geminiModel: 'gemini-2.5-flash',
+    claudeModel: 'claude-opus-4-7',
     autoModel: 'gemini-2.5-flash',
     detectionStrategy: 'separators' as const,
     autoPromptSeparators:

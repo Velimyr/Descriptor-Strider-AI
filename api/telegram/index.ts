@@ -330,17 +330,22 @@ router.post('/admin/upload-case', async (req, res) => {
 // Авто-нарізка: фронт шле картинку сторінки → ми просимо Gemini bbox-и.
 router.post('/admin/detect-bboxes', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { imageBase64, mime, geminiKey } = req.body || {};
-  if (!imageBase64 || !geminiKey) return res.status(400).json({ error: 'imageBase64 + geminiKey required' });
+  const { imageBase64, mime, apiKey, geminiKey, provider } = req.body || {};
+  // Підтримуємо обидва імені поля для backward-compat: apiKey (нове) і geminiKey (старе).
+  const key = apiKey || geminiKey;
+  if (!imageBase64 || !key) {
+    return res.status(400).json({ error: 'imageBase64 + apiKey required' });
+  }
+  const prov = (provider === 'claude' ? 'claude' : 'gemini') as 'gemini' | 'claude';
   try {
-    const { boxes, raw } = await detectCaseBoxes(imageBase64, mime || 'image/jpeg', geminiKey);
-    // raw повертаємо для дебагу — видно у відповіді API і в console.log на сервері.
-    if (boxes.length === 0) {
-      console.log('[detect-bboxes] empty result, raw:', raw?.slice(0, 500));
+    const result = await detectCaseBoxes(imageBase64, mime || 'image/jpeg', key, prov);
+    if (result.boxes.length === 0) {
+      console.log(`[detect-bboxes] empty result (${result.provider}/${result.model}), raw:`, result.raw?.slice(0, 500));
     }
-    res.json({ ok: true, boxes, raw });
+    res.json({ ok: true, ...result });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    const detail = e?.response?.data ? JSON.stringify(e.response.data).slice(0, 500) : e.message;
+    res.status(500).json({ error: detail });
   }
 });
 
