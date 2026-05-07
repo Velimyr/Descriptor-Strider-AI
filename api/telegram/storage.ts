@@ -341,6 +341,21 @@ export async function getSubmissionsForUser(tgId: string): Promise<string[]> {
   return (data || []).map((r: any) => r.case_id);
 }
 
+// ---------- SKIPPED CASES ----------
+export async function recordSkippedCase(tgId: string, caseId: string): Promise<void> {
+  if (!caseId) return;
+  const { error } = await db()
+    .from('bot_skipped')
+    .upsert({ tg_id: tgId, case_id: caseId }, { onConflict: 'tg_id,case_id' });
+  if (error) throw error;
+}
+
+export async function getSkippedForUser(tgId: string): Promise<string[]> {
+  const { data, error } = await db().from('bot_skipped').select('case_id').eq('tg_id', tgId);
+  if (error) throw error;
+  return (data || []).map((r: any) => r.case_id);
+}
+
 export async function getResultsTotals(): Promise<{ totalSubmissions: number }> {
   const { count, error } = await db()
     .from('bot_submissions')

@@ -4,6 +4,7 @@ import {
   BotUser,
   countSubmissionsByCase,
   getAllCases,
+  getSkippedForUser,
   getSubmissionsForUser,
   patchCase,
 } from './storage.js';
@@ -26,8 +27,13 @@ export function kyivDateString(date: Date = new Date()): string {
 }
 
 export async function selectNextCaseForUser(tgId: string): Promise<BotCase | null> {
-  const [allCases, seenIds] = await Promise.all([getAllCases(), getSubmissionsForUser(tgId)]);
-  const seen = new Set(seenIds);
+  const [allCases, seenIds, skippedIds] = await Promise.all([
+    getAllCases(),
+    getSubmissionsForUser(tgId),
+    getSkippedForUser(tgId),
+  ]);
+  // "Бачені" = підтверджені АБО відмовлені — і ті, і ті повторно не показуємо.
+  const seen = new Set([...seenIds, ...skippedIds]);
   const target = cfg.cases.targetSubmissions;
 
   // Пріоритет 1: відкриті справи, не бачені, count < target — спершу майже-готові.

@@ -90,6 +90,16 @@ create table if not exists bot_dispatch_log (
 );
 create index if not exists idx_dispatch_user on bot_dispatch_log(tg_id);
 
+-- Справи, від яких користувач відмовився (натиснув "Скасувати" під час опитування).
+-- Виключаються при доборі наступної справи цьому користувачу.
+create table if not exists bot_skipped (
+  tg_id      text        not null,
+  case_id    text        not null,
+  skipped_at timestamptz not null default now(),
+  primary key (tg_id, case_id)
+);
+create index if not exists idx_skipped_user on bot_skipped(tg_id);
+
 create table if not exists bot_meta (
   key   text primary key,
   value text not null default ''
@@ -120,6 +130,7 @@ alter table bot_sessions     enable row level security;
 alter table bot_submissions  enable row level security;
 alter table bot_daily_scores enable row level security;
 alter table bot_dispatch_log enable row level security;
+alter table bot_skipped      enable row level security;
 alter table bot_meta         enable row level security;
 
 -- Заборонити виконання RPC від імені anon/authenticated.

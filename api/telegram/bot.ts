@@ -12,6 +12,7 @@ import {
   getUser,
   incDailyCount,
   patchUser,
+  recordSkippedCase,
   setSession,
   upsertUser,
   getDailyCount,
@@ -265,6 +266,14 @@ async function handleMessage(msg: any) {
     return;
   }
   if (text === '/cancel') {
+    // Запам'ятовуємо відмову, щоб ця сама справа більше не приходила цьому юзеру.
+    if (session?.caseId) {
+      try {
+        await recordSkippedCase(tgId, session.caseId);
+      } catch (e) {
+        console.error('recordSkippedCase failed', e);
+      }
+    }
     const had = await deleteSession(tgId);
     await sendMessage(chatId, had ? T.cancelled : T.nothingToCancel, {
       reply_markup: mainMenuKeyboard(user),
@@ -335,6 +344,14 @@ async function handleCallback(cb: any) {
   const answers: string[] = JSON.parse(session.answersJson || '[]');
 
   if (data === 'cancel') {
+    // Запам'ятовуємо відмову, щоб ця сама справа більше не приходила цьому юзеру.
+    if (session.caseId) {
+      try {
+        await recordSkippedCase(tgId, session.caseId);
+      } catch (e) {
+        console.error('recordSkippedCase failed', e);
+      }
+    }
     await deleteSession(tgId);
     await sendMessage(chatId, T.cancelled);
     return;
