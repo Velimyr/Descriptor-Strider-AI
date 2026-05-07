@@ -1543,6 +1543,7 @@ const ResultsView: React.FC = () => {
   const [msg, setMsg] = useState('');
   const [limit, setLimit] = useState(500);
   const [filter, setFilter] = useState('');
+  const [descFilter, setDescFilter] = useState(''); // 'archive|fund|opys' або '' для всіх
 
   const refresh = async () => {
     setBusy(true);
@@ -1562,14 +1563,14 @@ const ResultsView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const descKeyOf = (s: any) => `${s.archive || ''}|${s.fund || ''}|${s.opys || ''}`;
+  const descNameOf = (s: any) => `${s.archive || ''} ${s.fund || ''}-${s.opys || ''}`;
+
   const buildHeaders = (questions: any[]) => [
     'submitted_at',
     'display_name',
     'tg_id',
-    'Архів',
-    'Фонд',
     'Опис',
-    'Справа',
     'Файл',
     'Сторінка',
     ...questions.map((q: any, i: number) => q.label || `Q${i + 1}`),
@@ -1583,10 +1584,7 @@ const ResultsView: React.FC = () => {
       s.submitted_at || '',
       s.display_name || '',
       s.tg_id || '',
-      s.archive || '',
-      s.fund || '',
-      s.opys || '',
-      s.sprava || '',
+      descNameOf(s),
       s.source_pdf || '',
       s.page || '',
       ...questions.map((_: any, i: number) => String(answers[i] ?? '')),
@@ -1595,8 +1593,18 @@ const ResultsView: React.FC = () => {
     ];
   };
 
+  // Унікальні описи для випадаючого фільтра.
+  const descriptions: [string, string][] = data
+    ? Array.from(
+        new Map<string, string>(
+          data.submissions.map(s => [descKeyOf(s), descNameOf(s)])
+        ).entries()
+      ).sort((a, b) => a[1].localeCompare(b[1]))
+    : [];
+
   const filtered = data
     ? data.submissions.filter(s => {
+        if (descFilter && descKeyOf(s) !== descFilter) return false;
         if (!filter.trim()) return true;
         const q = filter.toLowerCase();
         const row = buildRow(s, data.questions);
@@ -1647,6 +1655,18 @@ const ResultsView: React.FC = () => {
           <option value={500}>500</option>
           <option value={2000}>2000</option>
           <option value={5000}>5000</option>
+        </select>
+        <select
+          value={descFilter}
+          onChange={e => setDescFilter(e.target.value)}
+          className="border rounded px-2 py-1 text-sm"
+        >
+          <option value="">Усі описи</option>
+          {descriptions.map(([key, name]) => (
+            <option key={key} value={key}>
+              {name}
+            </option>
+          ))}
         </select>
         <input
           value={filter}
@@ -1745,9 +1765,33 @@ const OverviewView: React.FC = () => {
         <>
           <section>
             <h3 className="font-semibold mb-2">Прогрес</h3>
-            <div className="bg-slate-50 border rounded p-3 text-sm">
-              {data.progress.donePct}% — {data.progress.doneCases} з {data.progress.totalCases} повністю.{' '}
-              Усього справ: {data.cases}.
+            <div className="bg-slate-50 border rounded p-3 text-sm space-y-2">
+              <div>
+                Повністю розпізнано описів: <b>{data.fullyDoneDescriptions ?? 0}</b> з{' '}
+                {(data.descriptions || []).length}. Усього справ: {data.cases}.
+              </div>
+              {Array.isArray(data.descriptions) && data.descriptions.length > 0 && (
+                <table className="w-full text-xs border-collapse mt-1">
+                  <thead>
+                    <tr className="bg-slate-100">
+                      <th className="text-left p-1.5">Опис</th>
+                      <th className="text-right p-1.5 whitespace-nowrap">Готово</th>
+                      <th className="text-right p-1.5 whitespace-nowrap">Справ</th>
+                      <th className="text-right p-1.5 whitespace-nowrap">%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.descriptions.map((d: any) => (
+                      <tr key={d.key} className="border-b">
+                        <td className="p-1.5">{d.name}</td>
+                        <td className="p-1.5 text-right">{d.doneCases}</td>
+                        <td className="p-1.5 text-right">{d.totalCases}</td>
+                        <td className="p-1.5 text-right">{d.donePct}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           </section>
           <section>
