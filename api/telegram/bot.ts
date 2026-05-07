@@ -483,7 +483,9 @@ async function cmdProgress(chatId: number, user: BotUser) {
   const cases = await getAllCases();
   const descriptions = progressByDescription(cases);
   const top = descriptions.slice(0, 3);
-  const header = fmt(T.progressTotalDescriptions, { count: descriptions.length });
+  // Лічимо лише повністю розпізнані описи (всі справи опису підтверджено).
+  const fullyDoneCount = descriptions.filter(d => d.doneCases === d.totalCases).length;
+  const header = fmt(T.progressTotalDescriptions, { count: fullyDoneCount });
   const blocks = top.map(d =>
     fmt(T.progressDescriptionLine, {
       name: escapeHtml(d.name),
