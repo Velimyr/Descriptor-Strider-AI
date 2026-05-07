@@ -15,6 +15,7 @@ import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './
 import { detectCaseBoxes } from './slicer.js';
 import {
   nowIsoUtc,
+  progressByDescription,
   progressOfAllCases,
   recomputeCaseSubmissionCount,
 } from './scheduler.js';
@@ -376,6 +377,8 @@ router.get('/admin/results', async (req, res) => {
 router.get('/admin/overview', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const [users, cases] = await Promise.all([getAllUsers(), getAllCases()]);
+  const descriptions = progressByDescription(cases);
+  const fullyDoneDescriptions = descriptions.filter(d => d.doneCases === d.totalCases).length;
   res.json({
     users: users
       .map(u => ({
@@ -388,6 +391,8 @@ router.get('/admin/overview', async (req, res) => {
       .sort((a, b) => b.totalPoints - a.totalPoints),
     cases: cases.length,
     progress: progressOfAllCases(cases),
+    descriptions,
+    fullyDoneDescriptions,
   });
 });
 
