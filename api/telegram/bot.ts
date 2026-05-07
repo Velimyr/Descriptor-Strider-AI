@@ -479,16 +479,21 @@ async function cmdProgress(chatId: number, user: BotUser) {
 
 async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
   const all = leaderboardSorted(await getAllUsers());
-  // Поточний користувач не бере участь у нумерованому списку — для нього
-  // окремий рядок "Мої бали" в самому кінці.
-  const others = all.filter(u => u.tgId !== tgId);
-  const top = others.slice(0, 10);
+  const top = all.slice(0, 10);
   const lines = top.map(
     (u, i) => `${i + 1}. ${escapeHtml(u.displayName || '—')} — ${u.totalPoints}`
   );
-  const body =
-    `${T.leaderboardHeader}\n${lines.join('\n') || '—'}` +
-    fmt(T.leaderboardYou, { points: user.totalPoints });
+  let body = `${T.leaderboardHeader}\n${lines.join('\n') || '—'}`;
+  // Якщо користувач НЕ в топ-10 — показуємо "..." і його позицію окремим рядком.
+  const myRank = all.findIndex(u => u.tgId === tgId);
+  if (myRank >= 10) {
+    body +=
+      '\n...' +
+      fmt(T.leaderboardYou, {
+        rank: myRank + 1,
+        points: all[myRank].totalPoints,
+      });
+  }
   await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
 }
 
