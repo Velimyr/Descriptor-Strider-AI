@@ -271,9 +271,9 @@ export const telegramBotConfig: TelegramBotConfig = {
       '🏆 Всього балів: {total}\n' +
       '📅 Сьогодні: {todayCount} справ ({todayPoints} балів, множник ×{multiplier})\n' +
       '📊 Місце в рейтингу: {rank} з {totalUsers}',
-    progressLine:
-      '📈 Оброблено: {donePct}% ({doneCases} з {totalCases} справ повністю перевірено)\n' +
-      '📝 Усього записів: {totalSubmissions}',
+    progressTotalDescriptions: 'Всього розпізнано описів: {count}',
+    progressDescriptionLine:
+      'Опис {name}:\n📈 Оброблено: {donePct}% ({doneCases} з {totalCases} справ повністю перевірено)',
     leaderboardHeader: '🏆 Топ-10:',
     leaderboardYou: '\n{rank}. Ви — {points}',
     backButton: '⬅ Назад',

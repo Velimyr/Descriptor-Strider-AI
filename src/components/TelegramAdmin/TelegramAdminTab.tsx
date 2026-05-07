@@ -436,7 +436,7 @@ interface SessionFile {
   pdfName: string;
   pdfBase64: string; // вміст PDF
   pageBoxes: Record<number, Box[]>;
-  meta: { archive: string; fund: string; opys: string; sprava: string };
+  meta: { archive: string; fund: string; opys: string };
 }
 
 function arrayBufferToBase64(buf: ArrayBuffer): string {
@@ -470,10 +470,10 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [uploadDone, setUploadDone] = useState<{ count: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // Архівні реквізити — обовʼязкові для всієї пачки справ.
-  const [archive, setArchive] = useState(() => localStorage.getItem('tg_admin_archive') || '');
-  const [fund, setFund] = useState(() => localStorage.getItem('tg_admin_fund') || '');
-  const [opys, setOpys] = useState(() => localStorage.getItem('tg_admin_opys') || '');
-  const [sprava, setSprava] = useState(() => localStorage.getItem('tg_admin_sprava') || '');
+  // Архівні реквізити НЕ зберігаються між сесіями — кожен PDF може бути іншим описом.
+  const [archive, setArchive] = useState('');
+  const [fund, setFund] = useState('');
+  const [opys, setOpys] = useState('');
   // Діапазон сторінок для авто-розпізнавання. Порожньо → поточна сторінка.
   const [autoRange, setAutoRange] = useState('');
   const [autoProgress, setAutoProgress] = useState<{ done: number; total: number; page?: number } | null>(null);
@@ -507,7 +507,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef<{ startX: number; startY: number } | null>(null);
 
-  const metaValid = !!(archive.trim() && fund.trim() && opys.trim() && sprava.trim());
+  const metaValid = !!(archive.trim() && fund.trim() && opys.trim());
   const boxes: Box[] = pageBoxes[page] || [];
   const totalBoxes = (Object.values(pageBoxes) as Box[][]).reduce((s, b) => s + b.length, 0);
   const pagesWithBoxes = (Object.entries(pageBoxes) as [string, Box[]][])
@@ -770,7 +770,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       pdfName,
       pdfBase64,
       pageBoxes,
-      meta: { archive, fund, opys, sprava },
+      meta: { archive, fund, opys },
     };
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -812,7 +812,6 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
         if (data.meta.archive) setArchive(data.meta.archive);
         if (data.meta.fund) setFund(data.meta.fund);
         if (data.meta.opys) setOpys(data.meta.opys);
-        if (data.meta.sprava) setSprava(data.meta.sprava);
       }
       setPage(1);
       await renderPage(doc, 1);
@@ -1017,13 +1016,9 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
       return;
     }
     if (!metaValid) {
-      setMsg('❌ Заповніть Архів / Фонд / Опис / Справа перед завантаженням.');
+      setMsg('❌ Заповніть Архів / Фонд / Опис перед завантаженням.');
       return;
     }
-    localStorage.setItem('tg_admin_archive', archive.trim());
-    localStorage.setItem('tg_admin_fund', fund.trim());
-    localStorage.setItem('tg_admin_opys', opys.trim());
-    localStorage.setItem('tg_admin_sprava', sprava.trim());
 
     // Кешуємо зображення сторінок щоб не рендерити одну і ту саму двічі
     // (у випадку груп з кількома зонами на одній сторінці).
@@ -1064,7 +1059,6 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
           archive: archive.trim(),
           fund: fund.trim(),
           opys: opys.trim(),
-          sprava: sprava.trim(),
         });
         done++;
         setUploadProgress({ done, total });
@@ -1098,10 +1092,10 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
         <div className="flex items-center justify-between mb-2">
           <div className="text-sm font-medium">Архівні реквізити (обовʼязкові)</div>
           {!metaValid && (
-            <div className="text-xs text-amber-700">⚠ Заповніть усі 4 поля перед завантаженням</div>
+            <div className="text-xs text-amber-700">⚠ Заповніть усі 3 поля перед завантаженням</div>
           )}
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
           <input
             value={archive}
             onChange={e => setArchive(e.target.value)}
@@ -1120,16 +1114,9 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
             placeholder="Опис *"
             className={`border rounded px-2 py-1.5 text-sm ${!opys.trim() ? 'border-amber-400' : ''}`}
           />
-          <input
-            value={sprava}
-            onChange={e => setSprava(e.target.value)}
-            placeholder="Справа *"
-            className={`border rounded px-2 py-1.5 text-sm ${!sprava.trim() ? 'border-amber-400' : ''}`}
-          />
         </div>
         <div className="text-xs text-slate-500 mt-1.5">
-          Ці значення додаються до кожної справи з цього PDF і потрапляють у Результати разом з імʼям файлу і номером сторінки.
-          Зберігаються між сесіями.
+          Усі справи з цього PDF будуть приписані до опису "{archive.trim() || '...'} {fund.trim() || '...'}-{opys.trim() || '...'}".
         </div>
       </section>
 
@@ -1279,7 +1266,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
             <button
               onClick={uploadAll}
               disabled={busy || totalBoxes === 0 || !metaValid}
-              title={!metaValid ? 'Заповніть Архів / Фонд / Опис / Справа' : ''}
+              title={!metaValid ? 'Заповніть Архів / Фонд / Опис' : ''}
               className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
             >
               <UploadCloud size={14} />{' '}
