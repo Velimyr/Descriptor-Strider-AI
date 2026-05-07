@@ -1539,6 +1539,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
 
 const ResultsView: React.FC = () => {
   const [data, setData] = useState<{ questions: any[]; submissions: any[] } | null>(null);
+  const [allDescriptions, setAllDescriptions] = useState<{ key: string; name: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [limit, setLimit] = useState(500);
@@ -1549,8 +1550,11 @@ const ResultsView: React.FC = () => {
     setBusy(true);
     setMsg('');
     try {
-      const r = await tgApi.results(limit);
+      const [r, ov] = await Promise.all([tgApi.results(limit), tgApi.overview()]);
       setData({ questions: r.questions || [], submissions: r.submissions || [] });
+      setAllDescriptions(
+        (ov.descriptions || []).map((d: any) => ({ key: d.key, name: d.name }))
+      );
     } catch (e: any) {
       setMsg('❌ ' + e.message);
     } finally {
@@ -1593,14 +1597,15 @@ const ResultsView: React.FC = () => {
     ];
   };
 
-  // Унікальні описи для випадаючого фільтра.
-  const descriptions: [string, string][] = data
-    ? Array.from(
-        new Map<string, string>(
-          data.submissions.map(s => [descKeyOf(s), descNameOf(s)])
-        ).entries()
-      ).sort((a, b) => a[1].localeCompare(b[1]))
-    : [];
+  // Усі описи (із Огляду) — щоб у фільтрі бачити навіть ті, які ще не мають
+  // підтверджень у поточному ліміті завантаження.
+  const descriptions: [string, string][] = allDescriptions
+    .map(d => [d.key, d.name] as [string, string])
+    .sort((a, b) => a[1].localeCompare(b[1]));
+
+  const selectedDescriptionName = descFilter
+    ? descriptions.find(([k]) => k === descFilter)?.[1] || ''
+    : '';
 
   const filtered = data
     ? data.submissions.filter(s => {
@@ -1612,10 +1617,10 @@ const ResultsView: React.FC = () => {
       })
     : [];
 
-  const exportCsv = () => {
+  const downloadCsv = (rowsSource: any[], suffix: string) => {
     if (!data) return;
     const headers = buildHeaders(data.questions);
-    const rows = filtered.map(s => buildRow(s, data.questions));
+    const rows = rowsSource.map(s => buildRow(s, data.questions));
     const all = [headers, ...rows];
     const escape = (v: any) => {
       const s = String(v ?? '');
@@ -1629,10 +1634,20 @@ const ResultsView: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const safe = suffix.replace(/[\\/:*?"<>|]+/g, '_').trim();
     a.href = url;
-    a.download = `descriptor-results-${ts}.csv`;
+    a.download = `descriptor-results-${safe ? safe + '-' : ''}${ts}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const exportCsv = () => downloadCsv(filtered, '');
+
+  // Експорт усіх записів вибраного опису (без обмеження поточним текстовим фільтром).
+  const exportSelectedDescription = () => {
+    if (!data || !descFilter) return;
+    const rows = data.submissions.filter(s => descKeyOf(s) === descFilter);
+    downloadCsv(rows, selectedDescriptionName);
   };
 
   return (
@@ -1680,6 +1695,14 @@ const ResultsView: React.FC = () => {
           className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm disabled:opacity-50"
         >
           Експорт CSV ({filtered.length})
+        </button>
+        <button
+          onClick={exportSelectedDescription}
+          disabled={!data || !descFilter}
+          title={descFilter ? `Експортувати всі записи опису "${selectedDescriptionName}"` : 'Спочатку оберіть опис'}
+          className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm disabled:opacity-50"
+        >
+          Експорт опису
         </button>
       </div>
 
