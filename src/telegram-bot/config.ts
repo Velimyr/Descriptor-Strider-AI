@@ -275,7 +275,7 @@ export const telegramBotConfig: TelegramBotConfig = {
       '📈 Оброблено: {donePct}% ({doneCases} з {totalCases} справ повністю перевірено)\n' +
       '📝 Усього записів: {totalSubmissions}',
     leaderboardHeader: '🏆 Топ-10:',
-    leaderboardYou: '\n\n📊 Мої бали: {points}',
+    leaderboardYou: '\n{rank}. Ви — {points}',
     backButton: '⬅ Назад',
     cancelButton: '❌ Скасувати',
     confirmButton: '✅ Підтвердити',
