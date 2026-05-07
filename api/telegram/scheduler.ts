@@ -26,6 +26,26 @@ export function kyivDateString(date: Date = new Date()): string {
   return fmt.format(date);
 }
 
+// Ключ опису = archive|fund|opys. Одна "опис" = всі справи з одного завантаженого PDF.
+export function descriptionKey(c: { archive: string; fund: string; opys: string }): string {
+  return `${c.archive}|${c.fund}|${c.opys}`;
+}
+
+export function descriptionName(c: { archive: string; fund: string; opys: string }): string {
+  return `${c.archive} ${c.fund}-${c.opys}`;
+}
+
+// Найраніша createdAt серед справ опису — використовуємо як "вік опису" для черговості.
+function buildDescriptionOrder(cases: BotCase[]): Map<string, string> {
+  const order = new Map<string, string>();
+  for (const c of cases) {
+    const k = descriptionKey(c);
+    const cur = order.get(k);
+    if (!cur || c.createdAt.localeCompare(cur) < 0) order.set(k, c.createdAt);
+  }
+  return order;
+}
+
 export async function selectNextCaseForUser(tgId: string): Promise<BotCase | null> {
   const [allCases, seenIds, skippedIds] = await Promise.all([
     getAllCases(),
@@ -35,21 +55,28 @@ export async function selectNextCaseForUser(tgId: string): Promise<BotCase | nul
   // "Бачені" = підтверджені АБО відмовлені — і ті, і ті повторно не показуємо.
   const seen = new Set([...seenIds, ...skippedIds]);
   const target = cfg.cases.targetSubmissions;
+  const descOrder = buildDescriptionOrder(allCases);
 
-  // Пріоритет 1: відкриті справи, не бачені, count < target — спершу майже-готові.
+  // Сортування: спочатку за віком опису (найстаріший — першим),
+  // потім всередині опису — спершу майже-готові, далі за датою створення справи.
+  const compare = (a: BotCase, b: BotCase) => {
+    const ageA = descOrder.get(descriptionKey(a)) || a.createdAt;
+    const ageB = descOrder.get(descriptionKey(b)) || b.createdAt;
+    if (ageA !== ageB) return ageA.localeCompare(ageB);
+    if (b.submissionsCount !== a.submissionsCount) return b.submissionsCount - a.submissionsCount;
+    return a.createdAt.localeCompare(b.createdAt);
+  };
+
+  // Пріоритет 1: відкриті справи, не бачені, count < target.
   const primary = allCases
     .filter(c => c.status === 'open' && !seen.has(c.caseId) && c.submissionsCount < target)
-    .sort((a, b) => {
-      if (b.submissionsCount !== a.submissionsCount) return b.submissionsCount - a.submissionsCount;
-      return a.createdAt.localeCompare(b.createdAt);
-    });
+    .sort(compare);
   if (primary.length > 0) return primary[0];
 
   // Пріоритет 2 (опційно): уже досягли target, але добираємо для надійності.
+  // Все одно — у порядку описів.
   if (cfg.cases.allowExtraAfterTarget) {
-    const extra = allCases
-      .filter(c => !seen.has(c.caseId))
-      .sort((a, b) => a.submissionsCount - b.submissionsCount);
+    const extra = allCases.filter(c => !seen.has(c.caseId)).sort(compare);
     if (extra.length > 0) return extra[0];
   }
   return null;
@@ -106,4 +133,45 @@ export function progressOfAllCases(cases: BotCase[]): {
     doneCases,
     donePct: Math.round((cappedSum / (total * target)) * 1000) / 10,
   };
+}
+
+export interface DescriptionProgress {
+  key: string;
+  name: string;
+  earliestCreatedAt: string;
+  totalCases: number;
+  doneCases: number;
+  donePct: number;
+}
+
+// Групуємо справи по описах і рахуємо прогрес для кожного.
+// Сортуємо за датою створення (найстаріший — першим).
+export function progressByDescription(cases: BotCase[]): DescriptionProgress[] {
+  const groups = new Map<string, BotCase[]>();
+  for (const c of cases) {
+    const k = descriptionKey(c);
+    const arr = groups.get(k);
+    if (arr) arr.push(c);
+    else groups.set(k, [c]);
+  }
+  const target = cfg.cases.targetSubmissions;
+  const result: DescriptionProgress[] = [];
+  for (const [key, arr] of groups) {
+    const earliest = arr.reduce(
+      (acc, c) => (c.createdAt.localeCompare(acc) < 0 ? c.createdAt : acc),
+      arr[0].createdAt
+    );
+    const cappedSum = arr.reduce((s, c) => s + Math.min(c.submissionsCount, target), 0);
+    const doneCases = arr.filter(c => c.submissionsCount >= target).length;
+    result.push({
+      key,
+      name: descriptionName(arr[0]),
+      earliestCreatedAt: earliest,
+      totalCases: arr.length,
+      doneCases,
+      donePct: Math.round((cappedSum / (arr.length * target)) * 1000) / 10,
+    });
+  }
+  result.sort((a, b) => a.earliestCreatedAt.localeCompare(b.earliestCreatedAt));
+  return result;
 }

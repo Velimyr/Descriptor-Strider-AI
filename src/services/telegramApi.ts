@@ -59,7 +59,6 @@ export const tgApi = {
     archive: string;
     fund: string;
     opys: string;
-    sprava: string;
   }) => call('/admin/upload-case', { method: 'POST', body: JSON.stringify(payload) }),
   detectBoxes: (
     imageBase64: string,

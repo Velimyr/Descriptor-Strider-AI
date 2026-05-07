@@ -285,10 +285,11 @@ router.post('/admin/delete-webhook', async (req, res) => {
 // Завантаження картинки в канал. Приймає base64 PNG/JPEG.
 router.post('/admin/upload-case', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { imageBase64, sourcePdf, page, bbox, archive, fund, opys, sprava } = req.body || {};
+  const { imageBase64, sourcePdf, page, bbox, archive, fund, opys } = req.body || {};
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
-  // Архівні реквізити обов'язкові — без них результати не мають сенсу.
-  for (const [k, v] of [['archive', archive], ['fund', fund], ['opys', opys], ['sprava', sprava]] as const) {
+  // Архів/Фонд/Опис ідентифікують опис — без них результати не мають сенсу.
+  // Поле sprava більше не використовується (видалено з адмінки).
+  for (const [k, v] of [['archive', archive], ['fund', fund], ['opys', opys]] as const) {
     if (!v || !String(v).trim()) {
       return res.status(400).json({ error: `Field "${k}" is required` });
     }
@@ -315,7 +316,7 @@ router.post('/admin/upload-case', async (req, res) => {
         archive: String(archive).trim(),
         fund: String(fund).trim(),
         opys: String(opys).trim(),
-        sprava: String(sprava).trim(),
+        sprava: '',
         submissionsCount: 0,
         status: 'open',
         createdAt: nowIsoUtc(),

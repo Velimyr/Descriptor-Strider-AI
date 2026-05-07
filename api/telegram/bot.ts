@@ -30,7 +30,7 @@ import {
   kyivDateString,
   leaderboardSorted,
   nowIsoUtc,
-  progressOfAllCases,
+  progressByDescription,
   recomputeCaseSubmissionCount,
   selectNextCaseForUser,
 } from './scheduler.js';
@@ -480,18 +480,20 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
 }
 
 async function cmdProgress(chatId: number, user: BotUser) {
-  const [cases, totals] = await Promise.all([getAllCases(), getResultsTotals()]);
-  const p = progressOfAllCases(cases);
-  await sendMessage(
-    chatId,
-    fmt(T.progressLine, {
-      donePct: p.donePct,
-      doneCases: p.doneCases,
-      totalCases: p.totalCases,
-      totalSubmissions: totals.totalSubmissions,
-    }),
-    { reply_markup: mainMenuKeyboard(user) }
+  const cases = await getAllCases();
+  const descriptions = progressByDescription(cases);
+  const top = descriptions.slice(0, 3);
+  const header = fmt(T.progressTotalDescriptions, { count: descriptions.length });
+  const blocks = top.map(d =>
+    fmt(T.progressDescriptionLine, {
+      name: escapeHtml(d.name),
+      donePct: d.donePct,
+      doneCases: d.doneCases,
+      totalCases: d.totalCases,
+    })
   );
+  const body = [header, ...blocks].join('\n\n') || header;
+  await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
 }
 
 async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
