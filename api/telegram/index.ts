@@ -10,7 +10,7 @@ import {
   setMeta,
   deleteSession,
 } from './storage.js';
-import { handleUpdate, dispatchCaseToUser } from './bot.js';
+import { handleUpdate, dispatchCaseToUser, sendScheduledGreeting } from './bot.js';
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
 import { detectCaseBoxes } from './slicer.js';
 import {
@@ -92,6 +92,13 @@ router.get('/cron/tick', async (req, res) => {
     }
 
     try {
+      // Перед розсилкою справи за розкладом надсилаємо випадкове привітання,
+      // щоб користувач бачив контекст. Помилка тут не блокує саму розсилку.
+      try {
+        await sendScheduledGreeting(u.tgId);
+      } catch (e) {
+        console.error('greeting failed', u.tgId, e);
+      }
       const sent = await dispatchCaseToUser(u.tgId);
       if (sent) {
         stats.sent++;

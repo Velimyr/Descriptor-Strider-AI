@@ -479,18 +479,16 @@ async function cmdProgress(chatId: number, user: BotUser) {
 
 async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
   const all = leaderboardSorted(await getAllUsers());
-  const top = all.slice(0, 10);
+  // Поточний користувач не бере участь у нумерованому списку — для нього
+  // окремий рядок "Мої бали" в самому кінці.
+  const others = all.filter(u => u.tgId !== tgId);
+  const top = others.slice(0, 10);
   const lines = top.map(
     (u, i) => `${i + 1}. ${escapeHtml(u.displayName || '—')} — ${u.totalPoints}`
   );
-  let body = `${T.leaderboardHeader}\n${lines.join('\n') || '—'}`;
-  const myRank = all.findIndex(u => u.tgId === tgId);
-  if (myRank >= 0 && myRank >= 10) {
-    body += fmt(T.leaderboardYou, {
-      rank: myRank + 1,
-      points: all[myRank].totalPoints,
-    });
-  }
+  const body =
+    `${T.leaderboardHeader}\n${lines.join('\n') || '—'}` +
+    fmt(T.leaderboardYou, { points: user.totalPoints });
   await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
 }
 
@@ -513,9 +511,12 @@ export async function dispatchCaseToUser(tgId: string): Promise<boolean> {
     return false;
   }
 
-  // Усі побічні дії — паралельно.
+  // Спочатку фото — щоб користувач бачив документ ДО першого питання.
+  // Telegram гарантує порядок доставки тільки для послідовних API-викликів.
+  await sendPhotoByFileId(tgId, next.tgFileId, `Документ №${next.caseId.slice(0, 8)}`);
+
+  // Решта побічних дій — паралельно (питання має йти ПІСЛЯ фото).
   await Promise.all([
-    sendPhotoByFileId(tgId, next.tgFileId, `Справа №${next.caseId.slice(0, 8)}`),
     setSession({
       tgId,
       caseId: next.caseId,
@@ -532,6 +533,19 @@ export async function dispatchCaseToUser(tgId: string): Promise<boolean> {
     askQuestion(tgId, questions, 0),
   ]);
   return true;
+}
+
+function pickRandom<T>(arr: T[]): T | undefined {
+  if (!arr || arr.length === 0) return undefined;
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// Надсилає випадкове привітання перед розсилкою справи за розкладом.
+// Викликається з cron-tick перед dispatchCaseToUser.
+export async function sendScheduledGreeting(tgId: string): Promise<void> {
+  const greeting = pickRandom(telegramBotConfig.scheduledGreetings);
+  if (!greeting) return;
+  await sendMessage(tgId, greeting);
 }
 
 async function askQuestion(chatId: number | string, questions: TableColumn[], index: number) {
@@ -632,7 +646,23 @@ async function confirmAndSubmit(
   ]);
 
   const pts = computePointsForToday(todayCount);
+  const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1) : { multiplier: 1 };
   const newTotal = Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100;
+
+  // Мотиваційне повідомлення:
+  // • при переході в tier1 або tier2 (множник зріс) — одне повідомлення з відповідного списку;
+  // • на найвищому рівні (tier2) — повідомлення після КОЖНОГО підтвердження.
+  const cfgPts = telegramBotConfig.points;
+  const tierMsgs = telegramBotConfig.tierMessages;
+  let tierMsg: string | undefined;
+  const reachedTier2 = pts.multiplier === cfgPts.tier2.multiplier;
+  const reachedTier1Now =
+    pts.multiplier === cfgPts.tier1.multiplier && prevPts.multiplier !== cfgPts.tier1.multiplier;
+  if (reachedTier2) {
+    tierMsg = pickRandom(tierMsgs.tier2);
+  } else if (reachedTier1Now) {
+    tierMsg = pickRandom(tierMsgs.tier1);
+  }
 
   const finalText = fmt(T.pointsEarned, {
     points: pts.pointsEarned,
@@ -651,6 +681,10 @@ async function confirmAndSubmit(
         }).catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))
       : sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }),
   ]);
+
+  if (tierMsg) {
+    await sendMessage(chatId, tierMsg);
+  }
 }
 
 function buildSourceLink(cse: any): string {
