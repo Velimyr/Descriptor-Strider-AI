@@ -502,7 +502,16 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
   const activeApiKey = geminiKey;
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const drawingRef = useRef<{ startX: number; startY: number } | null>(null);
+  type CanvasAction =
+    | { type: 'draw'; startX: number; startY: number }
+    | {
+        type: 'resize';
+        boxId: string;
+        handle: 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w';
+        anchorX: number; // фіксована протилежна точка
+        anchorY: number;
+      };
+  const actionRef = useRef<CanvasAction | null>(null);
 
   const metaValid = !!(archive.trim() && fund.trim() && opys.trim());
   const boxes: Box[] = pageBoxes[page] || [];
@@ -604,6 +613,26 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         ctx.moveTo(cx + 5, cy - 5);
         ctx.lineTo(cx - 5, cy + 5);
         ctx.stroke();
+
+        // Resize-маркери (8 шт.: 4 кути + 4 середини сторін). Білі квадрати з кольоровим бордером.
+        const handleSize = 12;
+        const handlePoints: [number, number][] = [
+          [x, y],                 // nw
+          [x + w / 2, y],         // n
+          [x + w, y],             // ne
+          [x + w, y + h / 2],     // e
+          [x + w, y + h],         // se
+          [x + w / 2, y + h],     // s
+          [x, y + h],             // sw
+          [x, y + h / 2],         // w
+        ];
+        for (const [hx, hy] of handlePoints) {
+          ctx.fillStyle = 'white';
+          ctx.fillRect(hx - handleSize / 2, hy - handleSize / 2, handleSize, handleSize);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(hx - handleSize / 2, hy - handleSize / 2, handleSize, handleSize);
+        }
       });
     };
     img.src = pageImage;
@@ -634,18 +663,34 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     return Math.sqrt(dx * dx + dy * dy) <= 14;
   };
 
-  const onCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!canvasRef.current) return;
-    const p = normFromEvent(e);
-    // Якщо клац у "хрестик" будь-якої зони — видаляємо її і не починаємо drag.
-    const idx = boxes.findIndex(b => hitCloseHandle(p, b));
-    if (idx >= 0) {
-      removeBox(idx);
-      drawingRef.current = null;
-      return;
+  // Перевірка попадання в resize-маркер. Повертає тип маркера або null.
+  const hitResizeHandle = (
+    point: { x: number; y: number },
+    b: Box
+  ): 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w' | null => {
+    if (!canvasRef.current) return null;
+    const W = canvasRef.current.width;
+    const H = canvasRef.current.height;
+    const px = point.x * W;
+    const py = point.y * H;
+    // Маркер ~12px, додамо запас 4px для зручності кліку.
+    const r = 10;
+    const points: [number, number, NonNullable<ReturnType<typeof hitResizeHandle>>][] = [
+      [b.x * W, b.y * H, 'nw'],
+      [(b.x + b.w / 2) * W, b.y * H, 'n'],
+      [(b.x + b.w) * W, b.y * H, 'ne'],
+      [(b.x + b.w) * W, (b.y + b.h / 2) * H, 'e'],
+      [(b.x + b.w) * W, (b.y + b.h) * H, 'se'],
+      [(b.x + b.w / 2) * W, (b.y + b.h) * H, 's'],
+      [b.x * W, (b.y + b.h) * H, 'sw'],
+      [b.x * W, (b.y + b.h / 2) * H, 'w'],
+    ];
+    for (const [hx, hy, name] of points) {
+      if (Math.abs(px - hx) <= r && Math.abs(py - hy) <= r) return name;
     }
-    drawingRef.current = { startX: p.x, startY: p.y };
+    return null;
   };
+
   const pointInsideBox = (point: { x: number; y: number }, b: Box): boolean =>
     point.x >= b.x && point.x <= b.x + b.w && point.y >= b.y && point.y <= b.y + b.h;
 
@@ -658,14 +703,90 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     });
   };
 
-  const onCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!canvasRef.current || !drawingRef.current) return;
+  // Координати протилежного "якоря" відносно вибраного маркера —
+  // він не рухається при ресайзі.
+  const anchorOf = (b: Box, handle: NonNullable<ReturnType<typeof hitResizeHandle>>) => {
+    switch (handle) {
+      case 'nw': return { x: b.x + b.w, y: b.y + b.h };
+      case 'ne': return { x: b.x,        y: b.y + b.h };
+      case 'sw': return { x: b.x + b.w, y: b.y };
+      case 'se': return { x: b.x,        y: b.y };
+      case 'n':  return { x: b.x + b.w / 2, y: b.y + b.h };
+      case 's':  return { x: b.x + b.w / 2, y: b.y };
+      case 'w':  return { x: b.x + b.w, y: b.y + b.h / 2 };
+      case 'e':  return { x: b.x,        y: b.y + b.h / 2 };
+    }
+  };
+
+  const onCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!canvasRef.current) return;
     const p = normFromEvent(e);
-    const x = Math.min(drawingRef.current.startX, p.x);
-    const y = Math.min(drawingRef.current.startY, p.y);
-    const w = Math.abs(p.x - drawingRef.current.startX);
-    const h = Math.abs(p.y - drawingRef.current.startY);
-    drawingRef.current = null;
+    // 1) Хрестик «видалити» — пріоритет.
+    const idx = boxes.findIndex(b => hitCloseHandle(p, b));
+    if (idx >= 0) {
+      removeBox(idx);
+      actionRef.current = null;
+      return;
+    }
+    // 2) Resize-маркер.
+    for (const b of boxes) {
+      const handle = hitResizeHandle(p, b);
+      if (handle) {
+        const a = anchorOf(b, handle);
+        actionRef.current = {
+          type: 'resize',
+          boxId: b.id,
+          handle,
+          anchorX: a.x,
+          anchorY: a.y,
+        };
+        return;
+      }
+    }
+    // 3) Інакше — нова зона (drag).
+    actionRef.current = { type: 'draw', startX: p.x, startY: p.y };
+  };
+
+  const onCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const a = actionRef.current;
+    if (!a || a.type !== 'resize') return;
+    const p = normFromEvent(e);
+    setBoxesForPage(page, prev =>
+      prev.map(b => {
+        if (b.id !== a.boxId) return b;
+        // Залежно від типу маркера — змінюємо лише потрібні осі. По осі, яку
+        // не рухаємо, беремо поточні значення (anchor + сторона).
+        let newX = b.x, newY = b.y, newW = b.w, newH = b.h;
+        const movesX = a.handle.includes('e') || a.handle.includes('w');
+        const movesY = a.handle.includes('n') || a.handle.includes('s');
+        if (movesX) {
+          newX = Math.min(a.anchorX, p.x);
+          newW = Math.abs(a.anchorX - p.x);
+        }
+        if (movesY) {
+          newY = Math.min(a.anchorY, p.y);
+          newH = Math.abs(a.anchorY - p.y);
+        }
+        // Не даємо колапс у нуль.
+        if (newW < 0.005) newW = 0.005;
+        if (newH < 0.005) newH = 0.005;
+        return { ...b, x: newX, y: newY, w: newW, h: newH };
+      })
+    );
+  };
+
+  const onCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!canvasRef.current) return;
+    const a = actionRef.current;
+    actionRef.current = null;
+    if (!a) return;
+    if (a.type === 'resize') return; // готово, оновлення вже сталось у move.
+    // Завершення малювання нової зони.
+    const p = normFromEvent(e);
+    const x = Math.min(a.startX, p.x);
+    const y = Math.min(a.startY, p.y);
+    const w = Math.abs(p.x - a.startX);
+    const h = Math.abs(p.y - a.startY);
     // Малий жест → клік: toggle selection якщо потрапили в існуючу зону.
     if (w < 0.02 || h < 0.02) {
       const hit = boxes.find(b => pointInsideBox(p, b));
@@ -1285,7 +1406,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
             <canvas
               ref={canvasRef}
               onMouseDown={onCanvasMouseDown}
+              onMouseMove={onCanvasMouseMove}
               onMouseUp={onCanvasMouseUp}
+              onMouseLeave={() => { actionRef.current = null; }}
               className="cursor-crosshair block mx-auto"
               style={{ maxWidth: '100%', height: 'auto' }}
             />
