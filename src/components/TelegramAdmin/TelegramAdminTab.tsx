@@ -4,6 +4,7 @@ import * as pdfjs from 'pdfjs-dist';
 import { TableColumn } from '../../types';
 import { tgApi, getAdminSecret, clearAdminSecret, adminLogin } from '../../services/telegramApi';
 import { createDefaultColumns, createColumn, COLUMN_ROLE_LABELS, COLUMN_ROLE_OPTIONS } from '../../lib/tableColumns';
+import { detectViaGemini } from '../../lib/sliceDetection';
 
 interface Props {
   onClose: () => void;
@@ -65,7 +66,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
       <div className="flex-1 overflow-y-auto p-6">
         {tab === 'setup' && <SetupView />}
         {tab === 'questions' && <QuestionsView initialQuestions={initialQuestions} />}
-        {tab === 'cases' && <CasesView geminiKey={geminiKey} />}
+        {tab === 'cases' && <CasesView geminiKey={geminiKey} mode="admin" />}
         {tab === 'results' && <ResultsView />}
         {tab === 'overview' && <OverviewView />}
       </div>
@@ -456,7 +457,12 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
+export type CasesViewMode = 'admin' | 'prep';
+
+export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = ({
+  geminiKey,
+  mode: viewMode = 'admin',
+}) => {
   const [pdf, setPdf] = useState<any>(null);
   const [pdfName, setPdfName] = useState('');
   const [page, setPage] = useState(1);
@@ -477,13 +483,6 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   // Діапазон сторінок для авто-розпізнавання. Порожньо → поточна сторінка.
   const [autoRange, setAutoRange] = useState('');
   const [autoProgress, setAutoProgress] = useState<{ done: number; total: number; page?: number } | null>(null);
-  // Провайдер для авто-розпізнавання.
-  type Provider = 'gemini' | 'claude' | 'groq';
-  const [provider, setProvider] = useState<Provider>(
-    (localStorage.getItem('tg_admin_provider') as Provider) || 'gemini'
-  );
-  const [claudeKey, setClaudeKey] = useState(() => localStorage.getItem('tg_admin_claude_key') || '');
-  const [groqKey, setGroqKey] = useState(() => localStorage.getItem('tg_admin_groq_key') || '');
   const [skipExisting, setSkipExisting] = useState(true);
   const importInputRef = useRef<HTMLInputElement>(null);
   // Кеш бінарного PDF для повторного відкриття після імпорту і експорту.
@@ -493,7 +492,6 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [showLog, setShowLog] = useState(false);
   type LogEntry = {
     page: number;
-    provider: string;
     model: string;
     count: number;
     raw: string;
@@ -502,8 +500,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   };
   const [recogLog, setRecogLog] = useState<LogEntry[]>([]);
 
-  const activeApiKey =
-    provider === 'claude' ? claudeKey : provider === 'groq' ? groqKey : geminiKey;
+  const activeApiKey = geminiKey;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef<{ startX: number; startY: number } | null>(null);
 
@@ -847,11 +844,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
 
   const runAuto = async () => {
     if (!pdf || !activeApiKey) {
-      const which =
-        provider === 'claude' ? 'Claude' : provider === 'groq' ? 'Groq' : 'Gemini';
-      const where =
-        provider === 'gemini' ? '(у головному екрані)' : '(введіть нижче в полі провайдера)';
-      setMsg(`Потрібно: відкритий PDF + ${which} API key ${where}`);
+      setMsg('Потрібно: відкритий PDF + Gemini API key');
       return;
     }
     let pages = autoRange.trim()
@@ -872,15 +865,10 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
     }
     if (
       pages.length > 50 &&
-      !confirm(`Розпізнати ${pages.length} сторінок через ${provider}? Це може зайняти час і витратити квоту.`)
+      !confirm(`Розпізнати ${pages.length} сторінок через Gemini? Це може зайняти час і витратити квоту.`)
     ) {
       return;
     }
-
-    // Запам'ятовуємо вибір провайдера.
-    localStorage.setItem('tg_admin_provider', provider);
-    if (provider === 'claude' && claudeKey) localStorage.setItem('tg_admin_claude_key', claudeKey);
-    if (provider === 'groq' && groqKey) localStorage.setItem('tg_admin_groq_key', groqKey);
 
     setBusy(true);
     setMsg('');
@@ -895,8 +883,8 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
         try {
           const dataUrl = pageNum === page ? pageImage : await renderPageToDataUrl(pdf, pageNum);
           const base64 = dataUrl.split(',')[1];
-          const r = await tgApi.detectBoxes(base64, 'image/jpeg', activeApiKey, provider);
-          const found: Box[] = (r.boxes || []).map((b: any) => {
+          const r = await detectViaGemini(base64, 'image/jpeg', activeApiKey);
+          const found: Box[] = (r.boxes || []).map(b => {
             const id = newId();
             return { x: b.x, y: b.y, w: b.w, h: b.h, id, groupId: id };
           });
@@ -904,7 +892,6 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
           totalFound += found.length;
           newLogs.push({
             page: pageNum,
-            provider: r.provider || provider,
             model: r.model || '',
             count: found.length,
             raw: r.raw || '',
@@ -915,7 +902,6 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
           console.error(`detect failed on page ${pageNum}:`, e);
           newLogs.push({
             page: pageNum,
-            provider,
             model: '',
             count: 0,
             raw: '',
@@ -1209,16 +1195,6 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
             </select>
             {mode === 'auto' && (
               <>
-                <select
-                  value={provider}
-                  onChange={e => setProvider(e.target.value as Provider)}
-                  className="border rounded px-2 py-1 text-sm"
-                  title="Модель для розпізнавання"
-                >
-                  <option value="gemini">Gemini Flash</option>
-                  <option value="claude">Claude Opus</option>
-                  <option value="groq">Llama (Groq, free)</option>
-                </select>
                 <label
                   className="flex items-center gap-1 text-xs text-slate-600"
                   title="Не запускати розпізнавання на сторінках, які вже мають зони"
@@ -1247,7 +1223,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
                 <button
                   onClick={runAuto}
                   disabled={busy || !activeApiKey}
-                  title={!activeApiKey ? `Введіть ${provider === 'claude' ? 'Claude' : provider === 'groq' ? 'Groq' : 'Gemini'} API key` : ''}
+                  title={!activeApiKey ? 'Введіть Gemini API key' : ''}
                   className="px-3 py-1.5 bg-purple-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
                 >
                   <Wand2 size={14} />{' '}
@@ -1263,57 +1239,20 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
             >
               💾 Експорт
             </button>
-            <button
-              onClick={uploadAll}
-              disabled={busy || totalBoxes === 0 || !metaValid}
-              title={!metaValid ? 'Заповніть Архів / Фонд / Опис' : ''}
-              className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
-            >
-              <UploadCloud size={14} />{' '}
-              {totalBoxes !== groups.size
-                ? `Завантажити (${groups.size} справ із ${totalBoxes} зон)`
-                : `Завантажити всі (${totalBoxes})`}
-            </button>
-          </div>
-
-          {/* Поле ключа Claude */}
-          {mode === 'auto' && provider === 'claude' && (
-            <div className="flex gap-2 items-center text-xs">
-              <span className="text-slate-600">Claude API key:</span>
-              <input
-                type="password"
-                value={claudeKey}
-                onChange={e => setClaudeKey(e.target.value)}
-                onBlur={() => localStorage.setItem('tg_admin_claude_key', claudeKey)}
-                placeholder="sk-ant-..."
-                className="flex-1 max-w-md border rounded px-2 py-1"
-              />
-              {claudeKey && <span className="text-green-600">✓ збережено</span>}
-            </div>
-          )}
-          {/* Поле ключа Groq */}
-          {mode === 'auto' && provider === 'groq' && (
-            <div className="flex gap-2 items-center text-xs">
-              <span className="text-slate-600">Groq API key:</span>
-              <input
-                type="password"
-                value={groqKey}
-                onChange={e => setGroqKey(e.target.value)}
-                onBlur={() => localStorage.setItem('tg_admin_groq_key', groqKey)}
-                placeholder="gsk_..."
-                className="flex-1 max-w-md border rounded px-2 py-1"
-              />
-              {groqKey && <span className="text-green-600">✓ збережено</span>}
-              <a
-                href="https://console.groq.com/keys"
-                target="_blank"
-                rel="noreferrer"
-                className="text-indigo-600 underline"
+            {viewMode === 'admin' && (
+              <button
+                onClick={uploadAll}
+                disabled={busy || totalBoxes === 0 || !metaValid}
+                title={!metaValid ? 'Заповніть Архів / Фонд / Опис' : ''}
+                className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded flex items-center gap-1 disabled:opacity-50"
               >
-                отримати безкоштовно
-              </a>
-            </div>
-          )}
+                <UploadCloud size={14} />{' '}
+                {totalBoxes !== groups.size
+                  ? `Завантажити (${groups.size} справ із ${totalBoxes} зон)`
+                  : `Завантажити всі (${totalBoxes})`}
+              </button>
+            )}
+          </div>
 
           {/* Бейджи сторінок з зонами — швидка навігація */}
           {pagesWithBoxes.length > 0 && (
@@ -1466,7 +1405,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
                   <summary className="cursor-pointer px-2 py-1.5 text-xs flex items-center gap-2 hover:bg-slate-50">
                     <span className="font-mono text-slate-500">{l.ts}</span>
                     <span className="font-medium">стор. {l.page}</span>
-                    <span className="text-slate-500">{l.provider}/{l.model}</span>
+                    <span className="text-slate-500">{l.model}</span>
                     {l.error ? (
                       <span className="text-red-600">❌ {l.error}</span>
                     ) : (
@@ -1490,7 +1429,7 @@ const CasesView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
         <div className="border rounded p-3 bg-white shadow-sm space-y-2 sticky bottom-2">
           <div className="flex items-center justify-between text-sm">
             <span>
-              🤖 Розпізнавання {provider === 'claude' ? 'Claude' : 'Gemini'}{autoProgress.page ? ` (стор. ${autoProgress.page})` : ''}…
+              🤖 Розпізнавання Gemini{autoProgress.page ? ` (стор. ${autoProgress.page})` : ''}…
             </span>
             <span className="font-mono">
               {autoProgress.done} / {autoProgress.total}

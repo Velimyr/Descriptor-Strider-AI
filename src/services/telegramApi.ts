@@ -60,15 +60,10 @@ export const tgApi = {
     fund: string;
     opys: string;
   }) => call('/admin/upload-case', { method: 'POST', body: JSON.stringify(payload) }),
-  detectBoxes: (
-    imageBase64: string,
-    mime: string,
-    apiKey: string,
-    provider: 'gemini' | 'claude' | 'groq' = 'gemini'
-  ) =>
+  detectBoxes: (imageBase64: string, mime: string, apiKey: string) =>
     call('/admin/detect-bboxes', {
       method: 'POST',
-      body: JSON.stringify({ imageBase64, mime, apiKey, provider }),
+      body: JSON.stringify({ imageBase64, mime, apiKey }),
     }),
   overview: () => call('/admin/overview'),
   results: (limit = 500) => call(`/admin/results?limit=${limit}`),
