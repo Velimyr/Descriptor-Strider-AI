@@ -41,6 +41,7 @@ import { pdfStorage } from './services/pdfStorage';
 import { MusicPanel } from './components/MusicPanel';
 import { config } from './config';
 import { TelegramAdminTab } from './components/TelegramAdmin/TelegramAdminTab';
+import { CasesPreparationPage } from './components/CasesPreparation/CasesPreparationPage';
 
 // PDF.js worker setup
 import * as pdfjs from 'pdfjs-dist';
@@ -218,8 +219,14 @@ export default function App() {
   const [showTelegramAdmin, setShowTelegramAdmin] = useState(
     () => typeof window !== 'undefined' && window.location.hash === '#telegram-admin'
   );
+  const [showCasesPrep, setShowCasesPrep] = useState(
+    () => typeof window !== 'undefined' && window.location.hash === '#cases-prep'
+  );
   useEffect(() => {
-    const onHash = () => setShowTelegramAdmin(window.location.hash === '#telegram-admin');
+    const onHash = () => {
+      setShowTelegramAdmin(window.location.hash === '#telegram-admin');
+      setShowCasesPrep(window.location.hash === '#cases-prep');
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
@@ -228,6 +235,12 @@ export default function App() {
       history.replaceState(null, '', window.location.pathname + window.location.search);
     }
     setShowTelegramAdmin(false);
+  };
+  const closeCasesPrep = () => {
+    if (typeof window !== 'undefined' && window.location.hash === '#cases-prep') {
+      history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+    setShowCasesPrep(false);
   };
 
   useEffect(() => {
@@ -1214,6 +1227,7 @@ export default function App() {
           }
         />
       )}
+      {showCasesPrep && <CasesPreparationPage onClose={closeCasesPrep} />}
       {/* Sidebar */}
       <aside className="w-72 bg-white border-r border-slate-200 flex flex-col">
         <div className="p-6 border-b border-slate-100">

@@ -1,5 +1,7 @@
-import axios from 'axios';
-import { telegramBotConfig } from '../../src/telegram-bot/config.js';
+// Клієнтська детекція bounding-boxів для архівних справ.
+// Дзеркало серверного slicer.ts (api/telegram/slicer.ts), але тільки Gemini
+// і прямий виклик з браузера — щоб публічний роут підготовки справ
+// працював без admin-секрету.
 
 export interface BBox {
   x: number;
@@ -14,97 +16,57 @@ export interface DetectResult {
   model: string;
 }
 
-/**
- * Розпізнає справи на сторінці через Google Gemini.
- * Зони будуються з anchor-формату ({table_*, cases:[{y_top}]}); якщо не вийшло —
- * fallback на старий bbox-формат.
- */
-export async function detectCaseBoxes(
-  imageBase64: string,
-  mime: string,
-  apiKey: string
-): Promise<DetectResult> {
-  const cfg = telegramBotConfig.slicing;
-  const prompt = cfg.detectionStrategy === 'separators' ? cfg.autoPromptSeparators : cfg.autoPrompt;
-  const model = cfg.geminiModel || cfg.autoModel;
-  const raw = await callGemini(imageBase64, mime, apiKey, prompt, model);
+// Слім-промт для детекції розмірів блоків. Не просимо текст — лише координати,
+// щоб економити токени. Формат відповіді сумісний з parseAnyBboxFormat нижче.
+export const DETECTION_PROMPT =
+  "Це фото архівної сторінки з таблицею справ. " +
+  "Для кожної справи (рядок таблиці з порядковим номером) визнач її bounding box у форматі " +
+  "[ymin, xmin, ymax, xmax], значення 0–1000. " +
+  "Якщо текст справи займає кілька рядків таблиці — об'єднай їх в один box. " +
+  'Поверни лише JSON: {"boxes":[[ymin,xmin,ymax,xmax], ...]}.';
 
-  let boxes = boxesFromAnchors(raw);
-  if (boxes.length === 0) {
-    const parsed = parseAnyBboxFormat(raw);
-    const aligned = cfg.alignBoxesHorizontally ? alignWidth(parsed) : parsed;
-    boxes = aligned.map(b => padBox(b, cfg.bboxPaddingX, cfg.bboxPaddingY));
-  }
+const PADDING_X = 0.005;
+const PADDING_Y = 0.015;
+const ALIGN_HORIZONTALLY = true;
 
-  return { boxes, raw, model };
-}
-
-async function callGemini(
+export async function detectViaGemini(
   imageBase64: string,
   mime: string,
   apiKey: string,
-  prompt: string,
-  model: string
-): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  model = 'gemini-2.5-flash'
+): Promise<DetectResult> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const body = {
     contents: [
       {
         role: 'user',
-        parts: [{ inline_data: { mime_type: mime, data: imageBase64 } }, { text: prompt }],
+        parts: [
+          { inline_data: { mime_type: mime, data: imageBase64 } },
+          { text: DETECTION_PROMPT },
+        ],
       },
     ],
     generationConfig: { temperature: 0, responseMimeType: 'application/json' },
   };
-  const res = await axios.post(url, body, { timeout: 90000 });
-  return res.data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-}
-
-// =============== Anchor-based ===============
-
-function boxesFromAnchors(text: string): BBox[] {
-  const data = safeJson(stripMarkdown(text));
-  if (!data || typeof data !== 'object') return [];
-  const cases = Array.isArray(data.cases) ? data.cases : null;
-  if (!cases || cases.length === 0) return [];
-
-  const cfg = telegramBotConfig.slicing;
-  const scaleNeeded = guessScale([data.table_left, data.table_right, data.table_top, data.table_bottom]);
-  const tableLeft = clamp01(toNum(data.table_left, 0) / scaleNeeded);
-  const tableRight = clamp01(toNum(data.table_right, scaleNeeded) / scaleNeeded);
-  const tableTop = clamp01(toNum(data.table_top, 0) / scaleNeeded);
-  const tableBottom = clamp01(toNum(data.table_bottom, scaleNeeded) / scaleNeeded);
-
-  // Збираємо y_top для кожної справи у нормалізовані [0..1].
-  const yScale = guessScale(cases.map((c: any) => toNum(c.y_top, 0)));
-  const tops = cases
-    .map((c: any) => clamp01(toNum(c.y_top, 0) / yScale))
-    .filter((y: number) => y > 0)
-    .sort((a: number, b: number) => a - b);
-  if (tops.length === 0) return [];
-
-  const left = clamp01(tableLeft - cfg.bboxPaddingX);
-  const width = clamp01(tableRight - tableLeft + cfg.bboxPaddingX * 2);
-  const finalLeft = left;
-  const finalWidth = clamp01(Math.min(width, 1 - finalLeft));
-
-  // Будуємо bbox між сусідніми y_top, останній — до tableBottom.
-  const bottomLimit = tableBottom > 0 && tableBottom > tops[tops.length - 1] ? tableBottom : 1;
-
-  const boxes: BBox[] = [];
-  for (let i = 0; i < tops.length; i++) {
-    const yTop = tops[i];
-    const yBot = i + 1 < tops.length ? tops[i + 1] : bottomLimit;
-    const yStart = clamp01(yTop - cfg.bboxPaddingY);
-    const yEnd = clamp01(yBot - cfg.bboxPaddingY * 0.5); // невеликий нижній padding щоб не залазити на наступну
-    const h = clamp01(yEnd - yStart);
-    if (h < 0.005) continue;
-    boxes.push({ x: finalLeft, y: yStart, w: finalWidth, h });
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`Gemini ${res.status}: ${txt.slice(0, 300)}`);
   }
-  return boxes;
+  const data = await res.json();
+  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+  const parsed = parseAnyBboxFormat(raw);
+  const aligned = ALIGN_HORIZONTALLY ? alignWidth(parsed) : parsed;
+  const boxes = aligned.map(b => padBox(b, PADDING_X, PADDING_Y));
+  return { boxes, raw, model };
 }
 
-// =============== Старий bbox-парсер (fallback) ===============
+// =============== Парсинг різних форматів відповіді ===============
 
 export function parseAnyBboxFormat(text: string): BBox[] {
   if (!text) return [];
@@ -131,6 +93,18 @@ export function parseAnyBboxFormat(text: string): BBox[] {
 }
 
 function normalizeOne(item: any): BBox | null {
+  if (item == null) return null;
+  // Tuple [ymin, xmin, ymax, xmax].
+  if (Array.isArray(item) && item.length === 4 && item.every(n => typeof n === 'number')) {
+    const [ymin, xmin, ymax, xmax] = item.map(Number);
+    if ([ymin, xmin, ymax, xmax].some(n => !isFinite(n))) return null;
+    const scale = guessScale([ymin, xmin, ymax, xmax]);
+    const x1 = Math.min(xmin, xmax) / scale;
+    const y1 = Math.min(ymin, ymax) / scale;
+    const x2 = Math.max(xmin, xmax) / scale;
+    const y2 = Math.max(ymin, ymax) / scale;
+    return clampBox({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+  }
   if (!item || typeof item !== 'object') return null;
   if (Array.isArray(item.box_2d) && item.box_2d.length === 4) {
     const [ymin, xmin, ymax, xmax] = item.box_2d.map(Number);
@@ -187,14 +161,8 @@ function padBox(b: BBox, padX: number, padY: number): BBox {
   return { x, y, w: clamp01(right - x), h: clamp01(bottom - y) };
 }
 
-// =============== Утиліти ===============
-
 function stripMarkdown(text: string): string {
-  return text
-    .trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
+  return text.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
 }
 
 function safeJson(text: string): any {
@@ -203,11 +171,6 @@ function safeJson(text: string): any {
   } catch {
     return null;
   }
-}
-
-function toNum(v: any, fallback: number): number {
-  const n = Number(v);
-  return isFinite(n) ? n : fallback;
 }
 
 function guessScale(values: number[]): number {
