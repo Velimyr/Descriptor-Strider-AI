@@ -42,9 +42,6 @@ export const CasesPreparationPage: React.FC<{ onClose: () => void }> = ({ onClos
         {geminiKey && draft === geminiKey && (
           <span className="text-green-600">✓ збережено</span>
         )}
-        <span className="text-slate-500">
-          Підготуйте проєкт і збережіть його через «Експорт» — потім імпортуйте в адмінці для завантаження в канал.
-        </span>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">

@@ -20,9 +20,11 @@ export interface DetectResult {
 // щоб економити токени. Формат відповіді сумісний з parseAnyBboxFormat нижче.
 export const DETECTION_PROMPT =
   "Це фото архівної сторінки з таблицею справ. " +
+  "Зображення може містити одну сторінку АБО розворот (дві сторінки поруч). " +
+  "Якщо це розворот — обробляй кожну сторінку окремо: bounding box не повинен перетинати межу між сторінками; для кожної справи на лівій сторінці — окремий box, для кожної справи на правій сторінці — окремий box. " +
   "Для кожної справи (рядок таблиці з порядковим номером) визнач її bounding box у форматі " +
-  "[ymin, xmin, ymax, xmax], значення 0–1000. " +
-  "Якщо текст справи займає кілька рядків таблиці — об'єднай їх в один box. " +
+  "[ymin, xmin, ymax, xmax], значення 0–1000 відносно всього зображення. " +
+  "Якщо текст справи займає кілька рядків таблиці на одній сторінці — об'єднай їх в один box. " +
   'Поверни лише JSON: {"boxes":[[ymin,xmin,ymax,xmax], ...]}.';
 
 const PADDING_X = 0.005;
@@ -140,6 +142,32 @@ function normalizeOne(item: any): BBox | null {
 }
 
 function alignWidth(boxes: BBox[]): BBox[] {
+  if (boxes.length < 2) return boxes;
+  // Кластеризуємо за x-центром: якщо це розворот (2 сторінки) — отримаємо
+  // дві групи, які треба вирівнювати незалежно. Простий поділ за найбільшим
+  // зазором між сусідніми центрами (> 15% ширини зображення).
+  const sorted = [...boxes].sort((a, b) => (a.x + a.w / 2) - (b.x + b.w / 2));
+  const centers = sorted.map(b => b.x + b.w / 2);
+  let splitIdx = -1;
+  let maxGap = 0;
+  for (let i = 1; i < centers.length; i++) {
+    const gap = centers[i] - centers[i - 1];
+    if (gap > maxGap) {
+      maxGap = gap;
+      splitIdx = i;
+    }
+  }
+  if (splitIdx > 0 && maxGap > 0.15 && splitIdx >= 1 && splitIdx <= sorted.length - 1) {
+    const left = sorted.slice(0, splitIdx);
+    const right = sorted.slice(splitIdx);
+    if (left.length >= 1 && right.length >= 1) {
+      return [...alignWidthCluster(left), ...alignWidthCluster(right)];
+    }
+  }
+  return alignWidthCluster(boxes);
+}
+
+function alignWidthCluster(boxes: BBox[]): BBox[] {
   if (boxes.length < 2) return boxes;
   const lefts = boxes.map(b => b.x).sort((a, b) => a - b);
   const rights = boxes.map(b => b.x + b.w).sort((a, b) => a - b);
