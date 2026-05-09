@@ -2221,14 +2221,24 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         fieldStatus.push({ label: (q as any).label || `Q${i + 1}`, equal, vals });
       }
 
+      // Серед індексів-кандидатів обираємо запис із максимальною сумою довжин усіх
+      // полів (raw text, без нормалізації) — щоб попадати в найповніший варіант.
+      const totalChars = (r: any) =>
+        (Array.isArray(r.answers) ? r.answers : []).reduce(
+          (acc: number, a: any) => acc + String(a ?? '').length,
+          0
+        );
+      const pickLongest = (idxs: number[]) =>
+        idxs.reduce((best, i) => (totalChars(records[i]) > totalChars(records[best]) ? i : best), idxs[0]);
+
       let color: GroupColor;
       let selectedIndex: number | null = null;
       if (allSame) {
         color = 'green-full';
-        selectedIndex = 0;
+        selectedIndex = pickLongest(records.map((_, i) => i));
       } else if (hasDuplicateCluster) {
         color = 'green-light';
-        selectedIndex = largestCluster[0];
+        selectedIndex = pickLongest(largestCluster);
       } else if (records.length === 1) {
         // Один запис у групі — нема з чим звіряти, рахуємо за зелений.
         color = 'green-full';
