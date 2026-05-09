@@ -368,6 +368,35 @@ export async function getResultsTotals(): Promise<{ totalSubmissions: number }> 
   return { totalSubmissions: count || 0 };
 }
 
+// Усі підтвердження для конкретного опису (без ліміту, посторінково).
+// Supabase/PostgREST за замовчанням має обмеження ~1000 рядків на запит — обходимо range-pагінацією.
+export async function getSubmissionsByDescription(
+  archive: string,
+  fund: string,
+  opys: string
+) {
+  const pageSize = 1000;
+  let from = 0;
+  const out: any[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from('bot_submissions')
+      .select('*')
+      .eq('archive', archive)
+      .eq('fund', fund)
+      .eq('opys', opys)
+      .order('submitted_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(...rows);
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
 // Експортуємо submissions для адмінського перегляду / експорту.
 export async function getRecentSubmissions(limit = 100) {
   const { data, error } = await db()

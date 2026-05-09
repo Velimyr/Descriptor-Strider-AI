@@ -67,4 +67,9 @@ export const tgApi = {
     }),
   overview: () => call('/admin/overview'),
   results: (limit = 500) => call(`/admin/results?limit=${limit}`),
+  submissionsByDescription: (archive: string, fund: string, opys: string) =>
+    call(
+      `/admin/submissions-by-description?archive=${encodeURIComponent(archive)}` +
+        `&fund=${encodeURIComponent(fund)}&opys=${encodeURIComponent(opys)}`
+    ),
 };

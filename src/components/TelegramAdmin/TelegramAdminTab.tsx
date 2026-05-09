@@ -1964,24 +1964,22 @@ const ProcessDescriptionView: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [questions, setQuestions] = useState<any[]>([]);
-  const [submissions, setSubmissions] = useState<any[]>([]);
   const [descriptions, setDescriptions] = useState<{ key: string; name: string }[]>([]);
   const [descKey, setDescKey] = useState('');
   const [numberColIdx, setNumberColIdx] = useState<number>(0);
   const [groups, setGroups] = useState<ProcessGroup[]>([]);
   const [step2Rows, setStep2Rows] = useState<Step2Row[]>([]);
+  const [loadedCount, setLoadedCount] = useState<number>(0);
 
-  const descKeyOf = (s: any) => `${s.archive || ''}|${s.fund || ''}|${s.opys || ''}`;
   const descName = descriptions.find(d => d.key === descKey)?.name || '';
 
   const refresh = async () => {
     setBusy(true);
     setMsg('');
     try {
-      const [r, ov] = await Promise.all([tgApi.results(5000), tgApi.overview()]);
-      const qs = Array.isArray(r.questions) ? r.questions : [];
+      const [q, ov] = await Promise.all([tgApi.getQuestions(), tgApi.overview()]);
+      const qs = Array.isArray(q.questions) ? q.questions : [];
       setQuestions(qs);
-      setSubmissions(Array.isArray(r.submissions) ? r.submissions : []);
       setDescriptions(
         ((ov.descriptions || []) as any[])
           .map(d => ({ key: d.key, name: d.name }))
@@ -2000,10 +1998,23 @@ const ProcessDescriptionView: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const buildGroups = () => {
+  const buildGroups = async () => {
     if (!descKey || numberColIdx < 0) return;
     setMsg('');
-    const subs = submissions.filter(s => descKeyOf(s) === descKey);
+    setBusy(true);
+    let subs: any[] = [];
+    try {
+      const [archive, fund, opys] = descKey.split('|');
+      const r = await tgApi.submissionsByDescription(archive, fund, opys);
+      subs = Array.isArray(r.submissions) ? r.submissions : [];
+      setLoadedCount(subs.length);
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
+      setBusy(false);
+      return;
+    } finally {
+      setBusy(false);
+    }
     if (subs.length === 0) {
       setMsg('У цьому описі немає підтверджених відповідей.');
       return;
@@ -2226,8 +2237,8 @@ const ProcessDescriptionView: React.FC = () => {
               Далі →
             </button>
             <div className="text-sm text-slate-500">
-              Опис: <b>{descName}</b> · груп: {groups.length} · обрано:{' '}
-              {groups.filter(g => g.selectedIndex != null).length}/{groups.length}
+              Опис: <b>{descName}</b> · підтверджень: {loadedCount} · груп: {groups.length} ·
+              обрано: {groups.filter(g => g.selectedIndex != null).length}/{groups.length}
             </div>
           </div>
           <div className="text-xs text-slate-500 flex gap-3">

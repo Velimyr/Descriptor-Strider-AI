@@ -372,6 +372,33 @@ router.get('/admin/results', async (req, res) => {
   }
 });
 
+router.get('/admin/submissions-by-description', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const archive = String(req.query.archive || '');
+  const fund = String(req.query.fund || '');
+  const opys = String(req.query.opys || '');
+  if (!archive || !fund || !opys) {
+    return res.status(400).json({ error: 'archive, fund, opys required' });
+  }
+  try {
+    const { getSubmissionsByDescription } = await import('./storage.js');
+    const [subs, qRaw] = await Promise.all([
+      getSubmissionsByDescription(archive, fund, opys),
+      getMeta('questions'),
+    ]);
+    let questions: any[] = [];
+    try {
+      questions = qRaw ? JSON.parse(qRaw) : [];
+      if (!Array.isArray(questions)) questions = [];
+    } catch {
+      questions = [];
+    }
+    res.json({ ok: true, questions, submissions: subs });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/admin/overview', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const [users, cases] = await Promise.all([getAllUsers(), getAllCases()]);
