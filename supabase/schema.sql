@@ -47,6 +47,13 @@ create table if not exists bot_sessions (
   state         text        not null default 'asking' check (state in ('asking','confirming','editing'))
 );
 
+-- Якщо таблиця вже існувала зі старим CHECK — перестворюємо обмеження.
+-- Ідемпотентно: безпечно запускати повторно.
+alter table bot_sessions drop constraint if exists bot_sessions_state_check;
+alter table bot_sessions
+  add  constraint bot_sessions_state_check
+  check (state in ('asking','confirming','editing'));
+
 -- Підтверджені відповіді. answers — jsonb-масив у тому самому порядку, що bot_meta.questions.
 -- Метадані справи (archive/fund/opys/sprava/source_pdf/page) денормалізовані сюди,
 -- щоб «Результати» були самодостатні навіть якщо bot_cases поправлять/чистять.
