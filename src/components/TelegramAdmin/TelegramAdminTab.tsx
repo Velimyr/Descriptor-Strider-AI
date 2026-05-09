@@ -1942,7 +1942,70 @@ function compareNumberInfo(a: NumberInfo, b: NumberInfo): number {
   return a.suffix.localeCompare(b.suffix, 'uk');
 }
 
+// Базова нормалізація — для групування за номером (просто trim+lower).
 const norm = (v: any) => String(v ?? '').trim().toLowerCase();
+
+// Канонізація дат у тексті: «23 января 1890 г.» → «1890-01-23», «01.02.1890» → «1890-02-01».
+// Для діапазонів кожна частина нормалізується незалежно. Голий рік («1890») лишається як є.
+const MONTHS: Record<string, number> = {
+  // ru
+  янв: 1, фев: 2, мар: 3, апр: 4, май: 5, мая: 5, июн: 6, июл: 7,
+  авг: 8, сен: 9, окт: 10, ноя: 11, дек: 12,
+  // uk
+  січ: 1, лют: 2, бер: 3, квіт: 4, трав: 5, черв: 6, лип: 7, серп: 8,
+  верес: 9, жовт: 10, листоп: 11, груд: 12,
+};
+function monthNum(word: string): number | null {
+  const w = word.toLowerCase();
+  // Шукаємо найдовший збіг префіксу — щоб «листопада» матчилось як «листоп», а не як «лип».
+  let best: { len: number; n: number } | null = null;
+  for (const [k, v] of Object.entries(MONTHS)) {
+    if (w.startsWith(k) && (!best || k.length > best.len)) best = { len: k.length, n: v };
+  }
+  return best ? best.n : null;
+}
+function canonicalizeDates(input: string): string {
+  let t = input;
+  // Уніфікуємо тире.
+  t = t.replace(/[–—−]/g, '-');
+  // Прибираємо маркери року «г.», «р.»
+  t = t.replace(/\bг\.?(?=\s|$|[\-,;])/gi, '').replace(/\bр\.?(?=\s|$|[\-,;])/gi, '');
+  // «D MONTH YYYY» → ISO
+  t = t.replace(/(\d{1,2})\s+([а-яіїєґ]+)\s+(\d{4})/giu, (m, d, mon, y) => {
+    const n = monthNum(mon);
+    if (!n) return m;
+    return `${y}-${String(n).padStart(2, '0')}-${String(parseInt(d, 10)).padStart(2, '0')}`;
+  });
+  // «DD.MM.YYYY» / «D.M.YYYY» → ISO
+  t = t.replace(/\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b/g, (_, d, m, y) =>
+    `${y}-${String(parseInt(m, 10)).padStart(2, '0')}-${String(parseInt(d, 10)).padStart(2, '0')}`
+  );
+  // «DD/MM/YYYY»
+  t = t.replace(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g, (_, d, m, y) =>
+    `${y}-${String(parseInt(m, 10)).padStart(2, '0')}-${String(parseInt(d, 10)).padStart(2, '0')}`
+  );
+  return t;
+}
+
+// Розширена нормалізація для порівняння відповідей між записами групи:
+// • lower + ё→е + уніфіковані апострофи
+// • для полів-дат — попередня канонізація дат у ISO
+// • прибираємо обрамляючу пунктуацію, схлопуємо пробіли, нормалізуємо тире
+const normCompare = (v: any, role?: string): string => {
+  let s = String(v ?? '').trim().toLowerCase();
+  if (!s) return '';
+  s = s.replace(/ё/g, 'е');
+  s = s.replace(/[ʼ'`ʻ’]/g, "'");
+  if (role === 'date_start' || role === 'date_end' || role === 'year_range') {
+    s = canonicalizeDates(s);
+  }
+  // Нормалізуємо роздільник діапазону: «1890 - 1891» → «1890-1891», але всередині ISO
+  // («1890-01-23») дефіс не чіпаємо. Замінюємо тільки коли навколо є пробіли.
+  s = s.replace(/\s+-\s+/g, '-');
+  s = s.replace(/\s+/g, ' ');
+  s = s.replace(/^[\s.,;:!?\-()"'«»]+|[\s.,;:!?\-()"'«»]+$/g, '');
+  return s.trim();
+};
 
 interface ProcessGroup {
   numberDisplay: string;
@@ -2094,8 +2157,8 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       // Записи з ідентичним підписом утворюють кластер дублікатів.
       const sigOf = (r: any) =>
         questions
-          .map((_: any, i: number) =>
-            i === numberColIdx ? '' : norm((r.answers || [])[i])
+          .map((q: any, i: number) =>
+            i === numberColIdx ? '' : normCompare((r.answers || [])[i], q?.role)
           )
           .join('');
       const clusters = new Map<string, number[]>();
@@ -2115,7 +2178,8 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       for (let i = 0; i < questions.length; i++) {
         if (i === numberColIdx) continue;
         totalFields++;
-        const vals = records.map(r => norm((r.answers || [])[i]));
+        const role = (questions[i] as any)?.role;
+        const vals = records.map(r => normCompare((r.answers || [])[i], role));
         if (!vals.every(v => v === vals[0])) diffFields++;
       }
 
