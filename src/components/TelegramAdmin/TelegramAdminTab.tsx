@@ -2297,20 +2297,32 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       const pickLongest = (idxs: number[]) =>
         idxs.reduce((best, i) => (totalChars(records[i]) > totalChars(records[best]) ? i : best), idxs[0]);
 
-      // ----- Перевірка «усі поля окрім дати збігаються» -----
-      // Дата-роль: інферю з лейбла. Якщо всі НЕ-дата поля рівні, а дата(и) різні — green-superlight.
-      let allNonDateEq = true;
-      let hasDateDiff = false;
+      // ----- Перевірка «не-дата поля збігаються, дата відрізняється» -----
+      // Дата-роль інферю з лейбла. Будуємо ОКРЕМУ кластеризацію за non-date підписом —
+      // щоб ловити випадки, коли тільки субсет записів має ідентичні не-дата поля.
       const dateIdxs: number[] = [];
       for (let i = 0; i < questions.length; i++) {
         const role = inferColumnRole(questions[i] || {});
-        const isDate = role === 'date_start' || role === 'date_end' || role === 'year_range';
-        if (isDate) dateIdxs.push(i);
-        if (!fieldStatus[i].equal) {
-          if (isDate) hasDateDiff = true;
-          else allNonDateEq = false;
-        }
+        if (role === 'date_start' || role === 'date_end' || role === 'year_range') dateIdxs.push(i);
       }
+      const nonDateSigOf = (r: any) =>
+        questions
+          .map((q: any, i: number) => {
+            const role = inferColumnRole(q || {});
+            const isDate = role === 'date_start' || role === 'date_end' || role === 'year_range';
+            return isDate ? '' : normCompare((r.answers || [])[i], role);
+          })
+          .join('|');
+      const nonDateClusters = new Map<string, number[]>();
+      records.forEach((r, ri) => {
+        const sig = nonDateSigOf(r);
+        if (!nonDateClusters.has(sig)) nonDateClusters.set(sig, []);
+        nonDateClusters.get(sig)!.push(ri);
+      });
+      const largestNonDateCluster =
+        [...nonDateClusters.values()].sort((a, b) => b.length - a.length)[0] || [];
+      const hasNonDateCluster = largestNonDateCluster.length >= 2;
+
       // Серед записів — обираємо той, у кого найдовший сирий текст у дата-полях.
       const dateChars = (ri: number) =>
         dateIdxs.reduce((acc, qi) => acc + String((records[ri].answers || [])[qi] ?? '').length, 0);
@@ -2329,9 +2341,11 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         // Один запис у групі — нема з чим звіряти, рахуємо за зелений.
         color = 'green-full';
         selectedIndex = 0;
-      } else if (allNonDateEq && hasDateDiff && dateIdxs.length > 0) {
+      } else if (hasNonDateCluster && dateIdxs.length > 0) {
+        // У кластері non-date підписи однакові, але дати в нього входять різні
+        // (інакше це був би повний дублікат і ми вже увійшли б у green-light).
         color = 'green-superlight';
-        selectedIndex = pickLongestDate(records.map((_, i) => i));
+        selectedIndex = pickLongestDate(largestNonDateCluster);
       } else if (totalFields > 0 && diffFields === totalFields) {
         color = 'red';
       } else {
@@ -2342,7 +2356,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       const reasonByColor: Record<GroupColor, string> = {
         'green-full': 'усі записи мають ідентичні підписи (allSame=true)',
         'green-light': `є кластер дублікатів (≥2 записи з ідентичним підписом); розміри кластерів: [${sizes.join(', ')}]`,
-        'green-superlight': `усі поля КРІМ дати збігаються; дат-полів: ${dateIdxs.length}; обрано запис з найдовшим raw у дата-полях`,
+        'green-superlight': `є кластер з ідентичними не-дата полями розміру ${largestNonDateCluster.length} (records=[${largestNonDateCluster.map(i => 'r' + i).join(',')}]); дат-полів: ${dateIdxs.length}; обрано запис з найдовшим raw у дата-полях`,
         yellow: `немає кластера дублікатів; розбіжностей за полями: ${diffFields}/${totalFields} (не всі поля різні)`,
         red: `немає кластера дублікатів; усі ${totalFields} порівнюваних полів різні`,
         purple: 'розвʼязано LLM',
