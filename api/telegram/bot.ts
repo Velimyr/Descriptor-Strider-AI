@@ -630,6 +630,17 @@ async function processRenameInput(chatId: number, user: BotUser, rawText: string
     });
     return;
   }
+  // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
+  const menuTexts = new Set([
+    T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard,
+    T.menuPause, T.menuResume, T.menuHelp, T.menuSettings,
+  ]);
+  if (menuTexts.has(rawText.trim())) {
+    await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid, {
+      reply_markup: settingsRenameCancelKeyboard(),
+    });
+    return;
+  }
   // Те саме правило унікальності, що й при першій реєстрації.
   const allUsers = await getAllUsers();
   const taken = allUsers.some(

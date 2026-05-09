@@ -1964,6 +1964,50 @@ function monthNum(word: string): number | null {
   }
   return best ? best.n : null;
 }
+// «19.01» або «19 января» + рік-донор → «YYYY-MM-DD». Повертає null, якщо не вдалося.
+function partialToIso(partial: string, year: number): string | null {
+  const t = partial.trim();
+  let m = t.match(/^(\d{1,2})[.\/](\d{1,2})$/);
+  if (m) {
+    const d = parseInt(m[1], 10), mo = parseInt(m[2], 10);
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      return `${year}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+    return null;
+  }
+  m = t.match(/^(\d{1,2})\s+([а-яіїєґ]+)$/iu);
+  if (m) {
+    const d = parseInt(m[1], 10);
+    const mo = monthNum(m[2]);
+    if (mo && d >= 1 && d <= 31) {
+      return `${year}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+  }
+  return null;
+}
+
+function inheritYearInRanges(t: string): string {
+  // <partial> [\s]*-[\s]* YYYY-MM-DD
+  t = t.replace(
+    /(\d{1,2}[.\/]\d{1,2}|\d{1,2}\s+[а-яіїєґ]+)\s*-\s*(\d{4})-(\d{2})-(\d{2})/giu,
+    (full, partial, y, mo, d) => {
+      const iso = partialToIso(partial, parseInt(y, 10));
+      if (!iso) return full;
+      return `${iso}-${y}-${mo}-${d}`;
+    }
+  );
+  // YYYY-MM-DD [\s]*-[\s]* <partial>
+  t = t.replace(
+    /(\d{4})-(\d{2})-(\d{2})\s*-\s*(\d{1,2}[.\/]\d{1,2}|\d{1,2}\s+[а-яіїєґ]+)(?!\s*-?\s*\d)/giu,
+    (full, y, mo, d, partial) => {
+      const iso = partialToIso(partial, parseInt(y, 10));
+      if (!iso) return full;
+      return `${y}-${mo}-${d}-${iso}`;
+    }
+  );
+  return t;
+}
+
 function canonicalizeDates(input: string): string {
   let t = input;
   // Уніфікуємо тире.
@@ -1986,6 +2030,9 @@ function canonicalizeDates(input: string): string {
   t = t.replace(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g, (_, d, m, y) =>
     `${y}-${String(parseInt(m, 10)).padStart(2, '0')}-${String(parseInt(d, 10)).padStart(2, '0')}`
   );
+  // У діапазонах вигляду «<partial> - YYYY-MM-DD» або «YYYY-MM-DD - <partial>»
+  // успадковуємо рік від ISO-частини й добиваємо partial у ISO.
+  t = inheritYearInRanges(t);
   return t;
 }
 
