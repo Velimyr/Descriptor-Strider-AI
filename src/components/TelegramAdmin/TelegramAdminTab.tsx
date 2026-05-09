@@ -1707,11 +1707,22 @@ const ResultsView: React.FC = () => {
 
   const exportCsv = () => downloadCsv(filtered, '');
 
-  // Експорт усіх записів вибраного опису (без обмеження поточним текстовим фільтром).
-  const exportSelectedDescription = () => {
+  // Експорт усіх записів вибраного опису (без обмеження поточним лімітом/фільтром).
+  // Тягнемо ВСІ записи з БД через окремий ендпоінт із пагінацією, а не лише ті,
+  // що потрапили у поточну вкладку «Результати» (обмежену limit-ом).
+  const exportSelectedDescription = async () => {
     if (!data || !descFilter) return;
-    const rows = data.submissions.filter(s => descKeyOf(s) === descFilter);
-    downloadCsv(rows, selectedDescriptionName);
+    const [archive, fund, opys] = descFilter.split('|');
+    try {
+      setBusy(true);
+      const r = await tgApi.submissionsByDescription(archive, fund, opys);
+      const rows = (r?.submissions || []) as any[];
+      downloadCsv(rows, selectedDescriptionName);
+    } catch (e: any) {
+      alert(`Не вдалося експортувати опис: ${e?.message || e}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
