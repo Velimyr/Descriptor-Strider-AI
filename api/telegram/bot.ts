@@ -533,6 +533,7 @@ async function handleCallback(cb: any) {
 async function cmdNext(chatId: number, tgId: string, existing: BotSession | null) {
   // Миттєвий фідбек поки шукаємо/відкриваємо.
   await sendMessage(chatId, T.processingNotice);
+  console.log('[cmdNext]', { tgId, hasExisting: !!existing, state: existing?.state, currentQ: existing?.currentQ, caseId: existing?.caseId });
 
   if (existing) {
     const questions = await getQuestions();
@@ -552,7 +553,8 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
     }
     return;
   }
-  await dispatchCaseToUser(tgId);
+  // Ручне «Нова справа» — іґноруємо paused, бо опція розсилки тільки для авторозсилок.
+  await dispatchCaseToUser(tgId, true);
 }
 
 async function cmdStats(chatId: number, tgId: string, user: BotUser) {
@@ -663,22 +665,26 @@ async function processRenameInput(chatId: number, user: BotUser, rawText: string
 
 // --------- dispatch / question flow ---------
 
-export async function dispatchCaseToUser(tgId: string): Promise<boolean> {
+export async function dispatchCaseToUser(
+  tgId: string,
+  // ignorePaused=true — ручний виклик (кнопка «Нова справа») іґнорує статус paused.
+  // Опція «Зупинити розсилку» — тільки для авторозсилок за розкладом.
+  ignorePaused = false
+): Promise<boolean> {
   // Паралельні незалежні читання.
   const [user, next, questions] = await Promise.all([
     getUser(tgId),
     selectNextCaseForUser(tgId),
     getQuestions(),
   ]);
-  if (!user || user.status !== 'active') return false;
+  console.log('[dispatch]', { tgId, userStatus: user?.status, ignorePaused, hasNext: !!next, nextCaseId: next?.caseId, questions: questions.length });
+  if (!user) return false;
+  if (!ignorePaused && user.status !== 'active') return false;
   if (!next) {
     await sendMessage(tgId, T.noCasesLeft);
     return false;
   }
-  if (questions.length === 0) {
-    await sendMessage(tgId, 'Адмін ще не налаштував питання. Спробуйте пізніше.');
-    return false;
-  }
+  if (questions.length === 0) return false;
 
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
   // Telegram гарантує порядок доставки тільки для послідовних API-викликів.
@@ -719,7 +725,10 @@ export async function sendScheduledGreeting(tgId: string): Promise<void> {
 
 async function askQuestion(chatId: number | string, questions: TableColumn[], index: number) {
   const q = questions[index];
-  if (!q) return;
+  if (!q) {
+    console.warn('[askQuestion] no question at index', { chatId, index, total: questions.length });
+    return;
+  }
   await sendMessage(chatId, questionPromptText(q, index, questions.length), {
     reply_markup: keyboardForQuestion(index),
   });
@@ -862,10 +871,12 @@ async function confirmAndSubmit(
       user.rowIndex
     ),
     // Редагуємо ack-повідомлення на фінальний текст замість надсилання нового.
+    // ВАЖЛИВО: editMessageText дозволяє тільки inline_keyboard у reply_markup.
+    // mainMenuKeyboard — це reply keyboard (постійна, унизу екрана), її не треба
+    // прокидати в edit — вона сама по собі не зникне. Тому редагуємо БЕЗ reply_markup.
     ackMessageId
-      ? editMessageText(chatId, ackMessageId, finalText, {
-          reply_markup: mainMenuKeyboard({ ...user, totalPoints: newTotal }),
-        }).catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))
+      ? editMessageText(chatId, ackMessageId, finalText)
+          .catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))
       : sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }),
   ]);
 
