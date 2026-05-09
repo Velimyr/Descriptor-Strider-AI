@@ -3,7 +3,7 @@ import { X, RefreshCw, Save, UploadCloud, Wand2, Trash2, Plus } from 'lucide-rea
 import * as pdfjs from 'pdfjs-dist';
 import { TableColumn } from '../../types';
 import { tgApi, getAdminSecret, clearAdminSecret, adminLogin } from '../../services/telegramApi';
-import { createDefaultColumns, createColumn, COLUMN_ROLE_LABELS, COLUMN_ROLE_OPTIONS } from '../../lib/tableColumns';
+import { createDefaultColumns, createColumn, COLUMN_ROLE_LABELS, COLUMN_ROLE_OPTIONS, inferColumnRole } from '../../lib/tableColumns';
 import { detectViaGemini } from '../../lib/sliceDetection';
 
 interface Props {
@@ -2158,7 +2158,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       const sigOf = (r: any) =>
         questions
           .map((q: any, i: number) =>
-            i === numberColIdx ? '' : normCompare((r.answers || [])[i], q?.role)
+            i === numberColIdx ? '' : normCompare((r.answers || [])[i], inferColumnRole(q || {}))
           )
           .join('');
       const clusters = new Map<string, number[]>();
@@ -2178,7 +2178,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       for (let i = 0; i < questions.length; i++) {
         if (i === numberColIdx) continue;
         totalFields++;
-        const role = (questions[i] as any)?.role;
+        const role = inferColumnRole(questions[i] || {});
         const vals = records.map(r => normCompare((r.answers || [])[i], role));
         if (!vals.every(v => v === vals[0])) diffFields++;
       }
