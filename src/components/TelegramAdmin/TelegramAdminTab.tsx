@@ -1715,11 +1715,17 @@ const ResultsView: React.FC = () => {
     const [archive, fund, opys] = descFilter.split('|');
     try {
       setBusy(true);
+      setMsg('Завантажую всі підтвердження опису з БД…');
       const r = await tgApi.submissionsByDescription(archive, fund, opys);
       const rows = (r?.submissions || []) as any[];
+      if (rows.length === 0) {
+        setMsg(`⚠️ Для опису "${selectedDescriptionName}" у БД 0 підтверджень.`);
+        return;
+      }
       downloadCsv(rows, selectedDescriptionName);
+      setMsg(`✅ Експортовано ${rows.length} рядків опису "${selectedDescriptionName}".`);
     } catch (e: any) {
-      alert(`Не вдалося експортувати опис: ${e?.message || e}`);
+      setMsg(`❌ Не вдалося експортувати опис: ${e?.message || e}`);
     } finally {
       setBusy(false);
     }
@@ -1769,15 +1775,15 @@ const ResultsView: React.FC = () => {
           disabled={!data || filtered.length === 0}
           className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm disabled:opacity-50"
         >
-          Експорт CSV ({filtered.length})
+          Експорт видимого ({filtered.length})
         </button>
         <button
           onClick={exportSelectedDescription}
-          disabled={!data || !descFilter}
-          title={descFilter ? `Експортувати всі записи опису "${selectedDescriptionName}"` : 'Спочатку оберіть опис'}
+          disabled={!data || !descFilter || busy}
+          title={descFilter ? `Тягне з БД ВСІ підтвердження опису "${selectedDescriptionName}" (без обмеження поточним лімітом)` : 'Спочатку оберіть опис'}
           className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm disabled:opacity-50"
         >
-          Експорт опису
+          Експорт усього опису (з БД)
         </button>
       </div>
 
@@ -1928,7 +1934,7 @@ const OverviewView: React.FC = () => {
 // ==================== PROCESS DESCRIPTION ====================
 
 type ProcessStep = 'select' | 'step1' | 'step2';
-type GroupColor = 'green-full' | 'green-light' | 'yellow' | 'red' | 'purple';
+type GroupColor = 'green-full' | 'green-light' | 'green-superlight' | 'yellow' | 'red' | 'purple';
 
 interface NumberInfo {
   base: number | null;
@@ -2291,6 +2297,26 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       const pickLongest = (idxs: number[]) =>
         idxs.reduce((best, i) => (totalChars(records[i]) > totalChars(records[best]) ? i : best), idxs[0]);
 
+      // ----- Перевірка «усі поля окрім дати збігаються» -----
+      // Дата-роль: інферю з лейбла. Якщо всі НЕ-дата поля рівні, а дата(и) різні — green-superlight.
+      let allNonDateEq = true;
+      let hasDateDiff = false;
+      const dateIdxs: number[] = [];
+      for (let i = 0; i < questions.length; i++) {
+        const role = inferColumnRole(questions[i] || {});
+        const isDate = role === 'date_start' || role === 'date_end' || role === 'year_range';
+        if (isDate) dateIdxs.push(i);
+        if (!fieldStatus[i].equal) {
+          if (isDate) hasDateDiff = true;
+          else allNonDateEq = false;
+        }
+      }
+      // Серед записів — обираємо той, у кого найдовший сирий текст у дата-полях.
+      const dateChars = (ri: number) =>
+        dateIdxs.reduce((acc, qi) => acc + String((records[ri].answers || [])[qi] ?? '').length, 0);
+      const pickLongestDate = (idxs: number[]) =>
+        idxs.reduce((best, i) => (dateChars(i) > dateChars(best) ? i : best), idxs[0]);
+
       let color: GroupColor;
       let selectedIndex: number | null = null;
       if (allSame) {
@@ -2303,6 +2329,9 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         // Один запис у групі — нема з чим звіряти, рахуємо за зелений.
         color = 'green-full';
         selectedIndex = 0;
+      } else if (allNonDateEq && hasDateDiff && dateIdxs.length > 0) {
+        color = 'green-superlight';
+        selectedIndex = pickLongestDate(records.map((_, i) => i));
       } else if (totalFields > 0 && diffFields === totalFields) {
         color = 'red';
       } else {
@@ -2313,6 +2342,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       const reasonByColor: Record<GroupColor, string> = {
         'green-full': 'усі записи мають ідентичні підписи (allSame=true)',
         'green-light': `є кластер дублікатів (≥2 записи з ідентичним підписом); розміри кластерів: [${sizes.join(', ')}]`,
+        'green-superlight': `усі поля КРІМ дати збігаються; дат-полів: ${dateIdxs.length}; обрано запис з найдовшим raw у дата-полях`,
         yellow: `немає кластера дублікатів; розбіжностей за полями: ${diffFields}/${totalFields} (не всі поля різні)`,
         red: `немає кластера дублікатів; усі ${totalFields} порівнюваних полів різні`,
         purple: 'розвʼязано LLM',
@@ -2528,7 +2558,8 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const colorClass = (c: GroupColor) => {
     switch (c) {
       case 'green-full': return 'bg-emerald-200';
-      case 'green-light': return 'bg-emerald-50';
+      case 'green-light': return 'bg-emerald-100';
+      case 'green-superlight': return 'bg-emerald-50';
       case 'yellow': return 'bg-amber-50';
       case 'red': return 'bg-rose-50';
       case 'purple': return 'bg-violet-100';
@@ -2538,7 +2569,8 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const colorBadge = (c: GroupColor) => {
     switch (c) {
       case 'green-full': return 'bg-emerald-600';
-      case 'green-light': return 'bg-emerald-400';
+      case 'green-light': return 'bg-emerald-500';
+      case 'green-superlight': return 'bg-emerald-300';
       case 'yellow': return 'bg-amber-500';
       case 'red': return 'bg-rose-500';
       case 'purple': return 'bg-violet-500';
@@ -2673,7 +2705,8 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
           </div>
           <div className="text-xs text-slate-500 flex flex-wrap gap-3">
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-600" /> усі записи ідентичні</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-400" /> є дублікати — обрано з більшого кластера</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-500" /> є дублікати — обрано з більшого кластера</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-300" /> усі поля крім дати збігаються — обрано з найдовшою датою</span>
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-400" /> часткові розбіжності (можна викликати LLM)</span>
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-rose-500" /> усі поля різні</span>
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-violet-500" /> розвʼязано LLM</span>

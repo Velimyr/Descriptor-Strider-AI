@@ -64,11 +64,11 @@ function roleHint(role?: ColumnRole): string {
   switch (role) {
     case 'date_start':
     case 'date_end':
-      return 'Формат: ДД.ММ.РРРР або просто рік';
+      return 'Вводьте дату так, як вона вказана в описі';
     case 'page_count':
       return 'Введіть число';
     case 'year_range':
-      return 'Напр.: 1923 або 1923–1925';
+      return 'Вводьте діапазон дат так, як вони вказані в описі';
     default:
       return '';
   }
