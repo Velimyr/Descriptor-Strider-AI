@@ -1968,8 +1968,10 @@ function canonicalizeDates(input: string): string {
   let t = input;
   // Уніфікуємо тире.
   t = t.replace(/[–—−]/g, '-');
-  // Прибираємо маркери року «г.», «р.»
-  t = t.replace(/\bг\.?(?=\s|$|[\-,;])/gi, '').replace(/\bр\.?(?=\s|$|[\-,;])/gi, '');
+  // Прибираємо маркери року «г.», «р.». ВАЖЛИВО: JS-regex `\b` не працює з кирилицею,
+  // тож використовуємо Unicode-lookbehind «не літера зліва» + lookahead «не літера справа».
+  t = t.replace(/(?<![\p{L}])г\.?(?![\p{L}])/giu, '');
+  t = t.replace(/(?<![\p{L}])р\.?(?![\p{L}])/giu, '');
   // «D MONTH YYYY» → ISO
   t = t.replace(/(\d{1,2})\s+([а-яіїєґ]+)\s+(\d{4})/giu, (m, d, mon, y) => {
     const n = monthNum(mon);
