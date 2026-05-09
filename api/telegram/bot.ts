@@ -235,6 +235,24 @@ async function handleMessage(msg: any) {
       await sendMessage(chatId, T.namePromptInvalid);
       return;
     }
+    // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
+    const menuTexts = new Set([
+      T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard,
+      T.menuPause, T.menuResume, T.menuHelp,
+    ]);
+    if (menuTexts.has(rawText.trim())) {
+      await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid);
+      return;
+    }
+    // Перевірка унікальності серед існуючих користувачів (порівняння без регістру).
+    const allUsers = await getAllUsers();
+    const taken = allUsers.some(
+      u => u.tgId !== tgId && (u.displayName || '').toLowerCase() === name.toLowerCase()
+    );
+    if (taken) {
+      await sendMessage(chatId, fmt(T.nameTaken || 'Імʼя «{name}» вже зайняте, оберіть інше.', { name }));
+      return;
+    }
     const updatedUser = { ...user, displayName: name };
     await Promise.all([
       upsertUser(updatedUser, user.rowIndex),
@@ -361,6 +379,22 @@ async function handleCallback(cb: any) {
     // Користувач підтверджує, що поле в оригінальному документі не заповнене.
     answers[session.currentQ] = T.fieldEmptyValue || '';
     const nextIndex = session.currentQ + 1;
+    // Режим редагування одного поля → одразу до підтвердження.
+    if (session.state === 'editing') {
+      const editedSession: BotSession = {
+        ...session,
+        answersJson: JSON.stringify(answers),
+        state: 'confirming',
+        updatedAt: nowIsoUtc(),
+      };
+      await Promise.all([
+        setSession(editedSession, session.rowIndex),
+        sendMessage(chatId, buildSummary(questions, answers), {
+          reply_markup: keyboardForConfirm(),
+        }),
+      ]);
+      return;
+    }
     if (nextIndex >= questions.length) {
       const nextSession: BotSession = {
         ...session,
@@ -414,7 +448,8 @@ async function handleCallback(cb: any) {
 
   if (data.startsWith('edit:')) {
     const idx = parseInt(data.split(':')[1], 10) || 0;
-    const next: BotSession = { ...session, currentQ: idx, state: 'asking', updatedAt: nowIsoUtc() };
+    // 'editing' — після відповіді одразу повернемось у підтвердження.
+    const next: BotSession = { ...session, currentQ: idx, state: 'editing', updatedAt: nowIsoUtc() };
     await Promise.all([
       setSession(next, session.rowIndex),
       askQuestion(chatId, questions, idx),
@@ -601,6 +636,24 @@ async function processAnswer(chatId: number, tgId: string, session: BotSession, 
 
   answers[session.currentQ] = text.trim();
   const nextIndex = session.currentQ + 1;
+
+  // Якщо це режим редагування одного поля — після відповіді одразу
+  // повертаємось до підтвердження зі зведенням.
+  if (session.state === 'editing') {
+    const next: BotSession = {
+      ...session,
+      answersJson: JSON.stringify(answers),
+      state: 'confirming',
+      updatedAt: nowIsoUtc(),
+    };
+    await Promise.all([
+      setSession(next, session.rowIndex),
+      sendMessage(chatId, buildSummary(questions, answers), {
+        reply_markup: keyboardForConfirm(),
+      }),
+    ]);
+    return;
+  }
 
   if (nextIndex >= questions.length) {
     const next: BotSession = {

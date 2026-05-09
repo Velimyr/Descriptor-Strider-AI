@@ -59,7 +59,7 @@ export interface BotSession {
   currentQ: number;
   startedAt: string;
   updatedAt: string;
-  state: 'asking' | 'confirming';
+  state: 'asking' | 'confirming' | 'editing';
 }
 
 // Маперивчасть тут — нижче є мапери row → доменна модель.
@@ -106,7 +106,7 @@ function mapSession(r: any): BotSession {
     currentQ: r.current_q || 0,
     startedAt: r.started_at || '',
     updatedAt: r.updated_at || '',
-    state: (r.state || 'asking') as 'asking' | 'confirming',
+    state: (r.state || 'asking') as 'asking' | 'confirming' | 'editing',
   };
 }
 
