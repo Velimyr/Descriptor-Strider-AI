@@ -44,7 +44,7 @@ create table if not exists bot_sessions (
   current_q     int         not null default 0,
   started_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
-  state         text        not null default 'asking' check (state in ('asking','confirming'))
+  state         text        not null default 'asking' check (state in ('asking','confirming','editing'))
 );
 
 -- Підтверджені відповіді. answers — jsonb-масив у тому самому порядку, що bot_meta.questions.
