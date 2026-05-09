@@ -69,7 +69,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         {tab === 'questions' && <QuestionsView initialQuestions={initialQuestions} />}
         {tab === 'cases' && <CasesView geminiKey={geminiKey} mode="admin" />}
         {tab === 'results' && <ResultsView />}
-        {tab === 'process' && <ProcessDescriptionView />}
+        {tab === 'process' && <ProcessDescriptionView geminiKey={geminiKey} />}
         {tab === 'overview' && <OverviewView />}
       </div>
     </div>
@@ -1917,7 +1917,7 @@ const OverviewView: React.FC = () => {
 // ==================== PROCESS DESCRIPTION ====================
 
 type ProcessStep = 'select' | 'step1' | 'step2';
-type GroupColor = 'green' | 'yellow' | 'red';
+type GroupColor = 'green-full' | 'green-light' | 'yellow' | 'red' | 'purple';
 
 interface NumberInfo {
   base: number | null;
@@ -1951,6 +1951,7 @@ interface ProcessGroup {
   records: any[];
   color: GroupColor;
   selectedIndex: number | null;
+  llmReason?: string;
 }
 
 interface Step2Row {
@@ -1959,7 +1960,64 @@ interface Step2Row {
   answers: string[];
 }
 
-const ProcessDescriptionView: React.FC = () => {
+// Викликає Gemini, щоб обрати найвірогідніший запис серед N варіантів однієї справи.
+async function pickBestViaLLM(
+  apiKey: string,
+  questions: any[],
+  records: any[],
+  numberColIdx: number
+): Promise<{ index: number; reason: string }> {
+  const recs = records.map((r: any, i: number) => {
+    const ans = Array.isArray(r.answers) ? r.answers : [];
+    const obj: Record<string, string> = {};
+    questions.forEach((q: any, qi: number) => {
+      if (qi === numberColIdx) return; // номер ідентичний у межах групи
+      obj[q.label || `Q${qi + 1}`] = String(ans[qi] ?? '');
+    });
+    return { index: i, ...obj };
+  });
+  const prompt = [
+    'Ти — редактор архівних описів. Дано кілька варіантів заповнення однієї архівної справи різними людьми.',
+    'Обери ОДИН найкращий варіант — той, що найімовірніше відповідає істині (повніший, послідовніший, з правильним форматом дат і номерів, без явних описок).',
+    'Поверни ТІЛЬКИ JSON: {"index": <ціле 0..N-1>, "reason": "<коротко українською, чому саме цей варіант>"}.',
+    '',
+    'Записи:',
+    JSON.stringify(recs, null, 2),
+  ].join('\n');
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+    apiKey
+  )}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0 },
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Gemini ${res.status}: ${t.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('Gemini повернув не-JSON');
+    parsed = JSON.parse(m[0]);
+  }
+  const idx = Number(parsed.index);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= records.length) {
+    throw new Error(`Gemini повернув некоректний index: ${parsed.index}`);
+  }
+  return { index: idx, reason: String(parsed.reason || '') };
+}
+
+const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   const [step, setStep] = useState<ProcessStep>('select');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
@@ -1970,6 +2028,7 @@ const ProcessDescriptionView: React.FC = () => {
   const [groups, setGroups] = useState<ProcessGroup[]>([]);
   const [step2Rows, setStep2Rows] = useState<Step2Row[]>([]);
   const [loadedCount, setLoadedCount] = useState<number>(0);
+  const [llmBusy, setLlmBusy] = useState<Set<number>>(new Set());
 
   const descName = descriptions.find(d => d.key === descKey)?.name || '';
 
@@ -2030,6 +2089,27 @@ const ProcessDescriptionView: React.FC = () => {
     for (const [key, records] of map) {
       const display = String((records[0].answers || [])[numberColIdx] ?? '');
       const info = parseNumberCell(display);
+
+      // Підпис кожного запису — нормалізована конкатенація всіх полів КРІМ номера.
+      // Записи з ідентичним підписом утворюють кластер дублікатів.
+      const sigOf = (r: any) =>
+        questions
+          .map((_: any, i: number) =>
+            i === numberColIdx ? '' : norm((r.answers || [])[i])
+          )
+          .join('');
+      const clusters = new Map<string, number[]>();
+      records.forEach((r, ri) => {
+        const sig = sigOf(r);
+        if (!clusters.has(sig)) clusters.set(sig, []);
+        clusters.get(sig)!.push(ri);
+      });
+      const sizes = [...clusters.values()].map(a => a.length);
+      const largestCluster = [...clusters.values()].sort((a, b) => b.length - a.length)[0];
+      const allSame = clusters.size === 1;
+      const hasDuplicateCluster = sizes.some(s => s >= 2);
+
+      // Підрахунок розбіжностей за полями (для ідентифікації red).
       let diffFields = 0;
       let totalFields = 0;
       for (let i = 0; i < questions.length; i++) {
@@ -2038,12 +2118,25 @@ const ProcessDescriptionView: React.FC = () => {
         const vals = records.map(r => norm((r.answers || [])[i]));
         if (!vals.every(v => v === vals[0])) diffFields++;
       }
+
       let color: GroupColor;
-      if (diffFields === 0) color = 'green';
-      else if (totalFields > 0 && diffFields === totalFields) color = 'red';
-      else color = 'yellow';
-      // Зелені групи попередньо вибираємо автоматично — будь-який запис підходить.
-      const selectedIndex = color === 'green' || records.length === 1 ? 0 : null;
+      let selectedIndex: number | null = null;
+      if (allSame) {
+        color = 'green-full';
+        selectedIndex = 0;
+      } else if (hasDuplicateCluster) {
+        color = 'green-light';
+        selectedIndex = largestCluster[0];
+      } else if (records.length === 1) {
+        // Один запис у групі — нема з чим звіряти, рахуємо за зелений.
+        color = 'green-full';
+        selectedIndex = 0;
+      } else if (totalFields > 0 && diffFields === totalFields) {
+        color = 'red';
+      } else {
+        color = 'yellow';
+      }
+
       result.push({
         numberDisplay: display,
         numberKey: key,
@@ -2060,6 +2153,37 @@ const ProcessDescriptionView: React.FC = () => {
 
   const setSelected = (gi: number, ri: number | null) => {
     setGroups(prev => prev.map((g, i) => (i === gi ? { ...g, selectedIndex: ri } : g)));
+  };
+
+  const runLLMForGroup = async (gi: number) => {
+    if (!geminiKey) {
+      setMsg('❌ Gemini API key не задано — додайте його в основному екрані.');
+      return;
+    }
+    const g = groups[gi];
+    if (!g) return;
+    setLlmBusy(prev => {
+      const n = new Set(prev);
+      n.add(gi);
+      return n;
+    });
+    setMsg('');
+    try {
+      const { index, reason } = await pickBestViaLLM(geminiKey, questions, g.records, numberColIdx);
+      setGroups(prev =>
+        prev.map((gg, i) =>
+          i === gi ? { ...gg, color: 'purple' as GroupColor, selectedIndex: index, llmReason: reason } : gg
+        )
+      );
+    } catch (e: any) {
+      setMsg(`❌ LLM: ${e.message}`);
+    } finally {
+      setLlmBusy(prev => {
+        const n = new Set(prev);
+        n.delete(gi);
+        return n;
+      });
+    }
   };
 
   const proceedToStep2 = () => {
@@ -2145,19 +2269,25 @@ const ProcessDescriptionView: React.FC = () => {
 
   // ----- RENDER -----
 
-  const colorClass = (c: GroupColor) =>
-    c === 'green'
-      ? 'bg-emerald-50'
-      : c === 'yellow'
-      ? 'bg-amber-50'
-      : 'bg-rose-50';
+  const colorClass = (c: GroupColor) => {
+    switch (c) {
+      case 'green-full': return 'bg-emerald-200';
+      case 'green-light': return 'bg-emerald-50';
+      case 'yellow': return 'bg-amber-50';
+      case 'red': return 'bg-rose-50';
+      case 'purple': return 'bg-violet-100';
+    }
+  };
 
-  const colorBadge = (c: GroupColor) =>
-    c === 'green'
-      ? 'bg-emerald-500'
-      : c === 'yellow'
-      ? 'bg-amber-500'
-      : 'bg-rose-500';
+  const colorBadge = (c: GroupColor) => {
+    switch (c) {
+      case 'green-full': return 'bg-emerald-600';
+      case 'green-light': return 'bg-emerald-400';
+      case 'yellow': return 'bg-amber-500';
+      case 'red': return 'bg-rose-500';
+      case 'purple': return 'bg-violet-500';
+    }
+  };
 
   return (
     <div className="space-y-3">
@@ -2241,10 +2371,12 @@ const ProcessDescriptionView: React.FC = () => {
               обрано: {groups.filter(g => g.selectedIndex != null).length}/{groups.length}
             </div>
           </div>
-          <div className="text-xs text-slate-500 flex gap-3">
-            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-400" /> усі поля збігаються</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-400" /> часткові розбіжності</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-rose-400" /> усі поля різні</span>
+          <div className="text-xs text-slate-500 flex flex-wrap gap-3">
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-600" /> усі записи ідентичні</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-400" /> є дублікати — обрано з більшого кластера</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-400" /> часткові розбіжності (можна викликати LLM)</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-rose-500" /> усі поля різні</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-violet-500" /> розвʼязано LLM</span>
           </div>
           <div className="border rounded overflow-auto max-h-[70vh]">
             <table className="w-full text-xs border-collapse">
@@ -2264,9 +2396,26 @@ const ProcessDescriptionView: React.FC = () => {
                 {groups.map((g, gi) => (
                   <React.Fragment key={`${g.numberKey}-${gi}`}>
                     <tr className={colorClass(g.color)}>
-                      <td colSpan={2 + questions.length} className="p-1.5 border-t border-b font-medium text-xs flex items-center gap-2">
-                        <span className={`inline-block w-2 h-2 rounded-full ${colorBadge(g.color)}`} />
-                        Група «{g.numberDisplay || '(порожньо)'}» · записів: {g.records.length}
+                      <td colSpan={2 + questions.length} className="p-1.5 border-t border-b font-medium text-xs">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`inline-block w-2 h-2 rounded-full ${colorBadge(g.color)}`} />
+                          <span>
+                            Група «{g.numberDisplay || '(порожньо)'}» · записів: {g.records.length}
+                          </span>
+                          {g.color === 'yellow' && (
+                            <button
+                              onClick={() => runLLMForGroup(gi)}
+                              disabled={llmBusy.has(gi) || !geminiKey}
+                              title={!geminiKey ? 'Не задано Gemini API key' : 'Обрати найкращий запис через Gemini'}
+                              className="ml-2 px-2 py-0.5 bg-violet-600 text-white rounded text-xs disabled:opacity-50"
+                            >
+                              {llmBusy.has(gi) ? '⏳ LLM…' : '🤖 Розвʼязати через LLM'}
+                            </button>
+                          )}
+                          {g.color === 'purple' && g.llmReason && (
+                            <span className="text-violet-700 italic">LLM: {g.llmReason}</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                     {g.records.map((r, ri) => {
