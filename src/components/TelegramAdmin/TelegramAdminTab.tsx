@@ -1998,6 +1998,10 @@ const normCompare = (v: any, role?: string): string => {
   s = s.replace(/[ʼ'`ʻ’]/g, "'");
   if (role === 'date_start' || role === 'date_end' || role === 'year_range') {
     s = canonicalizeDates(s);
+  } else {
+    // «г.Каменце» ↔ «г. Каменце»: вставляємо пробіл після крапки перед літерою,
+    // щоб такі дрібниці не плодили фальш-розбіжностей.
+    s = s.replace(/\.([A-Za-zА-Яа-яЁёІіЇїЄєҐґ])/g, '. $1');
   }
   // Нормалізуємо роздільник діапазону: «1890 - 1891» → «1890-1891», але всередині ISO
   // («1890-01-23») дефіс не чіпаємо. Замінюємо тільки коли навколо є пробіли.
@@ -2008,13 +2012,15 @@ const normCompare = (v: any, role?: string): string => {
 };
 
 interface ProcessGroup {
-  numberDisplay: string;
-  numberKey: string;
+  caseId: string;
+  numberDisplay: string;          // представник для сортування/відображення
   numberInfo: NumberInfo;
+  numberVariants: string[];       // усі унікальні значення номера в межах групи
   records: any[];
   color: GroupColor;
   selectedIndex: number | null;
   llmReason?: string;
+  diag: string;                   // технічне пояснення, чому саме такий колір
 }
 
 interface Step2Row {
@@ -2141,24 +2147,43 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       setMsg('У цьому описі немає підтверджених відповідей.');
       return;
     }
+    // Групуємо за case_id — це єдиний фізичний скан справи. Користувачі можуть
+    // ввести різні значення «номера» для одного й того самого скану (помилки),
+    // але це не привід зливати РІЗНІ скани лише через однакові номери.
     const map = new Map<string, any[]>();
     for (const s of subs) {
-      const ans = Array.isArray(s.answers) ? s.answers : [];
-      const key = norm(ans[numberColIdx]);
+      const key = String(s.case_id || '');
+      if (!key) continue;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(s);
     }
     const result: ProcessGroup[] = [];
-    for (const [key, records] of map) {
-      const display = String((records[0].answers || [])[numberColIdx] ?? '');
+    for (const [caseId, records] of map) {
+      // Представника номера обираємо як найчастіше значення; ties — перше зустрінуте.
+      const counts = new Map<string, number>();
+      const variantsOrder: string[] = [];
+      for (const r of records) {
+        const v = String((r.answers || [])[numberColIdx] ?? '').trim();
+        if (!counts.has(v)) variantsOrder.push(v);
+        counts.set(v, (counts.get(v) || 0) + 1);
+      }
+      let display = variantsOrder[0] || '';
+      let bestCount = -1;
+      for (const v of variantsOrder) {
+        const c = counts.get(v)!;
+        if (c > bestCount) {
+          bestCount = c;
+          display = v;
+        }
+      }
       const info = parseNumberCell(display);
 
-      // Підпис кожного запису — нормалізована конкатенація всіх полів КРІМ номера.
+      // Підпис кожного запису — нормалізована конкатенація ВСІХ полів.
       // Записи з ідентичним підписом утворюють кластер дублікатів.
       const sigOf = (r: any) =>
         questions
           .map((q: any, i: number) =>
-            i === numberColIdx ? '' : normCompare((r.answers || [])[i], inferColumnRole(q || {}))
+            normCompare((r.answers || [])[i], inferColumnRole(q || {}))
           )
           .join('');
       const clusters = new Map<string, number[]>();
@@ -2172,15 +2197,18 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       const allSame = clusters.size === 1;
       const hasDuplicateCluster = sizes.some(s => s >= 2);
 
-      // Підрахунок розбіжностей за полями (для ідентифікації red).
+      // Підрахунок розбіжностей за полями (для ідентифікації red) + збір per-field стану для діагностики.
       let diffFields = 0;
       let totalFields = 0;
+      const fieldStatus: { label: string; equal: boolean; vals: string[] }[] = [];
       for (let i = 0; i < questions.length; i++) {
-        if (i === numberColIdx) continue;
         totalFields++;
-        const role = inferColumnRole(questions[i] || {});
+        const q = questions[i] || {};
+        const role = inferColumnRole(q);
         const vals = records.map(r => normCompare((r.answers || [])[i], role));
-        if (!vals.every(v => v === vals[0])) diffFields++;
+        const equal = vals.every(v => v === vals[0]);
+        if (!equal) diffFields++;
+        fieldStatus.push({ label: (q as any).label || `Q${i + 1}`, equal, vals });
       }
 
       let color: GroupColor;
@@ -2201,13 +2229,41 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         color = 'yellow';
       }
 
+      // ----- Діагностика -----
+      const reasonByColor: Record<GroupColor, string> = {
+        'green-full': 'усі записи мають ідентичні підписи (allSame=true)',
+        'green-light': `є кластер дублікатів (≥2 записи з ідентичним підписом); розміри кластерів: [${sizes.join(', ')}]`,
+        yellow: `немає кластера дублікатів; розбіжностей за полями: ${diffFields}/${totalFields} (не всі поля різні)`,
+        red: `немає кластера дублікатів; усі ${totalFields} порівнюваних полів різні`,
+        purple: 'розвʼязано LLM',
+      };
+      const userTags = records.map((r, ri) => `r${ri}=${r.display_name || '?'}/${r.tg_id || '?'}`).join('  ');
+      const clustersDump = [...clusters.entries()]
+        .sort((a, b) => b[1].length - a[1].length)
+        .map(([sig, idxs], ci) => `cluster#${ci} size=${idxs.length} records=[${idxs.map(i => 'r' + i).join(',')}] sig="${sig.slice(0, 200)}${sig.length > 200 ? '…' : ''}"`)
+        .join('\n');
+      const fieldsDump = fieldStatus
+        .map(f => {
+          if (f.equal) return `  [=] ${f.label}: "${f.vals[0]}"`;
+          return `  [≠] ${f.label}:\n` + f.vals.map((v, ri) => `      r${ri}: "${v}"`).join('\n');
+        })
+        .join('\n');
+      const diag =
+        `case_id=${caseId} · records=${records.length} · color=${color}\n` +
+        `reason: ${reasonByColor[color]}\n` +
+        `users:\n  ${userTags}\n` +
+        `clusters (${clusters.size} unique signatures):\n${clustersDump}\n` +
+        `fields (${diffFields} differ / ${totalFields} total):\n${fieldsDump}`;
+
       result.push({
+        caseId,
         numberDisplay: display,
-        numberKey: key,
         numberInfo: info,
+        numberVariants: variantsOrder.filter(v => v !== ''),
         records,
         color,
         selectedIndex,
+        diag,
       });
     }
     result.sort((a, b) => compareNumberInfo(a.numberInfo, b.numberInfo));
@@ -2458,13 +2514,22 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
               </thead>
               <tbody>
                 {groups.map((g, gi) => (
-                  <React.Fragment key={`${g.numberKey}-${gi}`}>
+                  <React.Fragment key={`${g.caseId}-${gi}`}>
                     <tr className={colorClass(g.color)}>
                       <td colSpan={2 + questions.length} className="p-1.5 border-t border-b font-medium text-xs">
                         <div className="flex items-center gap-2 flex-wrap">
                           <span className={`inline-block w-2 h-2 rounded-full ${colorBadge(g.color)}`} />
                           <span>
-                            Група «{g.numberDisplay || '(порожньо)'}» · записів: {g.records.length}
+                            № <b>{g.numberDisplay || '(порожньо)'}</b>
+                            {g.numberVariants.length > 1 && (
+                              <span className="text-rose-700 ml-1">
+                                ⚠ варіанти: {g.numberVariants.join(' / ')}
+                              </span>
+                            )}
+                            {' · '}
+                            <span className="font-mono text-[10px] text-slate-500">{g.caseId.slice(0, 8)}</span>
+                            {' · записів: '}
+                            {g.records.length}
                           </span>
                           {g.color === 'yellow' && (
                             <button
@@ -2479,6 +2544,14 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                           {g.color === 'purple' && g.llmReason && (
                             <span className="text-violet-700 italic">LLM: {g.llmReason}</span>
                           )}
+                          <details className="ml-auto">
+                            <summary className="cursor-pointer text-[11px] text-slate-600 select-none">
+                              🔍 діагностика
+                            </summary>
+                            <pre className="mt-1 p-2 bg-slate-900 text-slate-100 text-[10px] whitespace-pre-wrap rounded font-mono leading-tight max-h-72 overflow-auto">
+{g.diag}
+                            </pre>
+                          </details>
                         </div>
                       </td>
                     </tr>
