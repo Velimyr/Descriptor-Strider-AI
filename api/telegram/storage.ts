@@ -30,6 +30,7 @@ export interface BotUser {
   lastDispatchedAt: string;
   consecutiveMisses: number;
   status: 'active' | 'paused';
+  pendingAction: '' | 'rename';
   createdAt: string;
 }
 
@@ -73,6 +74,7 @@ function mapUser(r: any): BotUser {
     lastDispatchedAt: r.last_dispatched_at || '',
     consecutiveMisses: r.consecutive_misses || 0,
     status: (r.status || 'active') as 'active' | 'paused',
+    pendingAction: (r.pending_action || '') as '' | 'rename',
     createdAt: r.created_at || '',
   };
 }
@@ -164,6 +166,7 @@ export async function upsertUser(
         last_dispatched_at: u.lastDispatchedAt || null,
         consecutive_misses: u.consecutiveMisses,
         status: u.status,
+        pending_action: u.pendingAction || '',
         // created_at — не оновлюємо при апдейті, але дамо при insert
         ...(u.createdAt ? { created_at: u.createdAt } : {}),
       },
@@ -180,6 +183,7 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.lastDispatchedAt !== undefined) dbPatch.last_dispatched_at = patch.lastDispatchedAt || null;
   if (patch.consecutiveMisses !== undefined) dbPatch.consecutive_misses = patch.consecutiveMisses;
   if (patch.status !== undefined) dbPatch.status = patch.status;
+  if (patch.pendingAction !== undefined) dbPatch.pending_action = patch.pendingAction;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from('bot_users').update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;

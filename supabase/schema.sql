@@ -10,8 +10,12 @@ create table if not exists bot_users (
   last_dispatched_at       timestamptz,
   consecutive_misses       int         not null default 0,
   status                   text        not null default 'active' check (status in ('active','paused')),
+  pending_action           text        not null default '',
   created_at               timestamptz not null default now()
 );
+-- Міграція для існуючих установок (no-op якщо колонка вже є).
+-- pending_action: '' | 'rename' — стан очікування вводу від користувача поза опитуванням.
+alter table bot_users add column if not exists pending_action text not null default '';
 
 create table if not exists bot_cases (
   case_id            text primary key,

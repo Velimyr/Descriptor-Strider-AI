@@ -291,6 +291,16 @@ export const telegramBotConfig: TelegramBotConfig = {
     menuPause: '🔕 Зупинити',
     menuResume: '🔔 Увімкнути',
     menuHelp: '❓ Допомога',
+    menuSettings: '⚙ Налаштування',
+
+    // Налаштування → Змінити імʼя
+    settingsHeader:
+      '<b>⚙ Налаштування</b>\n\nПоточне імʼя у рейтингу: <b>{name}</b>',
+    settingsRenameButton: '✏ Змінити імʼя',
+    settingsRenamePrompt:
+      'Введіть нове імʼя для рейтингу (до 32 символів). Щоб скасувати — натисніть кнопку нижче.',
+    settingsRenameSaved: 'Готово! Тепер у рейтингу ви — <b>{name}</b>.',
+    settingsRenameCancelled: 'Зміну імені скасовано.',
 
     // Швидкий фідбек
     savingNotice: '💾 Зберігаю...',

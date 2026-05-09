@@ -103,6 +103,22 @@ function helpMenuKeyboard(): any {
   };
 }
 
+function settingsMenuKeyboard(): any {
+  return {
+    inline_keyboard: [
+      [{ text: T.settingsRenameButton, callback_data: 'settings:rename' }],
+    ],
+  };
+}
+
+function settingsRenameCancelKeyboard(): any {
+  return {
+    inline_keyboard: [
+      [{ text: T.cancelButton, callback_data: 'settings:rename_cancel' }],
+    ],
+  };
+}
+
 function helpBackKeyboard(): any {
   return {
     inline_keyboard: [[{ text: T.helpBackButton, callback_data: 'help:menu' }]],
@@ -133,6 +149,7 @@ function mainMenuKeyboard(user: BotUser | null): any {
       [{ text: T.menuNext }],
       [{ text: T.menuStats }, { text: T.menuProgress }],
       [{ text: T.menuLeaderboard }, { text: T.menuHelp }],
+      [{ text: T.menuSettings }],
       pauseRow,
     ],
     resize_keyboard: true,
@@ -184,6 +201,7 @@ function normalizeCommand(text: string): string {
   if (trimmed === T.menuProgress) return '/progress';
   if (trimmed === T.menuLeaderboard) return '/leaderboard';
   if (trimmed === T.menuHelp) return '/help';
+  if (trimmed === T.menuSettings) return '/settings';
   if (trimmed === T.menuPause) return '/stop';
   if (trimmed === T.menuResume) return '/resume';
   return trimmed;
@@ -208,6 +226,7 @@ async function handleMessage(msg: any) {
         lastDispatchedAt: '',
         consecutiveMisses: 0,
         status: 'active',
+        pendingAction: '',
         createdAt: nowIsoUtc(),
       };
       await Promise.all([
@@ -238,7 +257,7 @@ async function handleMessage(msg: any) {
     // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
     const menuTexts = new Set([
       T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard,
-      T.menuPause, T.menuResume, T.menuHelp,
+      T.menuPause, T.menuResume, T.menuHelp, T.menuSettings,
     ]);
     if (menuTexts.has(rawText.trim())) {
       await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid);
@@ -298,6 +317,20 @@ async function handleMessage(msg: any) {
     });
     return;
   }
+  if (text === '/settings') return void (await cmdSettings(chatId, user));
+
+  // Користувач у режимі введення нового імені — будь-який звичайний текст є відповіддю.
+  // Якщо натиснув іншу кнопку меню (нормалізується в команду) — мовчки скидаємо режим
+  // і даємо команді виконатись.
+  if (user.pendingAction === 'rename') {
+    if (!text.startsWith('/')) {
+      await processRenameInput(chatId, user, rawText);
+      return;
+    }
+    await patchUser(tgId, { pendingAction: '' });
+    user.pendingAction = '';
+  }
+
   if (text === '/stats') return void (await cmdStats(chatId, tgId, user));
   if (text === '/progress') return void (await cmdProgress(chatId, user));
   if (text === '/leaderboard') return void (await cmdLeaderboard(chatId, tgId, user));
@@ -344,6 +377,36 @@ async function handleCallback(cb: any) {
       }
     }
     await sendMessage(chatId, text, { reply_markup: markup });
+    return;
+  }
+
+  // Налаштування — теж не залежить від сесії.
+  if (data.startsWith('settings:')) {
+    await answerCallbackQuery(cb.id);
+    const action = data.slice('settings:'.length);
+    const user = await getUser(tgId);
+    if (!user) {
+      await sendMessage(chatId, 'Надішліть /start');
+      return;
+    }
+    if (action === 'rename') {
+      await Promise.all([
+        patchUser(tgId, { pendingAction: 'rename' }),
+        sendMessage(chatId, T.settingsRenamePrompt, {
+          reply_markup: settingsRenameCancelKeyboard(),
+        }),
+      ]);
+      return;
+    }
+    if (action === 'rename_cancel') {
+      await Promise.all([
+        patchUser(tgId, { pendingAction: '' }),
+        sendMessage(chatId, T.settingsRenameCancelled, {
+          reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+        }),
+      ]);
+      return;
+    }
     return;
   }
 
@@ -551,6 +614,40 @@ async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
       });
   }
   await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
+}
+
+async function cmdSettings(chatId: number, user: BotUser) {
+  await sendMessage(chatId, fmt(T.settingsHeader, { name: escapeHtml(user.displayName || '—') }), {
+    reply_markup: settingsMenuKeyboard(),
+  });
+}
+
+async function processRenameInput(chatId: number, user: BotUser, rawText: string) {
+  const name = rawText.trim().slice(0, 32);
+  if (!name) {
+    await sendMessage(chatId, T.namePromptInvalid, {
+      reply_markup: settingsRenameCancelKeyboard(),
+    });
+    return;
+  }
+  // Те саме правило унікальності, що й при першій реєстрації.
+  const allUsers = await getAllUsers();
+  const taken = allUsers.some(
+    u => u.tgId !== user.tgId && (u.displayName || '').toLowerCase() === name.toLowerCase()
+  );
+  if (taken) {
+    await sendMessage(chatId, fmt(T.nameTaken, { name }), {
+      reply_markup: settingsRenameCancelKeyboard(),
+    });
+    return;
+  }
+  const updated: BotUser = { ...user, displayName: name, pendingAction: '' };
+  await Promise.all([
+    upsertUser(updated, user.rowIndex),
+    sendMessage(chatId, fmt(T.settingsRenameSaved, { name: escapeHtml(name) }), {
+      reply_markup: mainMenuKeyboard(updated),
+    }),
+  ]);
 }
 
 // --------- dispatch / question flow ---------
