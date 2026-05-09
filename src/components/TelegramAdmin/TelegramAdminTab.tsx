@@ -2155,6 +2155,8 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const [step2Rows, setStep2Rows] = useState<Step2Row[]>([]);
   const [loadedCount, setLoadedCount] = useState<number>(0);
   const [llmBusy, setLlmBusy] = useState<Set<number>>(new Set());
+  const [bulkLLM, setBulkLLM] = useState<{ done: number; total: number; current: number | null } | null>(null);
+  const bulkCancelRef = useRef(false);
 
   const descName = descriptions.find(d => d.key === descKey)?.name || '';
 
@@ -2340,6 +2342,62 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
 
   const setSelected = (gi: number, ri: number | null) => {
     setGroups(prev => prev.map((g, i) => (i === gi ? { ...g, selectedIndex: ri } : g)));
+  };
+
+  const runLLMForAllYellow = async () => {
+    if (!geminiKey) {
+      setMsg('❌ Gemini API key не задано — додайте його в основному екрані.');
+      return;
+    }
+    const yellowIdxs = groups
+      .map((g, i) => (g.color === 'yellow' ? i : -1))
+      .filter(i => i >= 0);
+    if (yellowIdxs.length === 0) {
+      setMsg('Немає жовтих груп для розвʼязання.');
+      return;
+    }
+    bulkCancelRef.current = false;
+    setBulkLLM({ done: 0, total: yellowIdxs.length, current: null });
+    setMsg('');
+    const errors: string[] = [];
+    for (let k = 0; k < yellowIdxs.length; k++) {
+      if (bulkCancelRef.current) break;
+      const gi = yellowIdxs[k];
+      const g = groups[gi];
+      setBulkLLM(prev => (prev ? { ...prev, current: gi } : prev));
+      setLlmBusy(prev => {
+        const n = new Set(prev);
+        n.add(gi);
+        return n;
+      });
+      try {
+        const { index, reason } = await pickBestViaLLM(geminiKey, questions, g.records, numberColIdx);
+        setGroups(prev =>
+          prev.map((gg, j) =>
+            j === gi
+              ? { ...gg, color: 'purple' as GroupColor, selectedIndex: index, llmReason: reason }
+              : gg
+          )
+        );
+      } catch (e: any) {
+        errors.push(`№${g.numberDisplay || g.caseId.slice(0, 6)}: ${e.message}`);
+      } finally {
+        setLlmBusy(prev => {
+          const n = new Set(prev);
+          n.delete(gi);
+          return n;
+        });
+      }
+      setBulkLLM(prev => (prev ? { ...prev, done: prev.done + 1, current: null } : prev));
+    }
+    setBulkLLM(null);
+    if (errors.length > 0) {
+      setMsg(`❌ Помилки LLM (${errors.length}):\n` + errors.join('\n'));
+    }
+  };
+
+  const cancelBulkLLM = () => {
+    bulkCancelRef.current = true;
   };
 
   const runLLMForGroup = async (gi: number) => {
@@ -2557,6 +2615,50 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
               Опис: <b>{descName}</b> · підтверджень: {loadedCount} · груп: {groups.length} ·
               обрано: {groups.filter(g => g.selectedIndex != null).length}/{groups.length}
             </div>
+            {(() => {
+              const yellowCount = groups.filter(g => g.color === 'yellow').length;
+              if (bulkLLM) {
+                const pct = bulkLLM.total > 0 ? Math.round((bulkLLM.done / bulkLLM.total) * 100) : 0;
+                return (
+                  <div className="flex items-center gap-2 w-full">
+                    <div className="flex-1 h-2 bg-slate-200 rounded overflow-hidden min-w-[200px]">
+                      <div
+                        className="h-2 bg-violet-600 transition-all"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-slate-600 whitespace-nowrap">
+                      LLM: {bulkLLM.done}/{bulkLLM.total}
+                      {bulkLLM.current != null
+                        ? ` · обробляю №${groups[bulkLLM.current]?.numberDisplay || ''}`
+                        : ''}
+                    </span>
+                    <button
+                      onClick={cancelBulkLLM}
+                      className="px-2 py-1 bg-rose-100 text-rose-700 rounded text-xs"
+                    >
+                      Зупинити
+                    </button>
+                  </div>
+                );
+              }
+              return (
+                <button
+                  onClick={runLLMForAllYellow}
+                  disabled={yellowCount === 0 || !geminiKey}
+                  title={
+                    !geminiKey
+                      ? 'Не задано Gemini API key'
+                      : yellowCount === 0
+                      ? 'Немає жовтих груп'
+                      : `Послідовно розвʼязати ${yellowCount} жовтих груп`
+                  }
+                  className="px-3 py-1 bg-violet-600 text-white rounded text-xs disabled:opacity-50"
+                >
+                  🤖 Розвʼязати всі жовті ({yellowCount})
+                </button>
+              );
+            })()}
           </div>
           <div className="text-xs text-slate-500 flex flex-wrap gap-3">
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-600" /> усі записи ідентичні</span>
