@@ -12,7 +12,7 @@ interface Props {
   initialQuestions?: TableColumn[]; // зазвичай tableStructure активного проєкту
 }
 
-type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'overview';
+type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview';
 
 export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => {
   const [tab, setTab] = useState<TabKey>('setup');
@@ -49,6 +49,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['questions', 'Питання'],
           ['cases', 'Підготовка справ'],
           ['results', 'Результати'],
+          ['process', 'Опрацювати опис'],
           ['overview', 'Огляд'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
@@ -68,6 +69,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         {tab === 'questions' && <QuestionsView initialQuestions={initialQuestions} />}
         {tab === 'cases' && <CasesView geminiKey={geminiKey} mode="admin" />}
         {tab === 'results' && <ResultsView />}
+        {tab === 'process' && <ProcessDescriptionView />}
         {tab === 'overview' && <OverviewView />}
       </div>
     </div>
@@ -1907,6 +1909,441 @@ const OverviewView: React.FC = () => {
             </table>
           </section>
         </>
+      )}
+    </div>
+  );
+};
+
+// ==================== PROCESS DESCRIPTION ====================
+
+type ProcessStep = 'select' | 'step1' | 'step2';
+type GroupColor = 'green' | 'yellow' | 'red';
+
+interface NumberInfo {
+  base: number | null;
+  suffix: string;
+}
+
+// "1", "1а", "12б", "" → пара (число, суфікс). Нечислові → base=null.
+function parseNumberCell(s: string): NumberInfo {
+  const t = (s ?? '').trim();
+  if (!t) return { base: null, suffix: '' };
+  const m = t.match(/^(\d+)(.*)$/);
+  if (!m) return { base: null, suffix: t };
+  return { base: parseInt(m[1], 10), suffix: m[2].trim() };
+}
+
+function compareNumberInfo(a: NumberInfo, b: NumberInfo): number {
+  if (a.base !== b.base) {
+    if (a.base == null) return 1;
+    if (b.base == null) return -1;
+    return a.base - b.base;
+  }
+  return a.suffix.localeCompare(b.suffix, 'uk');
+}
+
+const norm = (v: any) => String(v ?? '').trim().toLowerCase();
+
+interface ProcessGroup {
+  numberDisplay: string;
+  numberKey: string;
+  numberInfo: NumberInfo;
+  records: any[];
+  color: GroupColor;
+  selectedIndex: number | null;
+}
+
+interface Step2Row {
+  id: string;
+  isEmpty: boolean;
+  answers: string[];
+}
+
+const ProcessDescriptionView: React.FC = () => {
+  const [step, setStep] = useState<ProcessStep>('select');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [questions, setQuestions] = useState<any[]>([]);
+  const [submissions, setSubmissions] = useState<any[]>([]);
+  const [descriptions, setDescriptions] = useState<{ key: string; name: string }[]>([]);
+  const [descKey, setDescKey] = useState('');
+  const [numberColIdx, setNumberColIdx] = useState<number>(0);
+  const [groups, setGroups] = useState<ProcessGroup[]>([]);
+  const [step2Rows, setStep2Rows] = useState<Step2Row[]>([]);
+
+  const descKeyOf = (s: any) => `${s.archive || ''}|${s.fund || ''}|${s.opys || ''}`;
+  const descName = descriptions.find(d => d.key === descKey)?.name || '';
+
+  const refresh = async () => {
+    setBusy(true);
+    setMsg('');
+    try {
+      const [r, ov] = await Promise.all([tgApi.results(5000), tgApi.overview()]);
+      const qs = Array.isArray(r.questions) ? r.questions : [];
+      setQuestions(qs);
+      setSubmissions(Array.isArray(r.submissions) ? r.submissions : []);
+      setDescriptions(
+        ((ov.descriptions || []) as any[])
+          .map(d => ({ key: d.key, name: d.name }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      );
+      if (numberColIdx >= qs.length) setNumberColIdx(qs.length > 0 ? 0 : -1);
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const buildGroups = () => {
+    if (!descKey || numberColIdx < 0) return;
+    setMsg('');
+    const subs = submissions.filter(s => descKeyOf(s) === descKey);
+    if (subs.length === 0) {
+      setMsg('У цьому описі немає підтверджених відповідей.');
+      return;
+    }
+    const map = new Map<string, any[]>();
+    for (const s of subs) {
+      const ans = Array.isArray(s.answers) ? s.answers : [];
+      const key = norm(ans[numberColIdx]);
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(s);
+    }
+    const result: ProcessGroup[] = [];
+    for (const [key, records] of map) {
+      const display = String((records[0].answers || [])[numberColIdx] ?? '');
+      const info = parseNumberCell(display);
+      let diffFields = 0;
+      let totalFields = 0;
+      for (let i = 0; i < questions.length; i++) {
+        if (i === numberColIdx) continue;
+        totalFields++;
+        const vals = records.map(r => norm((r.answers || [])[i]));
+        if (!vals.every(v => v === vals[0])) diffFields++;
+      }
+      let color: GroupColor;
+      if (diffFields === 0) color = 'green';
+      else if (totalFields > 0 && diffFields === totalFields) color = 'red';
+      else color = 'yellow';
+      // Зелені групи попередньо вибираємо автоматично — будь-який запис підходить.
+      const selectedIndex = color === 'green' || records.length === 1 ? 0 : null;
+      result.push({
+        numberDisplay: display,
+        numberKey: key,
+        numberInfo: info,
+        records,
+        color,
+        selectedIndex,
+      });
+    }
+    result.sort((a, b) => compareNumberInfo(a.numberInfo, b.numberInfo));
+    setGroups(result);
+    setStep('step1');
+  };
+
+  const setSelected = (gi: number, ri: number | null) => {
+    setGroups(prev => prev.map((g, i) => (i === gi ? { ...g, selectedIndex: ri } : g)));
+  };
+
+  const proceedToStep2 = () => {
+    const missing = groups.filter(g => g.selectedIndex == null);
+    if (missing.length > 0) {
+      setMsg(
+        `Не обрано записів у групах: ${missing
+          .map(g => g.numberDisplay || '(порожній)')
+          .join(', ')}`
+      );
+      return;
+    }
+    setMsg('');
+    const selected = groups.map(g => g.records[g.selectedIndex!]);
+    const bases = new Set<number>();
+    for (const s of selected) {
+      const ans = Array.isArray(s.answers) ? s.answers : [];
+      const info = parseNumberCell(String(ans[numberColIdx] ?? ''));
+      if (info.base != null) bases.add(info.base);
+    }
+    const rows: Step2Row[] = selected.map((s, idx) => {
+      const ans = Array.isArray(s.answers) ? [...s.answers] : [];
+      while (ans.length < questions.length) ans.push('');
+      return { id: `r${idx}`, isEmpty: false, answers: ans.map(a => String(a ?? '')) };
+    });
+    if (bases.size > 0) {
+      const min = Math.min(...bases);
+      const max = Math.max(...bases);
+      for (let n = min; n <= max; n++) {
+        if (!bases.has(n)) {
+          const ans = Array(questions.length).fill('');
+          if (numberColIdx >= 0) ans[numberColIdx] = String(n);
+          rows.push({ id: `e${n}`, isEmpty: true, answers: ans });
+        }
+      }
+    }
+    rows.sort((a, b) =>
+      compareNumberInfo(
+        parseNumberCell(a.answers[numberColIdx] || ''),
+        parseNumberCell(b.answers[numberColIdx] || '')
+      )
+    );
+    setStep2Rows(rows);
+    setStep('step2');
+  };
+
+  const updateCell = (rowIdx: number, qIdx: number, value: string) => {
+    setStep2Rows(prev =>
+      prev.map((r, i) =>
+        i === rowIdx ? { ...r, answers: r.answers.map((a, j) => (j === qIdx ? value : a)) } : r
+      )
+    );
+  };
+
+  const exportCsv = () => {
+    if (questions.length === 0) return;
+    const headers = questions.map((q: any, i: number) => q.label || `Q${i + 1}`);
+    // Сортуємо ще раз — користувач міг змінити номери в Кроці 2.
+    const sorted = [...step2Rows].sort((a, b) =>
+      compareNumberInfo(
+        parseNumberCell(a.answers[numberColIdx] || ''),
+        parseNumberCell(b.answers[numberColIdx] || '')
+      )
+    );
+    const rows = sorted.map(r => headers.map((_, i) => r.answers[i] ?? ''));
+    const all = [headers, ...rows];
+    const escape = (v: any) => {
+      const s = String(v ?? '');
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const csv = all.map(r => r.map(escape).join(',')).join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const safe = (descName || 'description').replace(/[\\/:*?"<>|]+/g, '_').trim();
+    a.href = url;
+    a.download = `descriptor-processed-${safe}-${ts}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ----- RENDER -----
+
+  const colorClass = (c: GroupColor) =>
+    c === 'green'
+      ? 'bg-emerald-50'
+      : c === 'yellow'
+      ? 'bg-amber-50'
+      : 'bg-rose-50';
+
+  const colorBadge = (c: GroupColor) =>
+    c === 'green'
+      ? 'bg-emerald-500'
+      : c === 'yellow'
+      ? 'bg-amber-500'
+      : 'bg-rose-500';
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={refresh}
+          disabled={busy}
+          className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1"
+        >
+          <RefreshCw size={14} /> {busy ? 'Завантаження…' : 'Оновити дані'}
+        </button>
+        <div className="text-sm text-slate-500">
+          Крок: <b>{step === 'select' ? '0 — вибір' : step === 'step1' ? '1 — групи' : '2 — заповнення'}</b>
+        </div>
+      </div>
+
+      {msg && <div className="text-sm whitespace-pre-wrap">{msg}</div>}
+
+      {step === 'select' && (
+        <div className="space-y-3 max-w-2xl">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Опис</label>
+            <select
+              value={descKey}
+              onChange={e => setDescKey(e.target.value)}
+              className="border rounded px-2 py-1.5 text-sm w-full"
+            >
+              <option value="">— оберіть опис —</option>
+              {descriptions.map(d => (
+                <option key={d.key} value={d.key}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Колонка-«номер» (для сортування й групування)</label>
+            <select
+              value={numberColIdx}
+              onChange={e => setNumberColIdx(parseInt(e.target.value, 10))}
+              className="border rounded px-2 py-1.5 text-sm w-full"
+              disabled={questions.length === 0}
+            >
+              {questions.map((q: any, i: number) => (
+                <option key={i} value={i}>
+                  {q.label || `Q${i + 1}`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            onClick={buildGroups}
+            disabled={!descKey || numberColIdx < 0 || questions.length === 0}
+            className="px-4 py-2 bg-indigo-600 text-white rounded text-sm disabled:opacity-50"
+          >
+            Далі →
+          </button>
+        </div>
+      )}
+
+      {step === 'step1' && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => {
+                setStep('select');
+                setMsg('');
+              }}
+              className="px-3 py-1.5 bg-slate-200 rounded text-sm"
+            >
+              ← Назад
+            </button>
+            <button
+              onClick={proceedToStep2}
+              className="px-4 py-1.5 bg-indigo-600 text-white rounded text-sm"
+            >
+              Далі →
+            </button>
+            <div className="text-sm text-slate-500">
+              Опис: <b>{descName}</b> · груп: {groups.length} · обрано:{' '}
+              {groups.filter(g => g.selectedIndex != null).length}/{groups.length}
+            </div>
+          </div>
+          <div className="text-xs text-slate-500 flex gap-3">
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-400" /> усі поля збігаються</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-amber-400" /> часткові розбіжності</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-rose-400" /> усі поля різні</span>
+          </div>
+          <div className="border rounded overflow-auto max-h-[70vh]">
+            <table className="w-full text-xs border-collapse">
+              <thead className="bg-slate-100 sticky top-0">
+                <tr>
+                  <th className="text-left p-2 border-b w-8">✓</th>
+                  <th className="text-left p-2 border-b">Користувач</th>
+                  {questions.map((q: any, i: number) => (
+                    <th key={i} className="text-left p-2 border-b whitespace-nowrap">
+                      {q.label || `Q${i + 1}`}
+                      {i === numberColIdx ? ' №' : ''}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((g, gi) => (
+                  <React.Fragment key={`${g.numberKey}-${gi}`}>
+                    <tr className={colorClass(g.color)}>
+                      <td colSpan={2 + questions.length} className="p-1.5 border-t border-b font-medium text-xs flex items-center gap-2">
+                        <span className={`inline-block w-2 h-2 rounded-full ${colorBadge(g.color)}`} />
+                        Група «{g.numberDisplay || '(порожньо)'}» · записів: {g.records.length}
+                      </td>
+                    </tr>
+                    {g.records.map((r, ri) => {
+                      const ans = Array.isArray(r.answers) ? r.answers : [];
+                      const checked = g.selectedIndex === ri;
+                      return (
+                        <tr key={`${gi}-${ri}`} className={`${colorClass(g.color)} border-b`}>
+                          <td className="p-2 align-top">
+                            <input
+                              type="radio"
+                              name={`grp-${gi}`}
+                              checked={checked}
+                              onChange={() => setSelected(gi, ri)}
+                            />
+                          </td>
+                          <td className="p-2 align-top whitespace-nowrap">
+                            {r.display_name || '—'}
+                            <div className="text-[10px] text-slate-500 font-mono">{r.tg_id}</div>
+                          </td>
+                          {questions.map((_: any, qi: number) => (
+                            <td key={qi} className="p-2 align-top max-w-xs">
+                              {String(ans[qi] ?? '')}
+                            </td>
+                          ))}
+                        </tr>
+                      );
+                    })}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {step === 'step2' && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setStep('step1')}
+              className="px-3 py-1.5 bg-slate-200 rounded text-sm"
+            >
+              ← Назад
+            </button>
+            <button
+              onClick={exportCsv}
+              className="px-4 py-1.5 bg-emerald-600 text-white rounded text-sm"
+            >
+              Експорт CSV
+            </button>
+            <div className="text-sm text-slate-500">
+              Рядків: {step2Rows.length} (порожніх: {step2Rows.filter(r => r.isEmpty).length})
+            </div>
+          </div>
+          <div className="text-xs text-slate-500">
+            Жовтим виділено рядки, додані для відсутніх номерів. Усі поля редаговані.
+          </div>
+          <div className="border rounded overflow-auto max-h-[70vh]">
+            <table className="w-full text-xs border-collapse">
+              <thead className="bg-slate-100 sticky top-0">
+                <tr>
+                  {questions.map((q: any, i: number) => (
+                    <th key={i} className="text-left p-2 border-b whitespace-nowrap">
+                      {q.label || `Q${i + 1}`}
+                      {i === numberColIdx ? ' №' : ''}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {step2Rows.map((r, ri) => (
+                  <tr key={r.id} className={`${r.isEmpty ? 'bg-amber-50' : ''} border-b`}>
+                    {questions.map((_: any, qi: number) => (
+                      <td key={qi} className="p-1 align-top">
+                        <textarea
+                          value={r.answers[qi] ?? ''}
+                          onChange={e => updateCell(ri, qi, e.target.value)}
+                          rows={1}
+                          className="w-full border rounded px-1.5 py-1 text-xs resize-y bg-white"
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );
