@@ -432,25 +432,40 @@ function colorFromId(id: string): string {
   return `hsl(${h % 360}, 70%, 50%)`;
 }
 
-// Lines-режим: набір вертикальних і горизонтальних ліній (нормалізовані 0..1).
-type LineSet = { v: number[]; h: number[] };
+// Lines-режим: вертикальні (макс 4) + горизонтальні з привʼязкою до X.
+// Горизонтальна лінія "живе" у вертикальній смузі, в яку потрапляє її x.
+type HLine = { x: number; y: number };
+type LineSet = { v: number[]; h: HLine[] };
+const MAX_V_LINES = 4;
 
-// Лінії паруються по порядку: [0,1], [2,3], ... Непарна остання — без пари.
-function pairLines(positions: number[]): Array<[number, number]> {
-  const sorted = [...positions].sort((a, b) => a - b);
+// Вертикальні паруються: (V0,V1) → band 0, (V2,V3) → band 1.
+function vBands(v: number[]): Array<[number, number]> {
+  const sorted = [...v].sort((a, b) => a - b);
   const out: Array<[number, number]> = [];
   for (let i = 0; i + 1 < sorted.length; i += 2) out.push([sorted[i], sorted[i + 1]]);
   return out;
 }
 
-// Перетин пар вертикальних і горизонтальних смуг → масив зон.
+// Знайти індекс смуги, у яку потрапляє x. -1 якщо не у жодній.
+function bandIndexFor(x: number, bands: Array<[number, number]>): number {
+  for (let i = 0; i < bands.length; i++) {
+    if (x >= bands[i][0] && x <= bands[i][1]) return i;
+  }
+  return -1;
+}
+
+// Зони: для кожної вертикальної смуги — між кожною парою сусідніх горизонталей у ній.
 function linesToZones(lines: LineSet): Array<Omit<Box, 'id' | 'groupId'>> {
-  const vPairs = pairLines(lines.v);
-  const hPairs = pairLines(lines.h);
+  const bands = vBands(lines.v);
   const out: Array<Omit<Box, 'id' | 'groupId'>> = [];
-  for (const [vx1, vx2] of vPairs) {
-    for (const [hy1, hy2] of hPairs) {
-      out.push({ x: vx1, y: hy1, w: vx2 - vx1, h: hy2 - hy1 });
+  for (let bi = 0; bi < bands.length; bi++) {
+    const [vx1, vx2] = bands[bi];
+    const ys = lines.h
+      .filter(h => bandIndexFor(h.x, bands) === bi)
+      .map(h => h.y)
+      .sort((a, b) => a - b);
+    for (let i = 0; i + 1 < ys.length; i++) {
+      out.push({ x: vx1, y: ys[i], w: vx2 - vx1, h: ys[i + 1] - ys[i] });
     }
   }
   return out;
@@ -572,31 +587,39 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     if (!c) return 0.005;
     return 6 / (axis === 'v' ? c.width : c.height);
   };
-  // Edge-band (5% висоти зверху/знизу) для розпізнавання вертикальних кліків.
-  const edgeBandNorm = () => 0.05;
-  // Точка близько біля × лінії (× — у одному з кінців).
+  // Edge-band (15% висоти зверху/знизу) для розпізнавання вертикальних кліків.
+  const edgeBandNorm = () => 0.15;
+  // x-діапазон, у якому існує горизонтальна лінія (її смуга або весь аркуш, якщо орфан).
+  const hSpanFor = (h: HLine, ls: LineSet): [number, number] => {
+    const bands = vBands(ls.v);
+    const bi = bandIndexFor(h.x, bands);
+    return bi >= 0 ? bands[bi] : [0, 1];
+  };
+  // Точка близько біля × лінії.
   const hitLineCloseHandle = (
     p: { x: number; y: number },
     axis: 'v' | 'h',
-    pos: number
+    index: number
   ): boolean => {
     const c = canvasRef.current;
     if (!c) return false;
+    const ls = linesForPage(page);
     const r = 14;
     if (axis === 'v') {
-      const cx = pos;
-      const cy = 0; // верх
-      const dx = (p.x - cx) * c.width;
-      const dy = (p.y - cy) * c.height - 14; // зміщення від краю
+      const pos = ls.v[index];
+      if (pos === undefined) return false;
+      const dx = (p.x - pos) * c.width;
+      const dy = p.y * c.height - 14;
       return Math.hypot(dx, dy) < r;
     }
-    const cx = 1; // правий край
-    const cy = pos;
-    const dx = (p.x - cx) * c.width + 14;
-    const dy = (p.y - cy) * c.height;
+    const hl = ls.h[index];
+    if (!hl) return false;
+    const [, x2] = hSpanFor(hl, ls);
+    const dx = (p.x - x2) * c.width + 14;
+    const dy = (p.y - hl.y) * c.height;
     return Math.hypot(dx, dy) < r;
   };
-  // Знаходить лінію під курсором. Повертає {axis, index} або null.
+  // Знаходить лінію під курсором.
   const hitAnyLine = (p: { x: number; y: number }) => {
     const ls = linesForPage(page);
     const tv = lineHitThreshold('v');
@@ -605,29 +628,42 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     }
     const th = lineHitThreshold('h');
     for (let i = 0; i < ls.h.length; i++) {
-      if (Math.abs(p.y - ls.h[i]) < th) return { axis: 'h' as const, index: i };
+      const hl = ls.h[i];
+      const [x1, x2] = hSpanFor(hl, ls);
+      if (p.x < x1 || p.x > x2) continue;
+      if (Math.abs(p.y - hl.y) < th) return { axis: 'h' as const, index: i };
     }
     return null;
   };
-  const addLine = (axis: 'v' | 'h', pos: number) => {
-    const clamped = Math.max(0, Math.min(1, pos));
-    setLinesForPage(page, prev => ({
-      ...prev,
-      [axis]: [...prev[axis], clamped],
-    }));
+  const addVerticalLine = (x: number) => {
+    const clamped = Math.max(0, Math.min(1, x));
+    setLinesForPage(page, prev => {
+      if (prev.v.length >= MAX_V_LINES) return prev;
+      return { ...prev, v: [...prev.v, clamped] };
+    });
+  };
+  const addHorizontalLine = (x: number, y: number) => {
+    const cx = Math.max(0, Math.min(1, x));
+    const cy = Math.max(0, Math.min(1, y));
+    setLinesForPage(page, prev => ({ ...prev, h: [...prev.h, { x: cx, y: cy }] }));
   };
   const removeLine = (axis: 'v' | 'h', index: number) => {
-    setLinesForPage(page, prev => ({
-      ...prev,
-      [axis]: prev[axis].filter((_, i) => i !== index),
-    }));
+    setLinesForPage(page, prev => {
+      if (axis === 'v') return { ...prev, v: prev.v.filter((_, i) => i !== index) };
+      return { ...prev, h: prev.h.filter((_, i) => i !== index) };
+    });
   };
   const moveLine = (axis: 'v' | 'h', index: number, pos: number) => {
     const clamped = Math.max(0, Math.min(1, pos));
-    setLinesForPage(page, prev => ({
-      ...prev,
-      [axis]: prev[axis].map((v, i) => (i === index ? clamped : v)),
-    }));
+    setLinesForPage(page, prev => {
+      if (axis === 'v') {
+        return { ...prev, v: prev.v.map((v, i) => (i === index ? clamped : v)) };
+      }
+      return {
+        ...prev,
+        h: prev.h.map((h, i) => (i === index ? { ...h, y: clamped } : h)),
+      };
+    });
   };
   const clearLinesPage = () => {
     setLinesForPage(page, () => ({ v: [], h: [] }));
@@ -667,7 +703,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         if (applyAllAxis === 'vertical') {
           next[p] = { v: [...src.v], h: cur.h };
         } else {
-          next[p] = { v: [...src.v], h: [...src.h] };
+          next[p] = { v: [...src.v], h: src.h.map(h => ({ ...h })) };
         }
       }
       return next;
@@ -792,7 +828,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       // ----- Lines mode overlay -----
       if (inputMode === 'lines') {
         const ls = pageLines[page] || { v: [], h: [] };
-        // Авто-зони з перетинів пар (пунктирний прев'ю).
+        // Авто-зони (пунктирний прев'ю).
         const previewZones = linesToZones(ls);
         ctx.save();
         ctx.fillStyle = 'rgba(34,197,94,0.10)';
@@ -809,50 +845,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         }
         ctx.restore();
 
-        // Парні лінії (індекси після сортування).
+        const bands = vBands(ls.v);
+        // Сортуємо вертикалі для пар і дужок-міток.
         const sortedV = [...ls.v].map((p, i) => ({ p, i })).sort((a, b) => a.p - b.p);
-        const sortedH = [...ls.h].map((p, i) => ({ p, i })).sort((a, b) => a.p - b.p);
-        const drawLine = (
-          axis: 'v' | 'h',
-          pos: number,
-          pairIdx: number | null,
-          bracket: '[' | ']' | '?'
-        ) => {
-          const color = pairIdx === null ? 'rgba(148,163,184,0.95)' : pairColor(pairIdx);
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 2.5;
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          if (axis === 'v') {
-            const x = pos * canvas.width;
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, canvas.height);
-          } else {
-            const y = pos * canvas.height;
-            ctx.moveTo(0, y);
-            ctx.lineTo(canvas.width, y);
-          }
-          ctx.stroke();
-          // Підпис-дужка (для пар) або '?' для непарної
-          const label = pairIdx === null ? '?' : `${bracket}${pairIdx + 1}`;
-          ctx.font = 'bold 16px sans-serif';
-          ctx.fillStyle = color;
-          if (axis === 'v') {
-            const x = pos * canvas.width;
-            ctx.fillText(label, x + 6, 18);
-          } else {
-            const y = pos * canvas.height;
-            ctx.fillText(label, 4, y - 4);
-          }
-          // Хрестик у одному з кінців.
-          let cx: number, cy: number;
-          if (axis === 'v') {
-            cx = pos * canvas.width;
-            cy = 14;
-          } else {
-            cx = canvas.width - 14;
-            cy = pos * canvas.height;
-          }
+        const drawCloseX = (cx: number, cy: number) => {
           ctx.fillStyle = 'rgba(220,38,38,0.95)';
           ctx.beginPath();
           ctx.arc(cx, cy, 11, 0, Math.PI * 2);
@@ -860,22 +856,61 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           ctx.strokeStyle = 'white';
           ctx.lineWidth = 2.2;
           ctx.beginPath();
-          ctx.moveTo(cx - 4, cy - 4);
-          ctx.lineTo(cx + 4, cy + 4);
-          ctx.moveTo(cx + 4, cy - 4);
-          ctx.lineTo(cx - 4, cy + 4);
+          ctx.moveTo(cx - 4, cy - 4); ctx.lineTo(cx + 4, cy + 4);
+          ctx.moveTo(cx + 4, cy - 4); ctx.lineTo(cx - 4, cy + 4);
           ctx.stroke();
         };
+        // Вертикальні: пари (V0,V1)→band0, (V2,V3)→band1.
         for (let k = 0; k < sortedV.length; k++) {
           const pairIdx = Math.floor(k / 2);
           const isLast = k === sortedV.length - 1 && sortedV.length % 2 === 1;
-          drawLine('v', sortedV[k].p, isLast ? null : pairIdx, k % 2 === 0 ? '[' : ']');
+          const inPair = !isLast;
+          const color = inPair ? pairColor(pairIdx) : 'rgba(148,163,184,0.95)';
+          const bracket = k % 2 === 0 ? '[' : ']';
+          const label = inPair ? `${bracket}${pairIdx + 1}` : '?';
+          const x = sortedV[k].p * canvas.width;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.5;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+          ctx.stroke();
+          ctx.font = 'bold 16px sans-serif';
+          ctx.fillStyle = color;
+          ctx.fillText(label, x + 6, 18);
+          drawCloseX(x, 14);
         }
-        for (let k = 0; k < sortedH.length; k++) {
-          const pairIdx = Math.floor(k / 2);
-          const isLast = k === sortedH.length - 1 && sortedH.length % 2 === 1;
-          drawLine('h', sortedH[k].p, isLast ? null : pairIdx, k % 2 === 0 ? '[' : ']');
-        }
+        // Горизонтальні: тільки в межах своєї смуги (orphan — сірий пунктир на повну ширину).
+        ls.h.forEach((hl, idx) => {
+          const bi = bandIndexFor(hl.x, bands);
+          const inBand = bi >= 0;
+          const [x1, x2] = inBand ? bands[bi] : [0, 1];
+          const color = inBand ? pairColor(bi) : 'rgba(148,163,184,0.95)';
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.5;
+          ctx.setLineDash(inBand ? [] : [6, 4]);
+          const y = hl.y * canvas.height;
+          const px1 = x1 * canvas.width;
+          const px2 = x2 * canvas.width;
+          ctx.beginPath();
+          ctx.moveTo(px1, y); ctx.lineTo(px2, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          // Підпис: індекс (1-based) серед лінії своєї смуги по y, або '?' для orphan.
+          let label = '?';
+          if (inBand) {
+            const sameBandSorted = ls.h
+              .map((h, i) => ({ h, i }))
+              .filter(x => bandIndexFor(x.h.x, bands) === bi)
+              .sort((a, b) => a.h.y - b.h.y);
+            const order = sameBandSorted.findIndex(x => x.i === idx);
+            label = `${bi + 1}.${order + 1}`;
+          }
+          ctx.font = 'bold 14px sans-serif';
+          ctx.fillStyle = color;
+          ctx.fillText(label, px1 + 4, y - 4);
+          drawCloseX(px2 - 14, y);
+        });
       }
     };
     img.src = pageImage;
@@ -969,10 +1004,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       const ls = linesForPage(page);
       // 1) Хрестик на лінії — видалити.
       for (let i = 0; i < ls.v.length; i++) {
-        if (hitLineCloseHandle(p, 'v', ls.v[i])) { removeLine('v', i); return; }
+        if (hitLineCloseHandle(p, 'v', i)) { removeLine('v', i); return; }
       }
       for (let i = 0; i < ls.h.length; i++) {
-        if (hitLineCloseHandle(p, 'h', ls.h[i])) { removeLine('h', i); return; }
+        if (hitLineCloseHandle(p, 'h', i)) { removeLine('h', i); return; }
       }
       // 2) Хіт на існуючу лінію — починаємо drag.
       const hit = hitAnyLine(p);
@@ -980,12 +1015,12 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         lineDragRef.current = hit;
         return;
       }
-      // 3) Інакше — додавання нової. Edge band (30px) зверху/знизу = вертикальна.
+      // 3) Інакше — додавання нової. Edge band зверху/знизу = вертикальна.
       const eb = edgeBandNorm();
       if (p.y < eb || p.y > 1 - eb) {
-        addLine('v', p.x);
+        addVerticalLine(p.x);
       } else {
-        addLine('h', p.y);
+        addHorizontalLine(p.x, p.y);
       }
       return;
     }
@@ -1696,7 +1731,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
             </div>
             {inputMode === 'lines' && (
               <span className="text-xs text-slate-500">
-                Клік зверху/знизу (5% висоти) — вертикальна лінія; клік усередині — горизонтальна. Лінії паруються по порядку: <b>[1 ... 1]</b>, <b>[2 ... 2]</b>. Зона = перетин пар.
+                Клік зверху/знизу (15% висоти) — вертикальна лінія (макс 4); клік усередині — горизонтальна. Вертикалі паруються: <b>[1 ... 1]</b>, <b>[2 ... 2]</b> = смуги. Горизонталі живуть у своїй смузі. Зони — між сусідніми горизонталями кожної смуги.
               </span>
             )}
           </div>
@@ -1724,9 +1759,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           {/* Lines mode toolbar */}
           {inputMode === 'lines' && (() => {
             const ls = pageLines[page] || { v: [], h: [] };
-            const previewCount = pairLines(ls.v).length * pairLines(ls.h).length;
+            const previewCount = linesToZones(ls).length;
             const totalPreview = (Object.values(pageLines) as LineSet[]).reduce(
-              (s, l) => s + pairLines(l.v).length * pairLines(l.h).length,
+              (s, l) => s + linesToZones(l).length,
               0
             );
             return (
