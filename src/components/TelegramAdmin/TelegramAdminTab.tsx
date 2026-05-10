@@ -432,6 +432,35 @@ function colorFromId(id: string): string {
   return `hsl(${h % 360}, 70%, 50%)`;
 }
 
+// Lines-режим: набір вертикальних і горизонтальних ліній (нормалізовані 0..1).
+type LineSet = { v: number[]; h: number[] };
+
+// Лінії паруються по порядку: [0,1], [2,3], ... Непарна остання — без пари.
+function pairLines(positions: number[]): Array<[number, number]> {
+  const sorted = [...positions].sort((a, b) => a - b);
+  const out: Array<[number, number]> = [];
+  for (let i = 0; i + 1 < sorted.length; i += 2) out.push([sorted[i], sorted[i + 1]]);
+  return out;
+}
+
+// Перетин пар вертикальних і горизонтальних смуг → масив зон.
+function linesToZones(lines: LineSet): Array<Omit<Box, 'id' | 'groupId'>> {
+  const vPairs = pairLines(lines.v);
+  const hPairs = pairLines(lines.h);
+  const out: Array<Omit<Box, 'id' | 'groupId'>> = [];
+  for (const [vx1, vx2] of vPairs) {
+    for (const [hy1, hy2] of hPairs) {
+      out.push({ x: vx1, y: hy1, w: vx2 - vx1, h: hy2 - hy1 });
+    }
+  }
+  return out;
+}
+
+// Колір пари за індексом (для підсвітки парних ліній).
+function pairColor(pairIdx: number): string {
+  return `hsl(${(pairIdx * 67) % 360}, 70%, 45%)`;
+}
+
 const SESSION_VERSION = 1;
 interface SessionFile {
   version: number;
@@ -491,6 +520,11 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const [pdfBase64, setPdfBase64] = useState<string>('');
   // Виділені зони (id) — для обʼєднання у крос-сторінкові групи.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Lines-режим: альтернативний інструмент введення зон через перетин ліній.
+  const [inputMode, setInputMode] = useState<'zones' | 'lines'>('zones');
+  const [pageLines, setPageLines] = useState<Record<number, LineSet>>({});
+  const [applyAllAxis, setApplyAllAxis] = useState<'vertical' | 'all'>('vertical');
+  const lineDragRef = useRef<{ axis: 'v' | 'h'; index: number } | null>(null);
   const [showLog, setShowLog] = useState(false);
   type LogEntry = {
     page: number;
@@ -525,6 +559,123 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
   const setBoxesForPage = (p: number, fn: (prev: Box[]) => Box[]) => {
     setPageBoxes(prev => ({ ...prev, [p]: fn(prev[p] || []) }));
+  };
+
+  // ---------- Lines mode helpers ----------
+  const linesForPage = (p: number): LineSet => pageLines[p] || { v: [], h: [] };
+  const setLinesForPage = (p: number, fn: (prev: LineSet) => LineSet) => {
+    setPageLines(prev => ({ ...prev, [p]: fn(prev[p] || { v: [], h: [] }) }));
+  };
+  // Поріг хіту лінії в нормалізованих координатах (≈6px у канвасі).
+  const lineHitThreshold = (axis: 'v' | 'h') => {
+    const c = canvasRef.current;
+    if (!c) return 0.005;
+    return 6 / (axis === 'v' ? c.width : c.height);
+  };
+  // Edge-band (30px зверху/знизу) для розпізнавання вертикальних кліків.
+  const edgeBandNorm = () => {
+    const c = canvasRef.current;
+    if (!c) return 0.05;
+    return 30 / c.height;
+  };
+  // Точка близько біля × лінії (× — у одному з кінців).
+  const hitLineCloseHandle = (
+    p: { x: number; y: number },
+    axis: 'v' | 'h',
+    pos: number
+  ): boolean => {
+    const c = canvasRef.current;
+    if (!c) return false;
+    const r = 14;
+    if (axis === 'v') {
+      const cx = pos;
+      const cy = 0; // верх
+      const dx = (p.x - cx) * c.width;
+      const dy = (p.y - cy) * c.height - 14; // зміщення від краю
+      return Math.hypot(dx, dy) < r;
+    }
+    const cx = 1; // правий край
+    const cy = pos;
+    const dx = (p.x - cx) * c.width + 14;
+    const dy = (p.y - cy) * c.height;
+    return Math.hypot(dx, dy) < r;
+  };
+  // Знаходить лінію під курсором. Повертає {axis, index} або null.
+  const hitAnyLine = (p: { x: number; y: number }) => {
+    const ls = linesForPage(page);
+    const tv = lineHitThreshold('v');
+    for (let i = 0; i < ls.v.length; i++) {
+      if (Math.abs(p.x - ls.v[i]) < tv) return { axis: 'v' as const, index: i };
+    }
+    const th = lineHitThreshold('h');
+    for (let i = 0; i < ls.h.length; i++) {
+      if (Math.abs(p.y - ls.h[i]) < th) return { axis: 'h' as const, index: i };
+    }
+    return null;
+  };
+  const addLine = (axis: 'v' | 'h', pos: number) => {
+    const clamped = Math.max(0, Math.min(1, pos));
+    setLinesForPage(page, prev => ({
+      ...prev,
+      [axis]: [...prev[axis], clamped],
+    }));
+  };
+  const removeLine = (axis: 'v' | 'h', index: number) => {
+    setLinesForPage(page, prev => ({
+      ...prev,
+      [axis]: prev[axis].filter((_, i) => i !== index),
+    }));
+  };
+  const moveLine = (axis: 'v' | 'h', index: number, pos: number) => {
+    const clamped = Math.max(0, Math.min(1, pos));
+    setLinesForPage(page, prev => ({
+      ...prev,
+      [axis]: prev[axis].map((v, i) => (i === index ? clamped : v)),
+    }));
+  };
+  const clearLinesPage = () => {
+    setLinesForPage(page, () => ({ v: [], h: [] }));
+  };
+  // Перетворити лінії всіх сторінок у звичайні зони (Box[]).
+  const materializeLines = () => {
+    const pagesToProcess = (Object.entries(pageLines) as [string, LineSet][])
+      .map(([k, v]) => ({ p: parseInt(k, 10), v }))
+      .filter(({ v }) => v.v.length >= 2 || v.h.length >= 2);
+    if (pagesToProcess.length === 0) return;
+    setPageBoxes(prev => {
+      const next = { ...prev };
+      for (const { p, v } of pagesToProcess as { p: number; v: LineSet }[]) {
+        const zones = linesToZones(v);
+        const newBoxes: Box[] = zones.map(z => {
+          const id = newId();
+          return { ...z, id, groupId: id };
+        });
+        next[p] = [...(next[p] || []), ...newBoxes];
+      }
+      return next;
+    });
+    setPageLines({});
+    setInputMode('zones');
+  };
+  // Застосувати лінії поточної сторінки до всіх інших сторінок (1..pdf.numPages).
+  const applyLinesToAllPages = () => {
+    if (!pdf) return;
+    const src = linesForPage(page);
+    if (src.v.length === 0 && src.h.length === 0) return;
+    const total = pdf.numPages;
+    setPageLines(prev => {
+      const next: Record<number, LineSet> = { ...prev };
+      for (let p = 1; p <= total; p++) {
+        if (p === page) continue;
+        const cur = next[p] || { v: [], h: [] };
+        if (applyAllAxis === 'vertical') {
+          next[p] = { v: [...src.v], h: cur.h };
+        } else {
+          next[p] = { v: [...src.v], h: [...src.h] };
+        }
+      }
+      return next;
+    });
   };
 
   const loadPdf = async (file: File) => {
@@ -571,6 +722,8 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       canvas.height = img.height;
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(img, 0, 0);
+      // У Lines-режимі ручні зони показуємо тьмяніше і без маркерів.
+      const dimZones = inputMode === 'lines';
       boxes.forEach((b, idx) => {
         const x = b.x * canvas.width;
         const y = b.y * canvas.height;
@@ -580,6 +733,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         const inGroup = (groups.get(b.groupId)?.length || 0) > 1;
         const color = inGroup ? colorFromId(b.groupId) : 'rgba(99,102,241,0.95)';
         const isSelected = selectedIds.has(b.id);
+        ctx.globalAlpha = dimZones ? 0.35 : 1;
         ctx.strokeStyle = color;
         ctx.lineWidth = isSelected ? 6 : 3;
         if (isSelected) {
@@ -600,6 +754,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           ctx.font = 'bold 14px sans-serif';
           ctx.fillText('🔗', x + 30, y + 19);
         }
+        if (dimZones) { ctx.globalAlpha = 1; return; }
         // Хрестик «видалити»
         const cx = x + w - 14;
         const cy = y + 14;
@@ -636,11 +791,101 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           ctx.strokeRect(hx - handleSize / 2, hy - handleSize / 2, handleSize, handleSize);
         }
       });
+      ctx.globalAlpha = 1;
+
+      // ----- Lines mode overlay -----
+      if (inputMode === 'lines') {
+        const ls = pageLines[page] || { v: [], h: [] };
+        // Авто-зони з перетинів пар (пунктирний прев'ю).
+        const previewZones = linesToZones(ls);
+        ctx.save();
+        ctx.fillStyle = 'rgba(34,197,94,0.10)';
+        ctx.strokeStyle = 'rgba(22,163,74,0.85)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 6]);
+        for (const z of previewZones) {
+          const zx = z.x * canvas.width;
+          const zy = z.y * canvas.height;
+          const zw = z.w * canvas.width;
+          const zh = z.h * canvas.height;
+          ctx.fillRect(zx, zy, zw, zh);
+          ctx.strokeRect(zx, zy, zw, zh);
+        }
+        ctx.restore();
+
+        // Парні лінії (індекси після сортування).
+        const sortedV = [...ls.v].map((p, i) => ({ p, i })).sort((a, b) => a.p - b.p);
+        const sortedH = [...ls.h].map((p, i) => ({ p, i })).sort((a, b) => a.p - b.p);
+        const drawLine = (
+          axis: 'v' | 'h',
+          pos: number,
+          pairIdx: number | null,
+          bracket: '[' | ']' | '?'
+        ) => {
+          const color = pairIdx === null ? 'rgba(148,163,184,0.95)' : pairColor(pairIdx);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2.5;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          if (axis === 'v') {
+            const x = pos * canvas.width;
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, canvas.height);
+          } else {
+            const y = pos * canvas.height;
+            ctx.moveTo(0, y);
+            ctx.lineTo(canvas.width, y);
+          }
+          ctx.stroke();
+          // Підпис-дужка (для пар) або '?' для непарної
+          const label = pairIdx === null ? '?' : `${bracket}${pairIdx + 1}`;
+          ctx.font = 'bold 16px sans-serif';
+          ctx.fillStyle = color;
+          if (axis === 'v') {
+            const x = pos * canvas.width;
+            ctx.fillText(label, x + 6, 18);
+          } else {
+            const y = pos * canvas.height;
+            ctx.fillText(label, 4, y - 4);
+          }
+          // Хрестик у одному з кінців.
+          let cx: number, cy: number;
+          if (axis === 'v') {
+            cx = pos * canvas.width;
+            cy = 14;
+          } else {
+            cx = canvas.width - 14;
+            cy = pos * canvas.height;
+          }
+          ctx.fillStyle = 'rgba(220,38,38,0.95)';
+          ctx.beginPath();
+          ctx.arc(cx, cy, 11, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'white';
+          ctx.lineWidth = 2.2;
+          ctx.beginPath();
+          ctx.moveTo(cx - 4, cy - 4);
+          ctx.lineTo(cx + 4, cy + 4);
+          ctx.moveTo(cx + 4, cy - 4);
+          ctx.lineTo(cx - 4, cy + 4);
+          ctx.stroke();
+        };
+        for (let k = 0; k < sortedV.length; k++) {
+          const pairIdx = Math.floor(k / 2);
+          const isLast = k === sortedV.length - 1 && sortedV.length % 2 === 1;
+          drawLine('v', sortedV[k].p, isLast ? null : pairIdx, k % 2 === 0 ? '[' : ']');
+        }
+        for (let k = 0; k < sortedH.length; k++) {
+          const pairIdx = Math.floor(k / 2);
+          const isLast = k === sortedH.length - 1 && sortedH.length % 2 === 1;
+          drawLine('h', sortedH[k].p, isLast ? null : pairIdx, k % 2 === 0 ? '[' : ']');
+        }
+      }
     };
     img.src = pageImage;
     // selectedIds + groups впливають на стиль рендеру
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageImage, boxes, selectedIds, pageBoxes]);
+  }, [pageImage, boxes, selectedIds, pageBoxes, inputMode, pageLines]);
 
   // Координати в нормалізованій системі (0..1).
   const normFromEvent = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -723,6 +968,31 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const onCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) return;
     const p = normFromEvent(e);
+    // ----- Lines mode -----
+    if (inputMode === 'lines') {
+      const ls = linesForPage(page);
+      // 1) Хрестик на лінії — видалити.
+      for (let i = 0; i < ls.v.length; i++) {
+        if (hitLineCloseHandle(p, 'v', ls.v[i])) { removeLine('v', i); return; }
+      }
+      for (let i = 0; i < ls.h.length; i++) {
+        if (hitLineCloseHandle(p, 'h', ls.h[i])) { removeLine('h', i); return; }
+      }
+      // 2) Хіт на існуючу лінію — починаємо drag.
+      const hit = hitAnyLine(p);
+      if (hit) {
+        lineDragRef.current = hit;
+        return;
+      }
+      // 3) Інакше — додавання нової. Edge band (30px) зверху/знизу = вертикальна.
+      const eb = edgeBandNorm();
+      if (p.y < eb || p.y > 1 - eb) {
+        addLine('v', p.x);
+      } else {
+        addLine('h', p.y);
+      }
+      return;
+    }
     // 1) Хрестик «видалити» — пріоритет.
     const idx = boxes.findIndex(b => hitCloseHandle(p, b));
     if (idx >= 0) {
@@ -750,6 +1020,13 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   };
 
   const onCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (inputMode === 'lines') {
+      const drag = lineDragRef.current;
+      if (!drag) return;
+      const p = normFromEvent(e);
+      moveLine(drag.axis, drag.index, drag.axis === 'v' ? p.x : p.y);
+      return;
+    }
     const a = actionRef.current;
     if (!a || a.type !== 'resize') return;
     const p = normFromEvent(e);
@@ -779,6 +1056,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
   const onCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) return;
+    if (inputMode === 'lines') {
+      lineDragRef.current = null;
+      return;
+    }
     const a = actionRef.current;
     actionRef.current = null;
     if (!a) return;
@@ -1400,21 +1681,99 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
       {pageImage && (
         <div className="space-y-2">
-          <p className="text-sm text-slate-600">
-            Малюйте прямокутники мишкою навколо кожної справи. Натисніть <span className="text-red-600 font-medium">червоний хрестик</span> у куті зони — видалити її.
-            {' '}Зони зберігаються при перемиканні сторінок.
-          </p>
+          {/* Перемикач режиму введення */}
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-xs text-slate-500">Режим:</span>
+            <div className="inline-flex rounded border border-slate-300 overflow-hidden text-xs">
+              <button
+                onClick={() => setInputMode('zones')}
+                className={`px-3 py-1 ${inputMode === 'zones' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-100'}`}
+              >
+                Зони
+              </button>
+              <button
+                onClick={() => setInputMode('lines')}
+                className={`px-3 py-1 border-l border-slate-300 ${inputMode === 'lines' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-100'}`}
+              >
+                Лінії
+              </button>
+            </div>
+            {inputMode === 'lines' && (
+              <span className="text-xs text-slate-500">
+                Клік зверху/знизу (≈30px) — вертикальна лінія; клік усередині — горизонтальна. Лінії паруються по порядку: <b>[1 ... 1]</b>, <b>[2 ... 2]</b>. Зона = перетин пар.
+              </span>
+            )}
+          </div>
+          {inputMode === 'zones' ? (
+            <p className="text-sm text-slate-600">
+              Малюйте прямокутники мишкою навколо кожної справи. Натисніть <span className="text-red-600 font-medium">червоний хрестик</span> у куті зони — видалити її.
+              {' '}Зони зберігаються при перемиканні сторінок.
+            </p>
+          ) : (
+            <p className="text-sm text-slate-600">
+              Тягніть лінію — посунути; клац на <span className="text-red-600 font-medium">червоний хрестик</span> — видалити. Перетин пар вертикальних і горизонтальних — авто-зона (зелений пунктир).
+            </p>
+          )}
           <div className="border rounded bg-slate-50 max-h-[70vh] overflow-auto">
             <canvas
               ref={canvasRef}
               onMouseDown={onCanvasMouseDown}
               onMouseMove={onCanvasMouseMove}
               onMouseUp={onCanvasMouseUp}
-              onMouseLeave={() => { actionRef.current = null; }}
+              onMouseLeave={() => { actionRef.current = null; lineDragRef.current = null; }}
               className="cursor-crosshair block mx-auto"
               style={{ maxWidth: '100%', height: 'auto' }}
             />
           </div>
+          {/* Lines mode toolbar */}
+          {inputMode === 'lines' && (() => {
+            const ls = pageLines[page] || { v: [], h: [] };
+            const previewCount = pairLines(ls.v).length * pairLines(ls.h).length;
+            const totalPreview = (Object.values(pageLines) as LineSet[]).reduce(
+              (s, l) => s + pairLines(l.v).length * pairLines(l.h).length,
+              0
+            );
+            return (
+              <div className="flex flex-wrap gap-2 items-center bg-emerald-50 border border-emerald-300 rounded p-2 text-xs">
+                <span>
+                  На сторінці: V={ls.v.length}, H={ls.h.length} → авто-зон: <b>{previewCount}</b>
+                </span>
+                <button
+                  onClick={clearLinesPage}
+                  disabled={ls.v.length === 0 && ls.h.length === 0}
+                  className="px-2 py-1 bg-white border border-slate-300 rounded text-xs disabled:opacity-50"
+                >
+                  Очистити лінії на сторінці
+                </button>
+                <span className="ml-auto flex items-center gap-1">
+                  <span>Застосувати до всіх сторінок:</span>
+                  <select
+                    value={applyAllAxis}
+                    onChange={e => setApplyAllAxis(e.target.value as 'vertical' | 'all')}
+                    className="border rounded px-1 py-0.5"
+                  >
+                    <option value="vertical">тільки вертикальні</option>
+                    <option value="all">всі (V + H)</option>
+                  </select>
+                  <button
+                    onClick={applyLinesToAllPages}
+                    disabled={ls.v.length === 0 && ls.h.length === 0}
+                    className="px-2 py-1 bg-slate-700 text-white rounded text-xs disabled:opacity-50"
+                  >
+                    Застосувати
+                  </button>
+                </span>
+                <button
+                  onClick={materializeLines}
+                  disabled={totalPreview === 0}
+                  className="px-3 py-1 bg-emerald-600 text-white rounded text-xs disabled:opacity-50"
+                  title="Перетворити лінії всіх сторінок у звичайні зони"
+                >
+                  ✓ Перевести в зони ({totalPreview})
+                </button>
+              </div>
+            );
+          })()}
           {/* Панель виділення / обʼєднання */}
           {selectedIds.size > 0 && (
             <div className="flex flex-wrap gap-2 items-center bg-amber-50 border border-amber-300 rounded p-2 text-sm">
