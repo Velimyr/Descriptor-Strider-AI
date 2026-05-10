@@ -538,7 +538,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   // Lines-режим: альтернативний інструмент введення зон через перетин ліній.
   const [inputMode, setInputMode] = useState<'zones' | 'lines'>('zones');
   const [pageLines, setPageLines] = useState<Record<number, LineSet>>({});
-  const [applyAllAxis, setApplyAllAxis] = useState<'vertical' | 'all'>('vertical');
+  const [applyAllAxis, setApplyAllAxis] = useState<'vertical' | 'all'>('all');
   const lineDragRef = useRef<{ axis: 'v' | 'h'; index: number } | null>(null);
   const [showLog, setShowLog] = useState(false);
   type LogEntry = {
@@ -668,15 +668,15 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const clearLinesPage = () => {
     setLinesForPage(page, () => ({ v: [], h: [] }));
   };
-  // Перетворити лінії всіх сторінок у звичайні зони (Box[]).
-  const materializeLines = () => {
-    const pagesToProcess = (Object.entries(pageLines) as [string, LineSet][])
-      .map(([k, v]) => ({ p: parseInt(k, 10), v }))
-      .filter(({ v }) => v.v.length >= 2 || v.h.length >= 2);
+  // Перетворити лінії заданих сторінок у звичайні зони (Box[]).
+  const materializePages = (targetPages: number[]) => {
+    const pagesToProcess = targetPages
+      .map(p => ({ p, v: pageLines[p] }))
+      .filter((x): x is { p: number; v: LineSet } => !!x.v && linesToZones(x.v).length > 0);
     if (pagesToProcess.length === 0) return;
     setPageBoxes(prev => {
       const next = { ...prev };
-      for (const { p, v } of pagesToProcess as { p: number; v: LineSet }[]) {
+      for (const { p, v } of pagesToProcess) {
         const zones = linesToZones(v);
         const newBoxes: Box[] = zones.map(z => {
           const id = newId();
@@ -686,8 +686,18 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       }
       return next;
     });
-    setPageLines({});
+    setPageLines(prev => {
+      const next = { ...prev };
+      for (const { p } of pagesToProcess) delete next[p];
+      return next;
+    });
+  };
+  const materializeAll = () => {
+    materializePages(Object.keys(pageLines).map(k => parseInt(k, 10)));
     setInputMode('zones');
+  };
+  const materializeCurrentPage = () => {
+    materializePages([page]);
   };
   // Застосувати лінії поточної сторінки до всіх інших сторінок (1..pdf.numPages).
   const applyLinesToAllPages = () => {
@@ -1015,7 +1025,12 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         lineDragRef.current = hit;
         return;
       }
-      // 3) Інакше — додавання нової. Edge band зверху/знизу = вертикальна.
+      // 3) Інакше — додавання нової. Якщо вже 4 вертикальні — будь-який клік дає горизонтальну.
+      // Інакше: edge band зверху/знизу = вертикальна.
+      if (ls.v.length >= MAX_V_LINES) {
+        addHorizontalLine(p.x, p.y);
+        return;
+      }
       const eb = edgeBandNorm();
       if (p.y < eb || p.y > 1 - eb) {
         addVerticalLine(p.x);
@@ -1712,8 +1727,31 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
       {pageImage && (
         <div className="space-y-2">
-          {/* Перемикач режиму введення */}
+          {/* Перемикач режиму + навігація сторінок */}
           <div className="flex flex-wrap gap-2 items-center">
+            {pdf && (
+              <span className="inline-flex items-center gap-1">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="px-2 py-1 bg-slate-200 rounded text-xs disabled:opacity-40"
+                  title="Попередня сторінка"
+                >
+                  ←
+                </button>
+                <span className="text-xs font-mono text-slate-700">
+                  {page} / {pdf.numPages}
+                </span>
+                <button
+                  onClick={() => setPage(p => Math.min(pdf.numPages, p + 1))}
+                  disabled={page >= pdf.numPages}
+                  className="px-2 py-1 bg-slate-200 rounded text-xs disabled:opacity-40"
+                  title="Наступна сторінка"
+                >
+                  →
+                </button>
+              </span>
+            )}
             <span className="text-xs text-slate-500">Режим:</span>
             <div className="inline-flex rounded border border-slate-300 overflow-hidden text-xs">
               <button
@@ -1731,7 +1769,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
             </div>
             {inputMode === 'lines' && (
               <span className="text-xs text-slate-500">
-                Клік зверху/знизу (15% висоти) — вертикальна лінія (макс 4); клік усередині — горизонтальна. Вертикалі паруються: <b>[1 ... 1]</b>, <b>[2 ... 2]</b> = смуги. Горизонталі живуть у своїй смузі. Зони — між сусідніми горизонталями кожної смуги.
+                Клік зверху/знизу (15% висоти) — вертикальна (макс 4); після 4 — будь-який клік дає горизонтальну. Вертикалі паруються: <b>[1 ... 1]</b>, <b>[2 ... 2]</b> = смуги. Горизонталі живуть у своїй смузі. Зони — між сусідніми горизонталями.
               </span>
             )}
           </div>
@@ -1795,12 +1833,20 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
                   </button>
                 </span>
                 <button
-                  onClick={materializeLines}
+                  onClick={materializeCurrentPage}
+                  disabled={previewCount === 0}
+                  className="px-3 py-1 bg-emerald-500 text-white rounded text-xs disabled:opacity-50"
+                  title="Перетворити лінії поточної сторінки у звичайні зони"
+                >
+                  ✓ Перевести в зони на цій сторінці ({previewCount})
+                </button>
+                <button
+                  onClick={materializeAll}
                   disabled={totalPreview === 0}
                   className="px-3 py-1 bg-emerald-600 text-white rounded text-xs disabled:opacity-50"
                   title="Перетворити лінії всіх сторінок у звичайні зони"
                 >
-                  ✓ Перевести в зони ({totalPreview})
+                  ✓ Перевести в зони скрізь ({totalPreview})
                 </button>
               </div>
             );
