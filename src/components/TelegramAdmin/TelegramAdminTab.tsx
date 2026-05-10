@@ -572,12 +572,8 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     if (!c) return 0.005;
     return 6 / (axis === 'v' ? c.width : c.height);
   };
-  // Edge-band (30px зверху/знизу) для розпізнавання вертикальних кліків.
-  const edgeBandNorm = () => {
-    const c = canvasRef.current;
-    if (!c) return 0.05;
-    return 30 / c.height;
-  };
+  // Edge-band (5% висоти зверху/знизу) для розпізнавання вертикальних кліків.
+  const edgeBandNorm = () => 0.05;
   // Точка близько біля × лінії (× — у одному з кінців).
   const hitLineCloseHandle = (
     p: { x: number; y: number },
@@ -1700,7 +1696,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
             </div>
             {inputMode === 'lines' && (
               <span className="text-xs text-slate-500">
-                Клік зверху/знизу (≈30px) — вертикальна лінія; клік усередині — горизонтальна. Лінії паруються по порядку: <b>[1 ... 1]</b>, <b>[2 ... 2]</b>. Зона = перетин пар.
+                Клік зверху/знизу (5% висоти) — вертикальна лінія; клік усередині — горизонтальна. Лінії паруються по порядку: <b>[1 ... 1]</b>, <b>[2 ... 2]</b>. Зона = перетин пар.
               </span>
             )}
           </div>
