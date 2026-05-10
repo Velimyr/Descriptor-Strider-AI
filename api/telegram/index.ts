@@ -224,8 +224,8 @@ router.get('/admin/health', async (req, res) => {
 router.get('/admin/check-db', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   try {
-    const { db } = await import('./storage.js');
-    const tables = ['bot_users', 'bot_cases', 'bot_sessions', 'bot_submissions', 'bot_meta'];
+    const { db, T } = await import('./storage.js');
+    const tables = [T.users, T.cases, T.sessions, T.submissions, T.meta];
     const results: Record<string, { ok: boolean; error?: string }> = {};
     for (const t of tables) {
       const { error } = await db().from(t).select('*', { count: 'exact', head: true });

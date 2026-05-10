@@ -4,6 +4,20 @@ import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 let cachedClient: SupabaseClient | null = null;
 
+// Префікс імен таблиць/RPC. Дефолт 'bot_' — прод-поведінка без env-у.
+// Для staging-контуру задається TABLE_PREFIX=botdev_ (окремий набір таблиць у тій самій БД).
+const PREFIX = process.env.TABLE_PREFIX ?? 'bot_';
+export const T = {
+  users:       `${PREFIX}users`,
+  cases:       `${PREFIX}cases`,
+  sessions:    `${PREFIX}sessions`,
+  meta:        `${PREFIX}meta`,
+  submissions: `${PREFIX}submissions`,
+  daily:       `${PREFIX}daily_scores`,
+  skipped:     `${PREFIX}skipped`,
+};
+const RPC_INC_DAILY = `${PREFIX}inc_daily`;
+
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
   const url = process.env[telegramBotConfig.supabase.urlEnv];
@@ -125,7 +139,7 @@ export async function getMeta(key: string): Promise<string | null> {
   const cached = metaCache.get(key);
   if (cached && cached.expires > Date.now()) return cached.value || null;
 
-  const { data, error } = await db().from('bot_meta').select('value').eq('key', key).maybeSingle();
+  const { data, error } = await db().from(T.meta).select('value').eq('key', key).maybeSingle();
   if (error) throw error;
   const value = data?.value ?? '';
   metaCache.set(key, { value, expires: Date.now() + META_TTL_MS });
@@ -134,19 +148,19 @@ export async function getMeta(key: string): Promise<string | null> {
 
 export async function setMeta(key: string, value: string) {
   metaCache.set(key, { value, expires: Date.now() + META_TTL_MS });
-  const { error } = await db().from('bot_meta').upsert({ key, value }, { onConflict: 'key' });
+  const { error } = await db().from(T.meta).upsert({ key, value }, { onConflict: 'key' });
   if (error) throw error;
 }
 
 // ---------- USERS ----------
 export async function getAllUsers(): Promise<BotUser[]> {
-  const { data, error } = await db().from('bot_users').select('*');
+  const { data, error } = await db().from(T.users).select('*');
   if (error) throw error;
   return (data || []).map(mapUser);
 }
 
 export async function getUser(tgId: string): Promise<BotUser | null> {
-  const { data, error } = await db().from('bot_users').select('*').eq('tg_id', tgId).maybeSingle();
+  const { data, error } = await db().from(T.users).select('*').eq('tg_id', tgId).maybeSingle();
   if (error) throw error;
   return data ? mapUser(data) : null;
 }
@@ -156,7 +170,7 @@ export async function upsertUser(
   _existingRowIndex?: number // legacy, ігнорується
 ): Promise<void> {
   const { error } = await db()
-    .from('bot_users')
+    .from(T.users)
     .upsert(
       {
         tg_id: u.tgId,
@@ -185,26 +199,26 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.status !== undefined) dbPatch.status = patch.status;
   if (patch.pendingAction !== undefined) dbPatch.pending_action = patch.pendingAction;
   if (Object.keys(dbPatch).length === 0) return;
-  const { error } = await db().from('bot_users').update(dbPatch).eq('tg_id', tgId);
+  const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;
 }
 
 // ---------- CASES ----------
 export async function getAllCases(): Promise<BotCase[]> {
-  const { data, error } = await db().from('bot_cases').select('*');
+  const { data, error } = await db().from(T.cases).select('*');
   if (error) throw error;
   return (data || []).map(mapCase);
 }
 
 export async function getCase(caseId: string): Promise<BotCase | null> {
-  const { data, error } = await db().from('bot_cases').select('*').eq('case_id', caseId).maybeSingle();
+  const { data, error } = await db().from(T.cases).select('*').eq('case_id', caseId).maybeSingle();
   if (error) throw error;
   return data ? mapCase(data) : null;
 }
 
 export async function appendCases(items: Omit<BotCase, 'rowIndex'>[]) {
   if (items.length === 0) return;
-  const { error } = await db().from('bot_cases').insert(
+  const { error } = await db().from(T.cases).insert(
     items.map(c => ({
       case_id: c.caseId,
       tg_file_id: c.tgFileId,
@@ -236,20 +250,20 @@ export async function patchCase(caseId: string, patch: Partial<Omit<BotCase, 'ro
   if (patch.submissionsCount !== undefined) dbPatch.submissions_count = patch.submissionsCount;
   if (patch.status !== undefined) dbPatch.status = patch.status;
   if (Object.keys(dbPatch).length === 0) return;
-  const { error } = await db().from('bot_cases').update(dbPatch).eq('case_id', caseId);
+  const { error } = await db().from(T.cases).update(dbPatch).eq('case_id', caseId);
   if (error) throw error;
 }
 
 // ---------- SESSIONS ----------
 export async function getSession(tgId: string): Promise<BotSession | null> {
-  const { data, error } = await db().from('bot_sessions').select('*').eq('tg_id', tgId).maybeSingle();
+  const { data, error } = await db().from(T.sessions).select('*').eq('tg_id', tgId).maybeSingle();
   if (error) throw error;
   return data ? mapSession(data) : null;
 }
 
 export async function setSession(s: Omit<BotSession, 'rowIndex'>, _existingRowIndex?: number) {
   const { error } = await db()
-    .from('bot_sessions')
+    .from(T.sessions)
     .upsert(
       {
         tg_id: s.tgId,
@@ -267,7 +281,7 @@ export async function setSession(s: Omit<BotSession, 'rowIndex'>, _existingRowIn
 
 export async function deleteSession(tgId: string): Promise<boolean> {
   const { error, count } = await db()
-    .from('bot_sessions')
+    .from(T.sessions)
     .delete({ count: 'exact' })
     .eq('tg_id', tgId);
   if (error) throw error;
@@ -275,21 +289,21 @@ export async function deleteSession(tgId: string): Promise<boolean> {
 }
 
 export async function getAllSessions(): Promise<BotSession[]> {
-  const { data, error } = await db().from('bot_sessions').select('*');
+  const { data, error } = await db().from(T.sessions).select('*');
   if (error) throw error;
   return (data || []).map(mapSession);
 }
 
 // ---------- DAILY SCORES ----------
 export async function incDailyCount(tgId: string, dateKyiv: string): Promise<number> {
-  const { data, error } = await db().rpc('bot_inc_daily', { p_tg_id: tgId, p_date: dateKyiv });
+  const { data, error } = await db().rpc(RPC_INC_DAILY, { p_tg_id: tgId, p_date: dateKyiv });
   if (error) throw error;
   return Number(data || 0);
 }
 
 export async function getDailyCount(tgId: string, dateKyiv: string): Promise<number> {
   const { data, error } = await db()
-    .from('bot_daily_scores')
+    .from(T.daily)
     .select('count')
     .eq('tg_id', tgId)
     .eq('date_kyiv', dateKyiv)
@@ -314,7 +328,7 @@ export interface SubmissionInput {
 }
 
 export async function appendSubmission(s: SubmissionInput) {
-  const { error } = await db().from('bot_submissions').insert({
+  const { error } = await db().from(T.submissions).insert({
     case_id: s.caseId,
     tg_id: s.tgId,
     display_name: s.displayName,
@@ -332,7 +346,7 @@ export async function appendSubmission(s: SubmissionInput) {
 
 export async function countSubmissionsByCase(caseId: string): Promise<number> {
   const { count, error } = await db()
-    .from('bot_submissions')
+    .from(T.submissions)
     .select('id', { count: 'exact', head: true })
     .eq('case_id', caseId);
   if (error) throw error;
@@ -340,7 +354,7 @@ export async function countSubmissionsByCase(caseId: string): Promise<number> {
 }
 
 export async function getSubmissionsForUser(tgId: string): Promise<string[]> {
-  const { data, error } = await db().from('bot_submissions').select('case_id').eq('tg_id', tgId);
+  const { data, error } = await db().from(T.submissions).select('case_id').eq('tg_id', tgId);
   if (error) throw error;
   return (data || []).map((r: any) => r.case_id);
 }
@@ -349,20 +363,20 @@ export async function getSubmissionsForUser(tgId: string): Promise<string[]> {
 export async function recordSkippedCase(tgId: string, caseId: string): Promise<void> {
   if (!caseId) return;
   const { error } = await db()
-    .from('bot_skipped')
+    .from(T.skipped)
     .upsert({ tg_id: tgId, case_id: caseId }, { onConflict: 'tg_id,case_id' });
   if (error) throw error;
 }
 
 export async function getSkippedForUser(tgId: string): Promise<string[]> {
-  const { data, error } = await db().from('bot_skipped').select('case_id').eq('tg_id', tgId);
+  const { data, error } = await db().from(T.skipped).select('case_id').eq('tg_id', tgId);
   if (error) throw error;
   return (data || []).map((r: any) => r.case_id);
 }
 
 export async function getResultsTotals(): Promise<{ totalSubmissions: number }> {
   const { count, error } = await db()
-    .from('bot_submissions')
+    .from(T.submissions)
     .select('id', { count: 'exact', head: true });
   if (error) throw error;
   return { totalSubmissions: count || 0 };
@@ -381,7 +395,7 @@ export async function getSubmissionsByDescription(
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const { data, error } = await db()
-      .from('bot_submissions')
+      .from(T.submissions)
       .select('*')
       .eq('archive', archive)
       .eq('fund', fund)
@@ -400,7 +414,7 @@ export async function getSubmissionsByDescription(
 // Експортуємо submissions для адмінського перегляду / експорту.
 export async function getRecentSubmissions(limit = 100) {
   const { data, error } = await db()
-    .from('bot_submissions')
+    .from(T.submissions)
     .select('*')
     .order('submitted_at', { ascending: false })
     .limit(limit);
