@@ -476,13 +476,15 @@ function pairColor(pairIdx: number): string {
   return `hsl(${(pairIdx * 67) % 360}, 70%, 45%)`;
 }
 
-const SESSION_VERSION = 1;
+const SESSION_VERSION = 2;
 interface SessionFile {
   version: number;
   savedAt: string;
   pdfName: string;
   pdfBase64: string; // вміст PDF
   pageBoxes: Record<number, Box[]>;
+  // v2+: лінії з Lines-режиму (опціонально, лише якщо є на сторінці).
+  pageLines?: Record<number, LineSet>;
   meta: { archive: string; fund: string; opys: string };
 }
 
@@ -729,6 +731,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     setMsg('');
     setUploadDone(null);
     setPageBoxes({});
+    setPageLines({});
     const buf = await file.arrayBuffer();
     setPdfBase64(arrayBufferToBase64(buf));
     const doc = await pdfjs.getDocument({ data: buf }).promise;
@@ -1232,12 +1235,18 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       setMsg('Немає PDF для експорту.');
       return;
     }
+    // Зберігаємо тільки сторінки, на яких є хоч одна лінія.
+    const linesToSave: Record<number, LineSet> = {};
+    for (const [k, ls] of Object.entries(pageLines) as [string, LineSet][]) {
+      if (ls.v.length > 0 || ls.h.length > 0) linesToSave[parseInt(k, 10)] = ls;
+    }
     const data: SessionFile = {
       version: SESSION_VERSION,
       savedAt: new Date().toISOString(),
       pdfName,
       pdfBase64,
       pageBoxes,
+      ...(Object.keys(linesToSave).length > 0 ? { pageLines: linesToSave } : {}),
       meta: { archive, fund, opys },
     };
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
@@ -1249,7 +1258,12 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     a.download = `${baseName}__session-${ts}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setMsg(`✅ Сесія експортована (${totalBoxes} зон на ${pagesWithBoxes.length} стор.)`);
+    const linesPages = Object.keys(linesToSave).length;
+    setMsg(
+      `✅ Сесія експортована (${totalBoxes} зон на ${pagesWithBoxes.length} стор.` +
+        (linesPages ? `; лінії на ${linesPages} стор.` : '') +
+        ')'
+    );
   };
 
   const importSession = async (file: File) => {
@@ -1276,6 +1290,25 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         });
       });
       setPageBoxes(restored);
+      // Відновлюємо лінії (з v2+; для v1 — просто буде {}).
+      const restoredLines: Record<number, LineSet> = {};
+      Object.entries(data.pageLines || {}).forEach(([k, v]) => {
+        const ls = v as any;
+        const vArr: number[] = Array.isArray(ls?.v) ? ls.v.filter((n: any) => typeof n === 'number') : [];
+        const hRaw: any[] = Array.isArray(ls?.h) ? ls.h : [];
+        // Backward-compat: якщо колись зберігали h як number[] — конвертуємо у HLine з x=0.5.
+        const hArr: HLine[] = hRaw
+          .map(item =>
+            typeof item === 'number'
+              ? { x: 0.5, y: item }
+              : { x: Number(item?.x), y: Number(item?.y) }
+          )
+          .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+        if (vArr.length > 0 || hArr.length > 0) {
+          restoredLines[parseInt(k, 10)] = { v: vArr, h: hArr };
+        }
+      });
+      setPageLines(restoredLines);
       if (data.meta) {
         if (data.meta.archive) setArchive(data.meta.archive);
         if (data.meta.fund) setFund(data.meta.fund);
@@ -1284,10 +1317,11 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       setPage(1);
       await renderPage(doc, 1);
       const totalRestored = Object.values(restored).reduce((s, b) => s + b.length, 0);
+      const linesPages = Object.keys(restoredLines).length;
       setMsg(
         `✅ Сесія імпортована: ${totalRestored} зон на ${
           Object.keys(restored).filter(k => restored[+k].length > 0).length
-        } стор.`
+        } стор.` + (linesPages ? `; лінії на ${linesPages} стор.` : '')
       );
     } catch (e: any) {
       setMsg('❌ Не вдалося імпортувати: ' + e.message);
