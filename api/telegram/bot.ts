@@ -134,17 +134,18 @@ function helpBackKeyboard(): any {
   };
 }
 
-function keyboardForQuestion(qIndex: number): any {
+function keyboardForQuestion(qIndex: number, hasPrefill = false): any {
   // Skip-кнопка в окремий ряд — її текст довгий і обрізається коли вона поряд з іншими.
   const navRow: any[] = [];
   if (qIndex > 0) navRow.push({ text: T.backButton, callback_data: 'back' });
   navRow.push({ text: T.cancelButton, callback_data: 'cancel' });
-  return {
-    inline_keyboard: [
-      [{ text: T.fieldEmptyButton, callback_data: 'skip' }],
-      navRow,
-    ],
-  };
+  const rows: any[] = [];
+  if (hasPrefill) {
+    rows.push([{ text: '✅ Залишити поточну', callback_data: `keep:${qIndex}` }]);
+  }
+  rows.push([{ text: T.fieldEmptyButton, callback_data: 'skip' }]);
+  rows.push(navRow);
+  return { inline_keyboard: rows };
 }
 
 // Reply-клавіатура головного меню (внизу екрана). Pause/Resume — динамічно.
@@ -512,19 +513,29 @@ async function handleCallback(cb: any) {
   if (data === 'collab:edit') {
     if (!session.caseId) { await sendMessage(chatId, T.sessionExpired); return; }
     // Фіксуємо намір редагувати: записуємо edit-подію зараз.
-    // (UNIQUE на (case_id, tg_id) — якщо вже є, перезапишеться kind='edit'.)
     try { await recordCaseEvent(session.caseId, tgId, 'edit'); } catch (e) { console.error(e); }
-    // Стартуємо asking-flow з prefilled відповідями (вже в session.answersJson).
+    // Переходимо у 'confirming' (щоб після зміни поля повертатись у summary з [Підтвердити]),
+    // і одразу показуємо список полів для вибору.
     const next: BotSession = {
       ...session,
-      currentQ: 0,
-      state: 'asking',
+      state: 'confirming',
       updatedAt: nowIsoUtc(),
     };
     await Promise.all([
       setSession(next, session.rowIndex),
-      askQuestion(chatId, questions, 0),
+      sendMessage(chatId, 'Оберіть питання для редагування:', {
+        reply_markup: keyboardForEdit(questions),
+      }),
     ]);
+    return;
+  }
+
+  // "Залишити поточну" — користувач погоджується з prefilled відповіддю.
+  // Поведінка ідентична набору цього самого тексту вручну.
+  if (data.startsWith('keep:')) {
+    const idx = parseInt(data.split(':')[1], 10) || 0;
+    const current = answers[idx] ?? '';
+    await processAnswer(chatId, tgId, session, current);
     return;
   }
 
@@ -605,7 +616,7 @@ async function handleCallback(cb: any) {
     const next: BotSession = { ...session, currentQ: idx, state: 'editing', updatedAt: nowIsoUtc() };
     await Promise.all([
       setSession(next, session.rowIndex),
-      askQuestion(chatId, questions, idx),
+      askQuestion(chatId, questions, idx, answers[idx]),
     ]);
     return;
   }
@@ -855,15 +866,30 @@ export async function sendScheduledGreeting(tgId: string): Promise<void> {
   await sendMessage(tgId, greeting);
 }
 
-async function askQuestion(chatId: number | string, questions: TableColumn[], index: number) {
+async function askQuestion(
+  chatId: number | string,
+  questions: TableColumn[],
+  index: number,
+  prefilledAnswer?: string
+) {
   const q = questions[index];
   if (!q) {
     console.warn('[askQuestion] no question at index', { chatId, index, total: questions.length });
     return;
   }
+  const hasPrefill = !!(prefilledAnswer && prefilledAnswer.trim());
   await sendMessage(chatId, questionPromptText(q, index, questions.length), {
-    reply_markup: keyboardForQuestion(index),
+    reply_markup: keyboardForQuestion(index, hasPrefill),
   });
+  if (hasPrefill) {
+    // Підказка для копіювання + сама поточна відповідь окремим повідомленням
+    // (на мобілці long-press → Copy → вставити у поле і відредагувати).
+    await sendMessage(
+      chatId,
+      '💡 Поточна відповідь нижче. Затисніть її → Скопіювати → вставте у поле вводу і відредагуйте. Або тисніть «Залишити поточну» щоб не міняти.'
+    );
+    await sendMessage(chatId, prefilledAnswer!);
+  }
 }
 
 async function processAnswer(chatId: number, tgId: string, session: BotSession, text: string) {
