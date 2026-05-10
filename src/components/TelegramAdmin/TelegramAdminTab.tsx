@@ -540,6 +540,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const [pageLines, setPageLines] = useState<Record<number, LineSet>>({});
   const [applyAllAxis, setApplyAllAxis] = useState<'vertical' | 'all'>('all');
   const lineDragRef = useRef<{ axis: 'v' | 'h'; index: number } | null>(null);
+  const [lineHoverAxis, setLineHoverAxis] = useState<'v' | 'h' | null>(null);
   const [showLog, setShowLog] = useState(false);
   type LogEntry = {
     page: number;
@@ -753,6 +754,21 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     if (pdf) renderPage(pdf, page);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
+
+  // Стрілки ←/→ на клавіатурі — гортання сторінок (ігноруємо коли фокус на input/textarea/select).
+  useEffect(() => {
+    if (!pdf) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return;
+      if (e.key === 'ArrowLeft') setPage(p => Math.max(1, p - 1));
+      else setPage(p => Math.min(pdf.numPages, p + 1));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pdf]);
 
   // Перерендерим зон на canvas при зміні сторінки/боксів.
   useEffect(() => {
@@ -1068,9 +1084,14 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const onCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (inputMode === 'lines') {
       const drag = lineDragRef.current;
-      if (!drag) return;
       const p = normFromEvent(e);
-      moveLine(drag.axis, drag.index, drag.axis === 'v' ? p.x : p.y);
+      if (drag) {
+        moveLine(drag.axis, drag.index, drag.axis === 'v' ? p.x : p.y);
+        return;
+      }
+      const hit = hitAnyLine(p);
+      const next = hit ? hit.axis : null;
+      if (next !== lineHoverAxis) setLineHoverAxis(next);
       return;
     }
     const a = actionRef.current;
@@ -1727,31 +1748,8 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
       {pageImage && (
         <div className="space-y-2">
-          {/* Перемикач режиму + навігація сторінок */}
+          {/* Перемикач режиму введення */}
           <div className="flex flex-wrap gap-2 items-center">
-            {pdf && (
-              <span className="inline-flex items-center gap-1">
-                <button
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                  disabled={page <= 1}
-                  className="px-2 py-1 bg-slate-200 rounded text-xs disabled:opacity-40"
-                  title="Попередня сторінка"
-                >
-                  ←
-                </button>
-                <span className="text-xs font-mono text-slate-700">
-                  {page} / {pdf.numPages}
-                </span>
-                <button
-                  onClick={() => setPage(p => Math.min(pdf.numPages, p + 1))}
-                  disabled={page >= pdf.numPages}
-                  className="px-2 py-1 bg-slate-200 rounded text-xs disabled:opacity-40"
-                  title="Наступна сторінка"
-                >
-                  →
-                </button>
-              </span>
-            )}
             <span className="text-xs text-slate-500">Режим:</span>
             <div className="inline-flex rounded border border-slate-300 overflow-hidden text-xs">
               <button
@@ -1789,8 +1787,12 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
               onMouseDown={onCanvasMouseDown}
               onMouseMove={onCanvasMouseMove}
               onMouseUp={onCanvasMouseUp}
-              onMouseLeave={() => { actionRef.current = null; lineDragRef.current = null; }}
-              className="cursor-crosshair block mx-auto"
+              onMouseLeave={() => { actionRef.current = null; lineDragRef.current = null; setLineHoverAxis(null); }}
+              className={`block mx-auto ${
+                inputMode === 'lines' && lineHoverAxis === 'v' ? 'cursor-ew-resize' :
+                inputMode === 'lines' && lineHoverAxis === 'h' ? 'cursor-ns-resize' :
+                'cursor-crosshair'
+              }`}
               style={{ maxWidth: '100%', height: 'auto' }}
             />
           </div>
