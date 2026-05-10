@@ -116,7 +116,7 @@ begin
   return new_count;
 end $$;
 
--- RLS: ті самі правила, що й на проді — service_role обходить, інші ролі не мають доступу.
+-- RLS: ті самі правила, що й на  проді — service_role обходить, інші ролі не мають доступу.
 alter table botdev_users        enable row level security;
 alter table botdev_cases        enable row level security;
 alter table botdev_sessions     enable row level security;
