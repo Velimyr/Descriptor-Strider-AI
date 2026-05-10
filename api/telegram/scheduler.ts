@@ -6,6 +6,7 @@ import {
   getAllCases,
   getSkippedForUser,
   getSubmissionsForUser,
+  getTouchedCaseIds,
   patchCase,
 } from './storage.js';
 
@@ -47,36 +48,51 @@ function buildDescriptionOrder(cases: BotCase[]): Map<string, string> {
 }
 
 export async function selectNextCaseForUser(tgId: string): Promise<BotCase | null> {
-  const [allCases, seenIds, skippedIds] = await Promise.all([
+  const [allCases, seenIds, skippedIds, touchedIds] = await Promise.all([
     getAllCases(),
     getSubmissionsForUser(tgId),
     getSkippedForUser(tgId),
+    getTouchedCaseIds(tgId), // collab: справи, де юзер уже брав участь
   ]);
-  // "Бачені" = підтверджені АБО відмовлені — і ті, і ті повторно не показуємо.
-  const seen = new Set([...seenIds, ...skippedIds]);
-  const target = cfg.cases.targetSubmissions;
+  // "Бачені" = підтверджені АБО відмовлені АБО участь у collab — повторно не показуємо.
+  const seen = new Set([...seenIds, ...skippedIds, ...touchedIds]);
+  const targetParallel = cfg.cases.targetSubmissions;
   const descOrder = buildDescriptionOrder(allCases);
+  const nowMs = Date.now();
 
-  // Сортування: спочатку за віком опису (найстаріший — першим),
-  // потім всередині опису — спершу майже-готові, далі за датою створення справи.
+  const isAvailable = (c: BotCase): boolean => {
+    if (c.status !== 'open') return false;
+    if (seen.has(c.caseId)) return false;
+    // Collab-режим: пропускаємо заблоковані іншим юзером (поки лок не сплив).
+    if (c.mode === 'collaborative' && c.lockedUntil && c.lockedByTgId && c.lockedByTgId !== tgId) {
+      const exp = Date.parse(c.lockedUntil);
+      if (Number.isFinite(exp) && exp > nowMs) return false;
+    }
+    return true;
+  };
+
+  // "Майже-готові" — сортування: для parallel за submissionsCount, для collab за confirmationsCount.
+  const progressOf = (c: BotCase): number =>
+    c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
+
   const compare = (a: BotCase, b: BotCase) => {
     const ageA = descOrder.get(descriptionKey(a)) || a.createdAt;
     const ageB = descOrder.get(descriptionKey(b)) || b.createdAt;
     if (ageA !== ageB) return ageA.localeCompare(ageB);
-    if (b.submissionsCount !== a.submissionsCount) return b.submissionsCount - a.submissionsCount;
+    const pa = progressOf(a);
+    const pb = progressOf(b);
+    if (pb !== pa) return pb - pa;
     return a.createdAt.localeCompare(b.createdAt);
   };
 
-  // Пріоритет 1: відкриті справи, не бачені, count < target.
+  // Пріоритет 1: відкриті, доступні, не досягли цілі.
   const primary = allCases
-    .filter(c => c.status === 'open' && !seen.has(c.caseId) && c.submissionsCount < target)
+    .filter(c => isAvailable(c) && progressOf(c) < targetParallel)
     .sort(compare);
   if (primary.length > 0) return primary[0];
 
-  // Пріоритет 2 (опційно): уже досягли target, але добираємо для надійності.
-  // Все одно — у порядку описів.
   if (cfg.cases.allowExtraAfterTarget) {
-    const extra = allCases.filter(c => !seen.has(c.caseId)).sort(compare);
+    const extra = allCases.filter(isAvailable).sort(compare);
     if (extra.length > 0) return extra[0];
   }
   return null;

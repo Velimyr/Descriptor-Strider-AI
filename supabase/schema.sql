@@ -41,6 +41,35 @@ alter table bot_cases add column if not exists sprava  text not null default '';
 create index if not exists idx_cases_status on bot_cases(status);
 create index if not exists idx_cases_count  on bot_cases(submissions_count);
 
+-- Collaborative-режим: нові поля для справи.
+-- mode = 'parallel' (як зараз, кожен юзер пише власний варіант) | 'collaborative' (один спільний варіант)
+alter table bot_cases add column if not exists mode                 text        not null default 'parallel';
+alter table bot_cases add column if not exists current_answers      jsonb       not null default '[]'::jsonb;
+alter table bot_cases add column if not exists current_author_tg_id text        not null default '';
+alter table bot_cases add column if not exists confirmations_count  int         not null default 0;
+-- Блокування при видачі справи юзеру (collab-режим). locked_until null = вільна.
+alter table bot_cases add column if not exists locked_by_tg_id      text        not null default '';
+alter table bot_cases add column if not exists locked_until         timestamptz;
+-- updated_at: фіксується при collab-подіях (create/edit/confirm), щоб коректно сортувати експорт.
+alter table bot_cases add column if not exists updated_at           timestamptz not null default now();
+alter table bot_cases drop constraint if exists bot_cases_mode_check;
+alter table bot_cases
+  add  constraint bot_cases_mode_check
+  check (mode in ('parallel','collaborative'));
+create index if not exists idx_cases_mode on bot_cases(mode);
+create index if not exists idx_cases_lock on bot_cases(locked_until);
+
+-- Аудит-таблиця для collab-режиму. UNIQUE (case_id, tg_id) гарантує:
+-- один юзер = одна дія на справу (create XOR edit XOR confirm).
+create table if not exists bot_case_confirmations (
+  case_id text        not null,
+  tg_id   text        not null,
+  kind    text        not null check (kind in ('create','edit','confirm')),
+  at      timestamptz not null default now(),
+  primary key (case_id, tg_id)
+);
+create index if not exists idx_confirms_case on bot_case_confirmations(case_id);
+
 create table if not exists bot_sessions (
   tg_id         text primary key references bot_users(tg_id) on delete cascade,
   case_id       text        not null,
@@ -56,7 +85,7 @@ create table if not exists bot_sessions (
 alter table bot_sessions drop constraint if exists bot_sessions_state_check;
 alter table bot_sessions
   add  constraint bot_sessions_state_check
-  check (state in ('asking','confirming','editing'));
+  check (state in ('asking','confirming','editing','previewing'));
 
 -- Підтверджені відповіді. answers — jsonb-масив у тому самому порядку, що bot_meta.questions.
 -- Метадані справи (archive/fund/opys/sprava/source_pdf/page) денормалізовані сюди,
@@ -143,6 +172,7 @@ alter table bot_daily_scores enable row level security;
 alter table bot_dispatch_log enable row level security;
 alter table bot_skipped      enable row level security;
 alter table bot_meta         enable row level security;
+alter table bot_case_confirmations enable row level security;
 
 -- Заборонити виконання RPC від імені anon/authenticated.
 -- (security definer функція без явного grant не виконається сторонніми ролями.)

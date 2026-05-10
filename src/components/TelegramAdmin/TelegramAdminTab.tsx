@@ -151,20 +151,38 @@ const SetupView: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [showDetails, setShowDetails] = useState(false);
+  // Collab-режим: налаштування (ключі з bot_meta).
+  const [minConfirmations, setMinConfirmations] = useState('');
+  const [collabLockMinutes, setCollabLockMinutes] = useState('');
+  const [metaSavedKey, setMetaSavedKey] = useState('');
 
   const refresh = async () => {
     try {
       setBusy(true);
-      const [h, db] = await Promise.all([
+      const [h, db, m] = await Promise.all([
         tgApi.health(),
         tgApi.checkDb().catch(e => ({ ok: false, error: e.message })),
+        tgApi.getMeta().catch(() => ({ meta: {} })),
       ]);
       setHealth(h);
       setDbCheck(db);
+      setMinConfirmations(m?.meta?.min_confirmations || '3');
+      setCollabLockMinutes(m?.meta?.collab_lock_minutes || '30');
     } catch {
       setHealth(null);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const saveMeta = async (key: string, value: string) => {
+    setMetaSavedKey('');
+    try {
+      await tgApi.setMeta(key, value);
+      setMetaSavedKey(key);
+      setTimeout(() => setMetaSavedKey(c => (c === key ? '' : c)), 2000);
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
     }
   };
 
@@ -284,6 +302,52 @@ const SetupView: React.FC = () => {
           </p>
         </section>
       )}
+
+      {/* Collaborative-режим: налаштування */}
+      <section className="border rounded p-3 bg-slate-50 space-y-3 text-sm">
+        <div className="font-medium">Колективний режим (collaborative)</div>
+        <div className="text-xs text-slate-600">
+          Параметри діють лише для справ, завантажених у колективному режимі. Зміни застосовуються миттєво для всіх нових подій.
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="w-56">Мін. підтверджень для закриття:</label>
+          <input
+            type="number"
+            min={1}
+            value={minConfirmations}
+            onChange={e => setMinConfirmations(e.target.value)}
+            className="border rounded px-2 py-1 w-20 text-sm"
+          />
+          <button
+            onClick={() => saveMeta('min_confirmations', minConfirmations)}
+            className="px-3 py-1 bg-indigo-600 text-white rounded text-xs"
+          >
+            Зберегти
+          </button>
+          {metaSavedKey === 'min_confirmations' && (
+            <span className="text-green-600 text-xs">✓ збережено</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="w-56">Тривалість блокування (хв):</label>
+          <input
+            type="number"
+            min={1}
+            value={collabLockMinutes}
+            onChange={e => setCollabLockMinutes(e.target.value)}
+            className="border rounded px-2 py-1 w-20 text-sm"
+          />
+          <button
+            onClick={() => saveMeta('collab_lock_minutes', collabLockMinutes)}
+            className="px-3 py-1 bg-indigo-600 text-white rounded text-xs"
+          >
+            Зберегти
+          </button>
+          {metaSavedKey === 'collab_lock_minutes' && (
+            <span className="text-green-600 text-xs">✓ збережено</span>
+          )}
+        </div>
+      </section>
 
       {msg && <div className="text-sm">{msg}</div>}
     </div>
@@ -528,6 +592,8 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const [archive, setArchive] = useState('');
   const [fund, setFund] = useState('');
   const [opys, setOpys] = useState('');
+  // Режим обробки для всієї пачки. Фіксується при завантаженні справи.
+  const [batchMode, setBatchMode] = useState<'parallel' | 'collaborative'>('parallel');
   // Діапазон сторінок для авто-розпізнавання. Порожньо → поточна сторінка.
   const [autoRange, setAutoRange] = useState('');
   const [autoProgress, setAutoProgress] = useState<{ done: number; total: number; page?: number } | null>(null);
@@ -1550,6 +1616,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           archive: archive.trim(),
           fund: fund.trim(),
           opys: opys.trim(),
+          mode: batchMode,
         });
         done++;
         setUploadProgress({ done, total });
@@ -1608,6 +1675,34 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         </div>
         <div className="text-xs text-slate-500 mt-1.5">
           Усі справи з цього PDF будуть приписані до опису "{archive.trim() || '...'} {fund.trim() || '...'}-{opys.trim() || '...'}".
+        </div>
+        <div className="mt-3 pt-3 border-t border-slate-200">
+          <div className="text-xs font-medium text-slate-700 mb-1">Режим обробки для цієї пачки:</div>
+          <div className="flex flex-wrap gap-3 text-xs">
+            <label className="inline-flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                name="batchMode"
+                value="parallel"
+                checked={batchMode === 'parallel'}
+                onChange={() => setBatchMode('parallel')}
+              />
+              <span><b>Паралельний</b> — кожен юзер пише власний варіант (≥3 версії)</span>
+            </label>
+            <label className="inline-flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                name="batchMode"
+                value="collaborative"
+                checked={batchMode === 'collaborative'}
+                onChange={() => setBatchMode('collaborative')}
+              />
+              <span><b>Колективний</b> — один варіант, інші підтверджують/редагують</span>
+            </label>
+          </div>
+          <div className="text-xs text-slate-500 mt-1">
+            Режим фіксується при завантаженні справи. Поточні справи в БД не змінюються.
+          </div>
         </div>
       </section>
 

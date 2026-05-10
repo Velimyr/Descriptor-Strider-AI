@@ -4,6 +4,7 @@ import {
   appendSubmission,
   BotSession,
   BotUser,
+  BotCase,
   deleteSession,
   getAllUsers,
   getCase,
@@ -18,6 +19,14 @@ import {
   getDailyCount,
   getResultsTotals,
   getAllCases,
+  // Collab helpers
+  lockCase,
+  unlockCase,
+  recordCaseEvent,
+  hasUserTouchedCase,
+  setCaseCreated,
+  setCaseEdited,
+  confirmCase,
 } from './storage.js';
 import {
   answerCallbackQuery,
@@ -182,6 +191,32 @@ function buildSummary(questions: TableColumn[], answers: string[]): string {
   return `${T.confirmHeader}\n\n${lines.join('\n')}`;
 }
 
+// --------- Collaborative mode helpers ---------
+
+// Клавіатура екрану перегляду чужого варіанту: підтвердити / редагувати / пропустити.
+function keyboardForCollabPreview(): any {
+  return {
+    inline_keyboard: [
+      [
+        { text: T.confirmButton, callback_data: 'collab:confirm' },
+        { text: T.editButton, callback_data: 'collab:edit' },
+      ],
+      [{ text: T.cancelButton, callback_data: 'collab:cancel' }],
+    ],
+  };
+}
+
+async function getMinConfirmations(): Promise<number> {
+  const raw = await getMeta('min_confirmations');
+  const n = parseInt(raw || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 3;
+}
+async function getCollabLockMinutes(): Promise<number> {
+  const raw = await getMeta('collab_lock_minutes');
+  const n = parseInt(raw || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 30;
+}
+
 // --------- main handler ---------
 
 export async function handleUpdate(update: any): Promise<void> {
@@ -310,6 +345,15 @@ async function handleMessage(msg: any) {
       } catch (e) {
         console.error('recordSkippedCase failed', e);
       }
+      // Збити лок, якщо collab.
+      try {
+        const cse = await getCase(session.caseId);
+        if (cse?.mode === 'collaborative' && cse.lockedByTgId === tgId) {
+          await unlockCase(session.caseId);
+        }
+      } catch (e) {
+        console.error('unlockCase failed', e);
+      }
     }
     const had = await deleteSession(tgId);
     await sendMessage(chatId, had ? T.cancelled : T.nothingToCancel, {
@@ -432,9 +476,55 @@ async function handleCallback(cb: any) {
       } catch (e) {
         console.error('recordSkippedCase failed', e);
       }
+      // Якщо collab-справа була залочена за цим юзером — звільняємо.
+      try {
+        const cse = await getCase(session.caseId);
+        if (cse?.mode === 'collaborative' && cse.lockedByTgId === tgId) {
+          await unlockCase(session.caseId);
+        }
+      } catch (e) {
+        console.error('unlockCase failed', e);
+      }
     }
     await deleteSession(tgId);
     await sendMessage(chatId, T.cancelled);
+    return;
+  }
+
+  // ----- Collaborative mode preview buttons -----
+  if (data === 'collab:cancel') {
+    if (session.caseId) {
+      try { await recordSkippedCase(tgId, session.caseId); } catch (e) { console.error(e); }
+      try { await unlockCase(session.caseId); } catch (e) { console.error(e); }
+    }
+    await deleteSession(tgId);
+    await sendMessage(chatId, T.cancelled);
+    return;
+  }
+
+  if (data === 'collab:confirm') {
+    if (!session.caseId) { await sendMessage(chatId, T.sessionExpired); return; }
+    const ack = await sendMessage(chatId, T.savingNotice);
+    await collabConfirm(chatId, tgId, session.caseId, ack?.message_id);
+    return;
+  }
+
+  if (data === 'collab:edit') {
+    if (!session.caseId) { await sendMessage(chatId, T.sessionExpired); return; }
+    // Фіксуємо намір редагувати: записуємо edit-подію зараз.
+    // (UNIQUE на (case_id, tg_id) — якщо вже є, перезапишеться kind='edit'.)
+    try { await recordCaseEvent(session.caseId, tgId, 'edit'); } catch (e) { console.error(e); }
+    // Стартуємо asking-flow з prefilled відповідями (вже в session.answersJson).
+    const next: BotSession = {
+      ...session,
+      currentQ: 0,
+      state: 'asking',
+      updatedAt: nowIsoUtc(),
+    };
+    await Promise.all([
+      setSession(next, session.rowIndex),
+      askQuestion(chatId, questions, 0),
+    ]);
     return;
   }
 
@@ -543,6 +633,14 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
         sendMessage(chatId, T.sessionAlreadyOpen),
         sendMessage(chatId, buildSummary(questions, answers), {
           reply_markup: keyboardForConfirm(),
+        }),
+      ]);
+    } else if (existing.state === 'previewing') {
+      const answers: string[] = JSON.parse(existing.answersJson || '[]');
+      await Promise.all([
+        sendMessage(chatId, T.sessionAlreadyOpen),
+        sendMessage(chatId, buildSummary(questions, answers), {
+          reply_markup: keyboardForCollabPreview(),
         }),
       ]);
     } else {
@@ -687,10 +785,38 @@ export async function dispatchCaseToUser(
   if (questions.length === 0) return false;
 
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
-  // Telegram гарантує порядок доставки тільки для послідовних API-викликів.
   await sendPhotoByFileId(tgId, next.tgFileId, `Документ №${next.caseId.slice(0, 8)}`);
 
-  // Решта побічних дій — паралельно (питання має йти ПІСЛЯ фото).
+  // ----- Collab-режим: якщо вже є current версія, показуємо preview замість опитування. -----
+  if (next.mode === 'collaborative' && next.confirmationsCount > 0) {
+    const lockMinutes = await getCollabLockMinutes();
+    await lockCase(next.caseId, tgId, lockMinutes);
+    const summary = buildSummary(questions, next.currentAnswers);
+    await Promise.all([
+      setSession({
+        tgId,
+        caseId: next.caseId,
+        // У previewing зберігаємо current_answers, щоб edit міг почати з них.
+        answersJson: JSON.stringify(next.currentAnswers),
+        currentQ: 0,
+        startedAt: nowIsoUtc(),
+        updatedAt: nowIsoUtc(),
+        state: 'previewing',
+      }),
+      upsertUser(
+        { ...user, lastDispatchedCaseId: next.caseId, lastDispatchedAt: nowIsoUtc() },
+        user.rowIndex
+      ),
+      sendMessage(tgId, summary, { reply_markup: keyboardForCollabPreview() }),
+    ]);
+    return true;
+  }
+
+  // ----- Звичайний flow (parallel або collab без current версії — creation). -----
+  if (next.mode === 'collaborative') {
+    const lockMinutes = await getCollabLockMinutes();
+    await lockCase(next.caseId, tgId, lockMinutes);
+  }
   await Promise.all([
     setSession({
       tgId,
@@ -737,6 +863,10 @@ async function askQuestion(chatId: number | string, questions: TableColumn[], in
 async function processAnswer(chatId: number, tgId: string, session: BotSession, text: string) {
   if (session.state === 'confirming') {
     await sendMessage(chatId, 'Натисніть кнопку Підтвердити або Виправити.');
+    return;
+  }
+  if (session.state === 'previewing') {
+    await sendMessage(chatId, 'Натисніть Підтвердити, Редагувати або Скасувати.');
     return;
   }
 
@@ -817,6 +947,11 @@ async function confirmAndSubmit(
     return;
   }
 
+  // Collab-режим: розгалуження на create vs edit.
+  if (cse.mode === 'collaborative') {
+    return collabSubmit(chatId, tgId, cse, user, questions, answers, ackMessageId);
+  }
+
   const sourceLinkEnabled = telegramBotConfig.sheets.sourceLink.mode !== 'none';
   const sourceLink = sourceLinkEnabled ? buildSourceLink(cse) : '';
 
@@ -883,6 +1018,97 @@ async function confirmAndSubmit(
   if (tierMsg) {
     await sendMessage(chatId, tierMsg);
   }
+}
+
+// ----- Collaborative submit: спільна логіка для create і edit. -----
+// Викликається з confirmAndSubmit коли case.mode === 'collaborative'.
+// Розрізняє create vs edit по тому, чи юзер уже фігурує в bot_case_confirmations
+// (collab:edit вписує 'edit' одразу при натисканні; для creation запису ще немає).
+async function collabSubmit(
+  chatId: number,
+  tgId: string,
+  cse: BotCase,
+  user: BotUser,
+  questions: TableColumn[],
+  answers: string[],
+  ackMessageId?: number
+) {
+  const finalAnswers = questions.map((_, i) => answers[i] ?? '');
+  const alreadyEdit = await hasUserTouchedCase(cse.caseId, tgId);
+
+  if (alreadyEdit) {
+    // EDIT: оновлюємо current_answers, скидаємо лічильник до 1.
+    await setCaseEdited(cse.caseId, tgId, finalAnswers);
+    // recordCaseEvent('edit') вже зроблено при натисканні collab:edit.
+  } else {
+    // CREATE: перша версія справи.
+    await Promise.all([
+      setCaseCreated(cse.caseId, tgId, finalAnswers),
+      recordCaseEvent(cse.caseId, tgId, 'create'),
+    ]);
+  }
+
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false);
+  await deleteSession(tgId);
+}
+
+// Обробка натискання "Підтвердити" на preview.
+async function collabConfirm(
+  chatId: number,
+  tgId: string,
+  caseId: string,
+  ackMessageId?: number
+) {
+  const [user, cse] = await Promise.all([getUser(tgId), getCase(caseId)]);
+  if (!user) return;
+  if (!cse) {
+    await sendMessage(chatId, 'Справу видалено. Скасовано.');
+    await deleteSession(tgId);
+    return;
+  }
+  const min = await getMinConfirmations();
+  await recordCaseEvent(caseId, tgId, 'confirm');
+  const { closed } = await confirmCase(caseId, min);
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed);
+  await deleteSession(tgId);
+}
+
+// Спільна частина для collab create/edit/confirm: бали, повідомлення.
+async function deliverCollabPoints(
+  chatId: number,
+  tgId: string,
+  user: BotUser,
+  ackMessageId: number | undefined,
+  closed: boolean
+) {
+  const today = kyivDateString();
+  const todayCount = await incDailyCount(tgId, today);
+  const pts = computePointsForToday(todayCount);
+  const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1) : { multiplier: 1 };
+  const newTotal = Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100;
+
+  const cfgPts = telegramBotConfig.points;
+  const tierMsgs = telegramBotConfig.tierMessages;
+  let tierMsg: string | undefined;
+  const reachedTier2 = pts.multiplier === cfgPts.tier2.multiplier;
+  const reachedTier1Now =
+    pts.multiplier === cfgPts.tier1.multiplier && prevPts.multiplier !== cfgPts.tier1.multiplier;
+  if (reachedTier2) tierMsg = pickRandom(tierMsgs.tier2);
+  else if (reachedTier1Now) tierMsg = pickRandom(tierMsgs.tier1);
+
+  const finalText =
+    fmt(T.pointsEarned, { points: pts.pointsEarned, todayCount, total: newTotal }) +
+    (closed ? '\n\n✅ Справу зведено — дякую за допомогу!' : '');
+
+  await Promise.all([
+    upsertUser({ ...user, totalPoints: newTotal, consecutiveMisses: 0 }, user.rowIndex),
+    ackMessageId
+      ? editMessageText(chatId, ackMessageId, finalText)
+          .catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))
+      : sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }),
+  ]);
+
+  if (tierMsg) await sendMessage(chatId, tierMsg);
 }
 
 function buildSourceLink(cse: any): string {
