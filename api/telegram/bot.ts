@@ -787,6 +787,12 @@ export async function dispatchCaseToUser(
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
   await sendPhotoByFileId(tgId, next.tgFileId, `Документ №${next.caseId.slice(0, 8)}`);
 
+  console.log('[dispatch.next]', {
+    caseId: next.caseId,
+    mode: next.mode,
+    confirmationsCount: next.confirmationsCount,
+    rawKeys: Object.keys(next),
+  });
   // ----- Collab-режим: якщо вже є current версія, показуємо preview замість опитування. -----
   if (next.mode === 'collaborative' && next.confirmationsCount > 0) {
     const lockMinutes = await getCollabLockMinutes();
@@ -947,6 +953,12 @@ async function confirmAndSubmit(
     return;
   }
 
+  console.log('[confirmAndSubmit] case', {
+    caseId: cse.caseId,
+    mode: cse.mode,
+    confirmationsCount: cse.confirmationsCount,
+    hasMode: 'mode' in cse,
+  });
   // Collab-режим: розгалуження на create vs edit.
   if (cse.mode === 'collaborative') {
     return collabSubmit(chatId, tgId, cse, user, questions, answers, ackMessageId);
