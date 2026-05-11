@@ -485,6 +485,21 @@ export async function getTouchedCaseIds(tgId: string): Promise<string[]> {
   return (data || []).map((r: any) => r.case_id);
 }
 
+// Остання дія юзера у collab (для чергування create/review при наступному dispatch).
+export async function getLastUserCaseKind(
+  tgId: string
+): Promise<'create' | 'edit' | 'confirm' | null> {
+  const { data, error } = await db()
+    .from(T.caseConfirmations)
+    .select('kind, at')
+    .eq('tg_id', tgId)
+    .order('at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return ((data as any)?.kind as any) || null;
+}
+
 // Чи юзер уже брав участь у цій справі.
 export async function hasUserTouchedCase(caseId: string, tgId: string): Promise<boolean> {
   const { data, error } = await db()

@@ -1086,7 +1086,9 @@ async function collabSubmit(
     ]);
   }
 
-  await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false);
+  // Розпізнавання (create) — 3 бали база; редагування — 1 (це перевірка з правкою).
+  const actionBase = alreadyEdit ? 1 : 3;
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase);
   await deleteSession(tgId);
 }
 
@@ -1107,7 +1109,8 @@ async function collabConfirm(
   const min = await getMinConfirmations();
   await recordCaseEvent(caseId, tgId, 'confirm');
   const { closed } = await confirmCase(caseId, min);
-  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed);
+  // Перевірка — 1 бал база.
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1);
   await deleteSession(tgId);
 }
 
@@ -1117,12 +1120,13 @@ async function deliverCollabPoints(
   tgId: string,
   user: BotUser,
   ackMessageId: number | undefined,
-  closed: boolean
+  closed: boolean,
+  actionBase: number
 ) {
   const today = kyivDateString();
   const todayCount = await incDailyCount(tgId, today);
-  const pts = computePointsForToday(todayCount);
-  const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1) : { multiplier: 1 };
+  const pts = computePointsForToday(todayCount, actionBase);
+  const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1, actionBase) : { multiplier: 1 };
   const newTotal = Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100;
 
   const cfgPts = telegramBotConfig.points;

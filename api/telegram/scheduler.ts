@@ -4,6 +4,7 @@ import {
   BotUser,
   countSubmissionsByCase,
   getAllCases,
+  getLastUserCaseKind,
   getSkippedForUser,
   getSubmissionsForUser,
   getTouchedCaseIds,
@@ -48,11 +49,12 @@ function buildDescriptionOrder(cases: BotCase[]): Map<string, string> {
 }
 
 export async function selectNextCaseForUser(tgId: string): Promise<BotCase | null> {
-  const [allCases, seenIds, skippedIds, touchedIds] = await Promise.all([
+  const [allCases, seenIds, skippedIds, touchedIds, lastKind] = await Promise.all([
     getAllCases(),
     getSubmissionsForUser(tgId),
     getSkippedForUser(tgId),
     getTouchedCaseIds(tgId), // collab: справи, де юзер уже брав участь
+    getLastUserCaseKind(tgId), // collab: остання дія юзера (для чергування)
   ]);
   // "Бачені" = підтверджені АБО відмовлені АБО участь у collab — повторно не показуємо.
   const seen = new Set([...seenIds, ...skippedIds, ...touchedIds]);
@@ -89,7 +91,18 @@ export async function selectNextCaseForUser(tgId: string): Promise<BotCase | nul
   const primary = allCases
     .filter(c => isAvailable(c) && progressOf(c) < targetParallel)
     .sort(compare);
-  if (primary.length > 0) return primary[0];
+  if (primary.length > 0) {
+    // Чергування для collab: якщо в пулі є і "розпізнавання" (count=0),
+    // і "перевірка" (count>0) — даємо протилежне до останньої дії юзера.
+    const collabCreate = primary.find(c => c.mode === 'collaborative' && c.confirmationsCount === 0);
+    const collabReview = primary.find(c => c.mode === 'collaborative' && c.confirmationsCount > 0);
+    if (collabCreate && collabReview) {
+      // lastKind === 'create' → юзер останнім робив розпізнавання, тепер даємо перевірку.
+      // інакше (confirm/edit/null) → даємо розпізнавання.
+      return lastKind === 'create' ? collabReview : collabCreate;
+    }
+    return primary[0];
+  }
 
   if (cfg.cases.allowExtraAfterTarget) {
     const extra = allCases.filter(isAvailable).sort(compare);
@@ -107,14 +120,19 @@ export interface PointsResult {
 /**
  * Бал = base × multiplier(todayCount після інкременту).
  * Множник: < tier1 → 1, < tier2 → tier1.multiplier, інакше tier2.multiplier.
+ * baseOverride — для collab-режиму (3 за розпізнавання, 1 за перевірку).
  */
-export function computePointsForToday(todayCountAfterInc: number): PointsResult {
+export function computePointsForToday(
+  todayCountAfterInc: number,
+  baseOverride?: number
+): PointsResult {
   const { base, tier1, tier2 } = cfg.points;
+  const b = typeof baseOverride === 'number' ? baseOverride : base;
   let multiplier = 1;
   if (todayCountAfterInc >= tier2.thresholdInclusive) multiplier = tier2.multiplier;
   else if (todayCountAfterInc >= tier1.thresholdInclusive) multiplier = tier1.multiplier;
   return {
-    pointsEarned: Math.round(base * multiplier * 100) / 100,
+    pointsEarned: Math.round(b * multiplier * 100) / 100,
     todayCount: todayCountAfterInc,
     multiplier,
   };
