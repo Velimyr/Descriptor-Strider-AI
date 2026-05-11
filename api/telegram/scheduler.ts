@@ -48,9 +48,12 @@ function buildDescriptionOrder(cases: BotCase[]): Map<string, string> {
   return order;
 }
 
-export async function selectNextCaseForUser(tgId: string): Promise<BotCase | null> {
+export async function selectNextCaseForUser(
+  tgId: string,
+  preloadedCases?: BotCase[]
+): Promise<BotCase | null> {
   const [allCases, seenIds, skippedIds, touchedIds, lastKind] = await Promise.all([
-    getAllCases(),
+    preloadedCases ? Promise.resolve(preloadedCases) : getAllCases(),
     getSubmissionsForUser(tgId),
     getSkippedForUser(tgId),
     getTouchedCaseIds(tgId), // collab: справи, де юзер уже брав участь

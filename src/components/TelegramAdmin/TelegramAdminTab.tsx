@@ -481,6 +481,9 @@ type Box = {
   // Якщо у кількох зон однаковий groupId — це частини однієї справи (можливо на різних сторінках),
   // які при завантаженні склеюються в одне зображення і одну справу.
   groupId: string;
+  // Порядок у групі для склеювання (визначається порядком виділення при merge).
+  // Менше число = вище у склеєному зображенні. Для одиночних зон не використовується.
+  groupOrder?: number;
 };
 
 const newId = () =>
@@ -1253,7 +1256,14 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       map.set(item.box.groupId, arr);
     }
     for (const arr of map.values()) {
-      arr.sort((a, b) => a.page - b.page || a.box.y - b.box.y);
+      // Якщо груповий порядок заданий явно (merge зробив користувач) — використовуємо його.
+      // Інакше — fallback на геометричний порядок (page, y).
+      arr.sort((a, b) => {
+        const oa = a.box.groupOrder ?? -1;
+        const ob = b.box.groupOrder ?? -1;
+        if (oa !== ob && oa >= 0 && ob >= 0) return oa - ob;
+        return a.page - b.page || a.box.y - b.box.y;
+      });
     }
     return map;
   })();
@@ -1264,7 +1274,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const mergeSelected = () => {
     if (selectedIds.size < 2) return;
     // Як спільний groupId беремо groupId першої виділеної зони.
-    const firstId = [...selectedIds][0];
+    // Порядок виділення задає порядок склеювання: перша зверху.
+    const orderedIds = [...selectedIds];
+    const firstId = orderedIds[0];
     let target = '';
     for (const arr of Object.values(pageBoxes) as Box[][]) {
       const found = arr.find(b => b.id === firstId);
@@ -1274,10 +1286,15 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       }
     }
     if (!target) return;
+    const orderMap = new Map<string, number>(orderedIds.map((id, i) => [id, i]));
     setPageBoxes(prev => {
       const next: Record<number, Box[]> = {};
       for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
-        next[+k] = list.map(b => (selectedIds.has(b.id) ? { ...b, groupId: target } : b));
+        next[+k] = list.map(b =>
+          selectedIds.has(b.id)
+            ? { ...b, groupId: target, groupOrder: orderMap.get(b.id) ?? 0 }
+            : b
+        );
       }
       return next;
     });
@@ -2681,6 +2698,11 @@ interface Step2Row {
   id: string;
   isEmpty: boolean;
   answers: string[];
+  archive: string;
+  fund: string;
+  opys: string;
+  sourcePdf: string;
+  page: string;
 }
 
 // Викликає Gemini, щоб обрати найвірогідніший запис серед N варіантів однієї справи.
@@ -3084,10 +3106,21 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       const info = parseNumberCell(String(ans[numberColIdx] ?? ''));
       if (info.base != null) bases.add(info.base);
     }
+    // Архівні реквізити беремо з descKey (вони однакові для всього опису).
+    const [descArchive = '', descFund = '', descOpys = ''] = (descKey || '').split('|');
     const rows: Step2Row[] = selected.map((s, idx) => {
       const ans = Array.isArray(s.answers) ? [...s.answers] : [];
       while (ans.length < questions.length) ans.push('');
-      return { id: `r${idx}`, isEmpty: false, answers: ans.map(a => String(a ?? '')) };
+      return {
+        id: `r${idx}`,
+        isEmpty: false,
+        answers: ans.map(a => String(a ?? '')),
+        archive: String(s.archive ?? descArchive),
+        fund: String(s.fund ?? descFund),
+        opys: String(s.opys ?? descOpys),
+        sourcePdf: String(s.source_pdf ?? ''),
+        page: String(s.page ?? ''),
+      };
     });
     if (bases.size > 0) {
       const min = Math.min(...bases);
@@ -3096,7 +3129,16 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         if (!bases.has(n)) {
           const ans = Array(questions.length).fill('');
           if (numberColIdx >= 0) ans[numberColIdx] = String(n);
-          rows.push({ id: `e${n}`, isEmpty: true, answers: ans });
+          rows.push({
+            id: `e${n}`,
+            isEmpty: true,
+            answers: ans,
+            archive: descArchive,
+            fund: descFund,
+            opys: descOpys,
+            sourcePdf: '',
+            page: '',
+          });
         }
       }
     }
@@ -3118,9 +3160,23 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     );
   };
 
+  const updateMetaCell = (rowIdx: number, field: 'archive' | 'fund' | 'opys' | 'sourcePdf' | 'page', value: string) => {
+    setStep2Rows(prev => prev.map((r, i) => (i === rowIdx ? { ...r, [field]: value } : r)));
+  };
+
+  const META_COLS: Array<{ key: 'archive' | 'fund' | 'opys' | 'sourcePdf' | 'page'; label: string }> = [
+    { key: 'archive', label: 'Архів' },
+    { key: 'fund', label: 'Фонд' },
+    { key: 'opys', label: 'Опис' },
+    { key: 'sourcePdf', label: 'Файл' },
+    { key: 'page', label: 'Сторінка' },
+  ];
+
   const exportCsv = () => {
     if (questions.length === 0) return;
-    const headers = questions.map((q: any, i: number) => q.label || `Q${i + 1}`);
+    const qHeaders = questions.map((q: any, i: number) => q.label || `Q${i + 1}`);
+    const metaHeaders = META_COLS.map(c => c.label);
+    const headers = [...qHeaders, ...metaHeaders];
     // Сортуємо ще раз — користувач міг змінити номери в Кроці 2.
     const sorted = [...step2Rows].sort((a, b) =>
       compareNumberInfo(
@@ -3128,7 +3184,10 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         parseNumberCell(b.answers[numberColIdx] || '')
       )
     );
-    const rows = sorted.map(r => headers.map((_, i) => r.answers[i] ?? ''));
+    const rows = sorted.map(r => [
+      ...qHeaders.map((_, i) => r.answers[i] ?? ''),
+      ...META_COLS.map(c => (r as any)[c.key] ?? ''),
+    ]);
     const all = [headers, ...rows];
     const escape = (v: any) => {
       const s = String(v ?? '');
@@ -3427,6 +3486,11 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                       {i === numberColIdx ? ' №' : ''}
                     </th>
                   ))}
+                  {META_COLS.map(c => (
+                    <th key={c.key} className="text-left p-2 border-b whitespace-nowrap text-slate-600">
+                      {c.label}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -3439,6 +3503,16 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                           onChange={e => updateCell(ri, qi, e.target.value)}
                           rows={1}
                           className="w-full border rounded px-1.5 py-1 text-xs resize-y bg-white"
+                        />
+                      </td>
+                    ))}
+                    {META_COLS.map(c => (
+                      <td key={c.key} className="p-1 align-top">
+                        <textarea
+                          value={(r as any)[c.key] ?? ''}
+                          onChange={e => updateMetaCell(ri, c.key, e.target.value)}
+                          rows={1}
+                          className="w-full border rounded px-1.5 py-1 text-xs resize-y bg-slate-50"
                         />
                       </td>
                     ))}

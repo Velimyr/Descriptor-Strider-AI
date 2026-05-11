@@ -778,12 +778,13 @@ export async function dispatchCaseToUser(
   tgId: string,
   // ignorePaused=true — ручний виклик (кнопка «Нова справа») іґнорує статус paused.
   // Опція «Зупинити розсилку» — тільки для авторозсилок за розкладом.
-  ignorePaused = false
+  ignorePaused = false,
+  preloadedCases?: BotCase[]
 ): Promise<boolean> {
   // Паралельні незалежні читання.
   const [user, next, questions] = await Promise.all([
     getUser(tgId),
-    selectNextCaseForUser(tgId),
+    selectNextCaseForUser(tgId, preloadedCases),
     getQuestions(),
   ]);
   console.log('[dispatch]', { tgId, userStatus: user?.status, ignorePaused, hasNext: !!next, nextCaseId: next?.caseId, questions: questions.length });

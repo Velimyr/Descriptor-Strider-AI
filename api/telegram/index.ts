@@ -56,11 +56,15 @@ router.get('/cron/tick', async (req, res) => {
   }
 
   const cfg = telegramBotConfig.dispatch;
-  const users = await getAllUsers();
-  const sessions = await getAllSessions();
+  const { getAllCases } = await import('./storage.js');
+  // Префетчимо справи 1 раз на весь тик і пробрасуємо в dispatch.
+  const [users, sessions, allCases] = await Promise.all([
+    getAllUsers(),
+    getAllSessions(),
+    getAllCases(),
+  ]);
   const sessionMap = new Map(sessions.map(s => [s.tgId, s]));
 
-  // Діагностичні лічильники.
   const stats = {
     totalUsers: users.length,
     activeUsers: 0,
@@ -72,10 +76,16 @@ router.get('/cron/tick', async (req, res) => {
   };
   const results: any[] = [];
 
-  for (const u of users) {
+  // Bounded concurrency — щоб і Vercel-функція укладалася в ліміт,
+  // і Telegram API не отримував шторм одночасних запитів.
+  const CONCURRENCY = 6;
+  const queue = [...users];
+  const workers: Promise<void>[] = [];
+
+  const processOne = async (u: any) => {
     if (u.status !== 'active') {
       stats.pausedUsers++;
-      continue;
+      return;
     }
     stats.activeUsers++;
 
@@ -88,19 +98,17 @@ router.get('/cron/tick', async (req, res) => {
       } else {
         stats.skippedSessionOpen++;
         results.push({ tgId: u.tgId, skipped: 'session-open' });
-        continue;
+        return;
       }
     }
 
     try {
-      // Перед розсилкою справи за розкладом надсилаємо випадкове привітання,
-      // щоб користувач бачив контекст. Помилка тут не блокує саму розсилку.
       try {
         await sendScheduledGreeting(u.tgId);
       } catch (e) {
         console.error('greeting failed', u.tgId, e);
       }
-      const sent = await dispatchCaseToUser(u.tgId);
+      const sent = await dispatchCaseToUser(u.tgId, false, allCases);
       if (sent) {
         stats.sent++;
         results.push({ tgId: u.tgId, sent: true });
@@ -112,7 +120,17 @@ router.get('/cron/tick', async (req, res) => {
       stats.errors++;
       results.push({ tgId: u.tgId, error: e.message });
     }
-  }
+  };
+
+  const runWorker = async () => {
+    while (queue.length > 0) {
+      const u = queue.shift();
+      if (!u) break;
+      await processOne(u);
+    }
+  };
+  for (let i = 0; i < CONCURRENCY; i++) workers.push(runWorker());
+  await Promise.all(workers);
 
   res.json({ ok: true, stats, dispatched: results });
 });
