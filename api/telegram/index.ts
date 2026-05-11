@@ -56,11 +56,15 @@ router.get('/cron/tick', async (req, res) => {
   }
 
   const cfg = telegramBotConfig.dispatch;
-  const users = await getAllUsers();
-  const sessions = await getAllSessions();
+  const { getAllCases } = await import('./storage.js');
+  // Префетчимо справи 1 раз на весь тик і пробрасуємо в dispatch.
+  const [users, sessions, allCases] = await Promise.all([
+    getAllUsers(),
+    getAllSessions(),
+    getAllCases(),
+  ]);
   const sessionMap = new Map(sessions.map(s => [s.tgId, s]));
 
-  // Діагностичні лічильники.
   const stats = {
     totalUsers: users.length,
     activeUsers: 0,
@@ -72,10 +76,16 @@ router.get('/cron/tick', async (req, res) => {
   };
   const results: any[] = [];
 
-  for (const u of users) {
+  // Bounded concurrency — щоб і Vercel-функція укладалася в ліміт,
+  // і Telegram API не отримував шторм одночасних запитів.
+  const CONCURRENCY = 6;
+  const queue = [...users];
+  const workers: Promise<void>[] = [];
+
+  const processOne = async (u: any) => {
     if (u.status !== 'active') {
       stats.pausedUsers++;
-      continue;
+      return;
     }
     stats.activeUsers++;
 
@@ -88,19 +98,17 @@ router.get('/cron/tick', async (req, res) => {
       } else {
         stats.skippedSessionOpen++;
         results.push({ tgId: u.tgId, skipped: 'session-open' });
-        continue;
+        return;
       }
     }
 
     try {
-      // Перед розсилкою справи за розкладом надсилаємо випадкове привітання,
-      // щоб користувач бачив контекст. Помилка тут не блокує саму розсилку.
       try {
         await sendScheduledGreeting(u.tgId);
       } catch (e) {
         console.error('greeting failed', u.tgId, e);
       }
-      const sent = await dispatchCaseToUser(u.tgId);
+      const sent = await dispatchCaseToUser(u.tgId, false, allCases);
       if (sent) {
         stats.sent++;
         results.push({ tgId: u.tgId, sent: true });
@@ -112,7 +120,17 @@ router.get('/cron/tick', async (req, res) => {
       stats.errors++;
       results.push({ tgId: u.tgId, error: e.message });
     }
-  }
+  };
+
+  const runWorker = async () => {
+    while (queue.length > 0) {
+      const u = queue.shift();
+      if (!u) break;
+      await processOne(u);
+    }
+  };
+  for (let i = 0; i < CONCURRENCY; i++) workers.push(runWorker());
+  await Promise.all(workers);
 
   res.json({ ok: true, stats, dispatched: results });
 });
@@ -252,6 +270,25 @@ router.get('/admin/questions', async (req, res) => {
   res.json({ questions: raw ? JSON.parse(raw) : [] });
 });
 
+// Універсальний get/set для bot_meta. Дозволяємо лише whitelisted ключі,
+// щоб через адмінку не можна було перезаписати чутливі ключі.
+const META_ALLOWED_KEYS = new Set(['min_confirmations', 'collab_lock_minutes']);
+router.get('/admin/meta', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const out: Record<string, string> = {};
+  for (const k of META_ALLOWED_KEYS) out[k] = (await getMeta(k)) || '';
+  res.json({ meta: out });
+});
+router.post('/admin/meta', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { key, value } = req.body || {};
+  if (!key || !META_ALLOWED_KEYS.has(key)) {
+    return res.status(400).json({ error: 'invalid key' });
+  }
+  await setMeta(String(key), String(value ?? ''));
+  res.json({ ok: true });
+});
+
 router.post('/admin/set-webhook', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const { url } = req.body || {};
@@ -286,7 +323,7 @@ router.post('/admin/delete-webhook', async (req, res) => {
 // Завантаження картинки в канал. Приймає base64 PNG/JPEG.
 router.post('/admin/upload-case', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { imageBase64, sourcePdf, page, bbox, archive, fund, opys } = req.body || {};
+  const { imageBase64, sourcePdf, page, bbox, archive, fund, opys, mode } = req.body || {};
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
   // Архів/Фонд/Опис ідентифікують опис — без них результати не мають сенсу.
   // Поле sprava більше не використовується (видалено з адмінки).
@@ -321,6 +358,13 @@ router.post('/admin/upload-case', async (req, res) => {
         submissionsCount: 0,
         status: 'open',
         createdAt: nowIsoUtc(),
+        mode: mode === 'collaborative' ? 'collaborative' : 'parallel',
+        currentAnswers: [],
+        currentAuthorTgId: '',
+        confirmationsCount: 0,
+        lockedByTgId: '',
+        lockedUntil: '',
+        updatedAt: '',
       },
     ]);
     res.json({ ok: true, caseId, fileId, messageId: result?.message_id });
@@ -350,15 +394,65 @@ router.post('/admin/detect-bboxes', async (req, res) => {
   }
 });
 
+// Перетворює collab-справу на запис у форматі submission для уніфікованого експорту.
+function collabCaseToSubmission(
+  c: any,
+  displayName: string,
+  confirmations: Array<{ tg_id: string; display_name: string; kind: string; at: string }>
+) {
+  return {
+    case_id: c.caseId,
+    tg_id: c.currentAuthorTgId || '',
+    display_name: displayName,
+    submitted_at: c.updatedAt || c.createdAt,
+    answers: Array.isArray(c.currentAnswers) ? c.currentAnswers : [],
+    source_link: '',
+    archive: c.archive || '',
+    fund: c.fund || '',
+    opys: c.opys || '',
+    sprava: c.sprava || '',
+    source_pdf: c.sourcePdf || '',
+    page: c.page || '',
+    is_collab: true,
+    confirmations_count: c.confirmationsCount || 0,
+    case_status: c.status,
+    confirmations,
+  };
+}
+
 router.get('/admin/results', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const limit = Math.min(parseInt((req.query.limit as string) || '500', 10) || 500, 5000);
   try {
-    const { getRecentSubmissions, getMeta } = await import('./storage.js');
-    const [subs, qRaw] = await Promise.all([
+    const {
+      getRecentSubmissions,
+      getMeta,
+      getRecentCollabCases,
+      getDisplayNamesMap,
+      getConfirmationsForCases,
+    } = await import('./storage.js');
+    const [subs, qRaw, collab] = await Promise.all([
       getRecentSubmissions(limit),
       getMeta('questions'),
+      getRecentCollabCases(limit),
     ]);
+    const collabFiltered = collab.filter(c => c.confirmationsCount > 0);
+    const allUserIds = new Set<string>(collabFiltered.map(c => c.currentAuthorTgId).filter(Boolean));
+    const confirms = await getConfirmationsForCases(collabFiltered.map(c => c.caseId));
+    for (const cf of confirms) allUserIds.add(cf.tgId);
+    const names = await getDisplayNamesMap([...allUserIds]);
+    const confirmsByCase = new Map<string, typeof confirms>();
+    for (const cf of confirms) {
+      const arr = confirmsByCase.get(cf.caseId) || [];
+      arr.push(cf);
+      confirmsByCase.set(cf.caseId, arr);
+    }
+    const collabAsSubs = collabFiltered.map(c => {
+      const list = (confirmsByCase.get(c.caseId) || [])
+        .sort((a, b) => a.at.localeCompare(b.at))
+        .map(cf => ({ tg_id: cf.tgId, display_name: names[cf.tgId] || '', kind: cf.kind, at: cf.at }));
+      return collabCaseToSubmission(c, names[c.currentAuthorTgId] || '', list);
+    });
     let questions: any[] = [];
     try {
       questions = qRaw ? JSON.parse(qRaw) : [];
@@ -366,7 +460,11 @@ router.get('/admin/results', async (req, res) => {
     } catch {
       questions = [];
     }
-    res.json({ ok: true, questions, submissions: subs });
+    // Об'єднуємо і сортуємо за датою.
+    const merged = [...subs, ...collabAsSubs]
+      .sort((a: any, b: any) => String(b.submitted_at || '').localeCompare(String(a.submitted_at || '')))
+      .slice(0, limit);
+    res.json({ ok: true, questions, submissions: merged });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -381,11 +479,34 @@ router.get('/admin/submissions-by-description', async (req, res) => {
     return res.status(400).json({ error: 'archive, fund, opys required' });
   }
   try {
-    const { getSubmissionsByDescription } = await import('./storage.js');
-    const [subs, qRaw] = await Promise.all([
+    const {
+      getSubmissionsByDescription,
+      getCollabCasesByDescription,
+      getDisplayNamesMap,
+      getConfirmationsForCases,
+    } = await import('./storage.js');
+    const [subs, qRaw, collab] = await Promise.all([
       getSubmissionsByDescription(archive, fund, opys),
       getMeta('questions'),
+      getCollabCasesByDescription(archive, fund, opys),
     ]);
+    const collabFiltered = collab.filter(c => c.confirmationsCount > 0);
+    const allUserIds = new Set<string>(collabFiltered.map(c => c.currentAuthorTgId).filter(Boolean));
+    const confirms = await getConfirmationsForCases(collabFiltered.map(c => c.caseId));
+    for (const cf of confirms) allUserIds.add(cf.tgId);
+    const names = await getDisplayNamesMap([...allUserIds]);
+    const confirmsByCase = new Map<string, typeof confirms>();
+    for (const cf of confirms) {
+      const arr = confirmsByCase.get(cf.caseId) || [];
+      arr.push(cf);
+      confirmsByCase.set(cf.caseId, arr);
+    }
+    const collabAsSubs = collabFiltered.map(c => {
+      const list = (confirmsByCase.get(c.caseId) || [])
+        .sort((a, b) => a.at.localeCompare(b.at))
+        .map(cf => ({ tg_id: cf.tgId, display_name: names[cf.tgId] || '', kind: cf.kind, at: cf.at }));
+      return collabCaseToSubmission(c, names[c.currentAuthorTgId] || '', list);
+    });
     let questions: any[] = [];
     try {
       questions = qRaw ? JSON.parse(qRaw) : [];
@@ -393,7 +514,10 @@ router.get('/admin/submissions-by-description', async (req, res) => {
     } catch {
       questions = [];
     }
-    res.json({ ok: true, questions, submissions: subs });
+    const merged = [...subs, ...collabAsSubs].sort((a: any, b: any) =>
+      String(b.submitted_at || '').localeCompare(String(a.submitted_at || ''))
+    );
+    res.json({ ok: true, questions, submissions: merged });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

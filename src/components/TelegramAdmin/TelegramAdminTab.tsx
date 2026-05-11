@@ -49,7 +49,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['questions', 'Питання'],
           ['cases', 'Підготовка справ'],
           ['results', 'Результати'],
-          ['process', 'Опрацювати опис'],
+          ['process', 'Експортувати опис'],
           ['overview', 'Огляд'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
@@ -151,20 +151,38 @@ const SetupView: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [showDetails, setShowDetails] = useState(false);
+  // Collab-режим: налаштування (ключі з bot_meta).
+  const [minConfirmations, setMinConfirmations] = useState('');
+  const [collabLockMinutes, setCollabLockMinutes] = useState('');
+  const [metaSavedKey, setMetaSavedKey] = useState('');
 
   const refresh = async () => {
     try {
       setBusy(true);
-      const [h, db] = await Promise.all([
+      const [h, db, m] = await Promise.all([
         tgApi.health(),
         tgApi.checkDb().catch(e => ({ ok: false, error: e.message })),
+        tgApi.getMeta().catch(() => ({ meta: {} })),
       ]);
       setHealth(h);
       setDbCheck(db);
+      setMinConfirmations(m?.meta?.min_confirmations || '3');
+      setCollabLockMinutes(m?.meta?.collab_lock_minutes || '30');
     } catch {
       setHealth(null);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const saveMeta = async (key: string, value: string) => {
+    setMetaSavedKey('');
+    try {
+      await tgApi.setMeta(key, value);
+      setMetaSavedKey(key);
+      setTimeout(() => setMetaSavedKey(c => (c === key ? '' : c)), 2000);
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
     }
   };
 
@@ -284,6 +302,52 @@ const SetupView: React.FC = () => {
           </p>
         </section>
       )}
+
+      {/* Collaborative-режим: налаштування */}
+      <section className="border rounded p-3 bg-slate-50 space-y-3 text-sm">
+        <div className="font-medium">Колективний режим (collaborative)</div>
+        <div className="text-xs text-slate-600">
+          Параметри діють лише для справ, завантажених у колективному режимі. Зміни застосовуються миттєво для всіх нових подій.
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="w-56">Мін. підтверджень для закриття:</label>
+          <input
+            type="number"
+            min={1}
+            value={minConfirmations}
+            onChange={e => setMinConfirmations(e.target.value)}
+            className="border rounded px-2 py-1 w-20 text-sm"
+          />
+          <button
+            onClick={() => saveMeta('min_confirmations', minConfirmations)}
+            className="px-3 py-1 bg-indigo-600 text-white rounded text-xs"
+          >
+            Зберегти
+          </button>
+          {metaSavedKey === 'min_confirmations' && (
+            <span className="text-green-600 text-xs">✓ збережено</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="w-56">Тривалість блокування (хв):</label>
+          <input
+            type="number"
+            min={1}
+            value={collabLockMinutes}
+            onChange={e => setCollabLockMinutes(e.target.value)}
+            className="border rounded px-2 py-1 w-20 text-sm"
+          />
+          <button
+            onClick={() => saveMeta('collab_lock_minutes', collabLockMinutes)}
+            className="px-3 py-1 bg-indigo-600 text-white rounded text-xs"
+          >
+            Зберегти
+          </button>
+          {metaSavedKey === 'collab_lock_minutes' && (
+            <span className="text-green-600 text-xs">✓ збережено</span>
+          )}
+        </div>
+      </section>
 
       {msg && <div className="text-sm">{msg}</div>}
     </div>
@@ -417,6 +481,9 @@ type Box = {
   // Якщо у кількох зон однаковий groupId — це частини однієї справи (можливо на різних сторінках),
   // які при завантаженні склеюються в одне зображення і одну справу.
   groupId: string;
+  // Порядок у групі для склеювання (визначається порядком виділення при merge).
+  // Менше число = вище у склеєному зображенні. Для одиночних зон не використовується.
+  groupOrder?: number;
 };
 
 const newId = () =>
@@ -528,6 +595,8 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const [archive, setArchive] = useState('');
   const [fund, setFund] = useState('');
   const [opys, setOpys] = useState('');
+  // Режим обробки для всієї пачки. Фіксується при завантаженні справи.
+  const [batchMode, setBatchMode] = useState<'parallel' | 'collaborative'>('parallel');
   // Діапазон сторінок для авто-розпізнавання. Порожньо → поточна сторінка.
   const [autoRange, setAutoRange] = useState('');
   const [autoProgress, setAutoProgress] = useState<{ done: number; total: number; page?: number } | null>(null);
@@ -1187,7 +1256,14 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       map.set(item.box.groupId, arr);
     }
     for (const arr of map.values()) {
-      arr.sort((a, b) => a.page - b.page || a.box.y - b.box.y);
+      // Якщо груповий порядок заданий явно (merge зробив користувач) — використовуємо його.
+      // Інакше — fallback на геометричний порядок (page, y).
+      arr.sort((a, b) => {
+        const oa = a.box.groupOrder ?? -1;
+        const ob = b.box.groupOrder ?? -1;
+        if (oa !== ob && oa >= 0 && ob >= 0) return oa - ob;
+        return a.page - b.page || a.box.y - b.box.y;
+      });
     }
     return map;
   })();
@@ -1198,7 +1274,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const mergeSelected = () => {
     if (selectedIds.size < 2) return;
     // Як спільний groupId беремо groupId першої виділеної зони.
-    const firstId = [...selectedIds][0];
+    // Порядок виділення задає порядок склеювання: перша зверху.
+    const orderedIds = [...selectedIds];
+    const firstId = orderedIds[0];
     let target = '';
     for (const arr of Object.values(pageBoxes) as Box[][]) {
       const found = arr.find(b => b.id === firstId);
@@ -1208,10 +1286,15 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       }
     }
     if (!target) return;
+    const orderMap = new Map<string, number>(orderedIds.map((id, i) => [id, i]));
     setPageBoxes(prev => {
       const next: Record<number, Box[]> = {};
       for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
-        next[+k] = list.map(b => (selectedIds.has(b.id) ? { ...b, groupId: target } : b));
+        next[+k] = list.map(b =>
+          selectedIds.has(b.id)
+            ? { ...b, groupId: target, groupOrder: orderMap.get(b.id) ?? 0 }
+            : b
+        );
       }
       return next;
     });
@@ -1550,6 +1633,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           archive: archive.trim(),
           fund: fund.trim(),
           opys: opys.trim(),
+          mode: batchMode,
         });
         done++;
         setUploadProgress({ done, total });
@@ -1608,6 +1692,34 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         </div>
         <div className="text-xs text-slate-500 mt-1.5">
           Усі справи з цього PDF будуть приписані до опису "{archive.trim() || '...'} {fund.trim() || '...'}-{opys.trim() || '...'}".
+        </div>
+        <div className="mt-3 pt-3 border-t border-slate-200">
+          <div className="text-xs font-medium text-slate-700 mb-1">Режим обробки для цієї пачки:</div>
+          <div className="flex flex-wrap gap-3 text-xs">
+            <label className="inline-flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                name="batchMode"
+                value="parallel"
+                checked={batchMode === 'parallel'}
+                onChange={() => setBatchMode('parallel')}
+              />
+              <span><b>Паралельний</b> — кожен юзер пише власний варіант (≥3 версії)</span>
+            </label>
+            <label className="inline-flex items-center gap-1 cursor-pointer">
+              <input
+                type="radio"
+                name="batchMode"
+                value="collaborative"
+                checked={batchMode === 'collaborative'}
+                onChange={() => setBatchMode('collaborative')}
+              />
+              <span><b>Колективний</b> — один варіант, інші підтверджують/редагують</span>
+            </label>
+          </div>
+          <div className="text-xs text-slate-500 mt-1">
+            Режим фіксується при завантаженні справи. Поточні справи в БД не змінюються.
+          </div>
         </div>
       </section>
 
@@ -2108,8 +2220,9 @@ const ResultsView: React.FC = () => {
 
   const buildHeaders = (questions: any[]) => [
     'submitted_at',
-    'display_name',
-    'tg_id',
+    'Тип',
+    'Автор',
+    'Перевірили',
     'Опис',
     'Файл',
     'Сторінка',
@@ -2118,12 +2231,24 @@ const ResultsView: React.FC = () => {
     'source_link',
   ];
 
+  const summarizeConfirmations = (s: any): string => {
+    if (!s.is_collab) return '';
+    const list: any[] = Array.isArray(s.confirmations) ? s.confirmations : [];
+    const reviewers = list
+      .filter(x => x.kind === 'confirm' || x.kind === 'edit')
+      .map(x => `${x.display_name || x.tg_id}${x.kind === 'edit' ? ' (правка)' : ''}`);
+    const cnt = s.confirmations_count ?? 0;
+    const head = `${cnt} підтв.${s.case_status === 'done' ? ' ✓' : ''}`;
+    return reviewers.length ? `${head} • ${reviewers.join(', ')}` : head;
+  };
+
   const buildRow = (s: any, questions: any[]) => {
     const answers = Array.isArray(s.answers) ? s.answers : [];
     return [
       s.submitted_at || '',
-      s.display_name || '',
-      s.tg_id || '',
+      s.is_collab ? 'collab' : 'parallel',
+      `${s.display_name || ''}${s.tg_id ? ` (${s.tg_id})` : ''}`,
+      summarizeConfirmations(s),
       descNameOf(s),
       s.source_pdf || '',
       s.page || '',
@@ -2573,6 +2698,11 @@ interface Step2Row {
   id: string;
   isEmpty: boolean;
   answers: string[];
+  archive: string;
+  fund: string;
+  opys: string;
+  sourcePdf: string;
+  page: string;
 }
 
 // Викликає Gemini, щоб обрати найвірогідніший запис серед N варіантів однієї справи.
@@ -2976,10 +3106,21 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       const info = parseNumberCell(String(ans[numberColIdx] ?? ''));
       if (info.base != null) bases.add(info.base);
     }
+    // Архівні реквізити беремо з descKey (вони однакові для всього опису).
+    const [descArchive = '', descFund = '', descOpys = ''] = (descKey || '').split('|');
     const rows: Step2Row[] = selected.map((s, idx) => {
       const ans = Array.isArray(s.answers) ? [...s.answers] : [];
       while (ans.length < questions.length) ans.push('');
-      return { id: `r${idx}`, isEmpty: false, answers: ans.map(a => String(a ?? '')) };
+      return {
+        id: `r${idx}`,
+        isEmpty: false,
+        answers: ans.map(a => String(a ?? '')),
+        archive: String(s.archive ?? descArchive),
+        fund: String(s.fund ?? descFund),
+        opys: String(s.opys ?? descOpys),
+        sourcePdf: String(s.source_pdf ?? ''),
+        page: String(s.page ?? ''),
+      };
     });
     if (bases.size > 0) {
       const min = Math.min(...bases);
@@ -2988,7 +3129,16 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         if (!bases.has(n)) {
           const ans = Array(questions.length).fill('');
           if (numberColIdx >= 0) ans[numberColIdx] = String(n);
-          rows.push({ id: `e${n}`, isEmpty: true, answers: ans });
+          rows.push({
+            id: `e${n}`,
+            isEmpty: true,
+            answers: ans,
+            archive: descArchive,
+            fund: descFund,
+            opys: descOpys,
+            sourcePdf: '',
+            page: '',
+          });
         }
       }
     }
@@ -3010,9 +3160,23 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     );
   };
 
+  const updateMetaCell = (rowIdx: number, field: 'archive' | 'fund' | 'opys' | 'sourcePdf' | 'page', value: string) => {
+    setStep2Rows(prev => prev.map((r, i) => (i === rowIdx ? { ...r, [field]: value } : r)));
+  };
+
+  const META_COLS: Array<{ key: 'archive' | 'fund' | 'opys' | 'sourcePdf' | 'page'; label: string }> = [
+    { key: 'archive', label: 'Архів' },
+    { key: 'fund', label: 'Фонд' },
+    { key: 'opys', label: 'Опис' },
+    { key: 'sourcePdf', label: 'Файл' },
+    { key: 'page', label: 'Сторінка' },
+  ];
+
   const exportCsv = () => {
     if (questions.length === 0) return;
-    const headers = questions.map((q: any, i: number) => q.label || `Q${i + 1}`);
+    const qHeaders = questions.map((q: any, i: number) => q.label || `Q${i + 1}`);
+    const metaHeaders = META_COLS.map(c => c.label);
+    const headers = [...qHeaders, ...metaHeaders];
     // Сортуємо ще раз — користувач міг змінити номери в Кроці 2.
     const sorted = [...step2Rows].sort((a, b) =>
       compareNumberInfo(
@@ -3020,7 +3184,10 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         parseNumberCell(b.answers[numberColIdx] || '')
       )
     );
-    const rows = sorted.map(r => headers.map((_, i) => r.answers[i] ?? ''));
+    const rows = sorted.map(r => [
+      ...qHeaders.map((_, i) => r.answers[i] ?? ''),
+      ...META_COLS.map(c => (r as any)[c.key] ?? ''),
+    ]);
     const all = [headers, ...rows];
     const escape = (v: any) => {
       const s = String(v ?? '');
@@ -3319,6 +3486,11 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                       {i === numberColIdx ? ' №' : ''}
                     </th>
                   ))}
+                  {META_COLS.map(c => (
+                    <th key={c.key} className="text-left p-2 border-b whitespace-nowrap text-slate-600">
+                      {c.label}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -3331,6 +3503,16 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                           onChange={e => updateCell(ri, qi, e.target.value)}
                           rows={1}
                           className="w-full border rounded px-1.5 py-1 text-xs resize-y bg-white"
+                        />
+                      </td>
+                    ))}
+                    {META_COLS.map(c => (
+                      <td key={c.key} className="p-1 align-top">
+                        <textarea
+                          value={(r as any)[c.key] ?? ''}
+                          onChange={e => updateMetaCell(ri, c.key, e.target.value)}
+                          rows={1}
+                          className="w-full border rounded px-1.5 py-1 text-xs resize-y bg-slate-50"
                         />
                       </td>
                     ))}

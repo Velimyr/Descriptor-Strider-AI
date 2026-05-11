@@ -59,7 +59,11 @@ export const tgApi = {
     archive: string;
     fund: string;
     opys: string;
+    mode?: 'parallel' | 'collaborative';
   }) => call('/admin/upload-case', { method: 'POST', body: JSON.stringify(payload) }),
+  getMeta: () => call('/admin/meta'),
+  setMeta: (key: string, value: string) =>
+    call('/admin/meta', { method: 'POST', body: JSON.stringify({ key, value }) }),
   detectBoxes: (imageBase64: string, mime: string, apiKey: string) =>
     call('/admin/detect-bboxes', {
       method: 'POST',

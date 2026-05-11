@@ -8,13 +8,14 @@ let cachedClient: SupabaseClient | null = null;
 // Для staging-контуру задається TABLE_PREFIX=botdev_ (окремий набір таблиць у тій самій БД).
 const PREFIX = process.env.TABLE_PREFIX ?? 'bot_';
 export const T = {
-  users:       `${PREFIX}users`,
-  cases:       `${PREFIX}cases`,
-  sessions:    `${PREFIX}sessions`,
-  meta:        `${PREFIX}meta`,
-  submissions: `${PREFIX}submissions`,
-  daily:       `${PREFIX}daily_scores`,
-  skipped:     `${PREFIX}skipped`,
+  users:             `${PREFIX}users`,
+  cases:             `${PREFIX}cases`,
+  sessions:          `${PREFIX}sessions`,
+  meta:              `${PREFIX}meta`,
+  submissions:       `${PREFIX}submissions`,
+  daily:             `${PREFIX}daily_scores`,
+  skipped:           `${PREFIX}skipped`,
+  caseConfirmations: `${PREFIX}case_confirmations`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 
@@ -64,6 +65,14 @@ export interface BotCase {
   submissionsCount: number;
   status: 'open' | 'done';
   createdAt: string;
+  // Collab-режим (опціонально, для нових справ).
+  mode: 'parallel' | 'collaborative';
+  currentAnswers: string[];
+  currentAuthorTgId: string;
+  confirmationsCount: number;
+  lockedByTgId: string;
+  lockedUntil: string; // ISO або '' якщо не лочена
+  updatedAt: string;   // оновлюється при collab-подіях
 }
 
 export interface BotSession {
@@ -74,7 +83,7 @@ export interface BotSession {
   currentQ: number;
   startedAt: string;
   updatedAt: string;
-  state: 'asking' | 'confirming' | 'editing';
+  state: 'asking' | 'confirming' | 'editing' | 'previewing';
 }
 
 // Маперивчасть тут — нижче є мапери row → доменна модель.
@@ -94,6 +103,7 @@ function mapUser(r: any): BotUser {
 }
 
 function mapCase(r: any): BotCase {
+  const ca = r.current_answers;
   return {
     rowIndex: 0,
     caseId: r.case_id,
@@ -110,6 +120,13 @@ function mapCase(r: any): BotCase {
     submissionsCount: r.submissions_count || 0,
     status: (r.status || 'open') as 'open' | 'done',
     createdAt: r.created_at || '',
+    mode: (r.mode || 'parallel') as 'parallel' | 'collaborative',
+    currentAnswers: Array.isArray(ca) ? ca.map(String) : [],
+    currentAuthorTgId: r.current_author_tg_id || '',
+    confirmationsCount: r.confirmations_count || 0,
+    lockedByTgId: r.locked_by_tg_id || '',
+    lockedUntil: r.locked_until || '',
+    updatedAt: r.updated_at || r.created_at || '',
   };
 }
 
@@ -122,7 +139,7 @@ function mapSession(r: any): BotSession {
     currentQ: r.current_q || 0,
     startedAt: r.started_at || '',
     updatedAt: r.updated_at || '',
-    state: (r.state || 'asking') as 'asking' | 'confirming' | 'editing',
+    state: (r.state || 'asking') as 'asking' | 'confirming' | 'editing' | 'previewing',
   };
 }
 
@@ -233,6 +250,7 @@ export async function appendCases(items: Omit<BotCase, 'rowIndex'>[]) {
       sprava: c.sprava,
       submissions_count: c.submissionsCount,
       status: c.status,
+      mode: c.mode || 'parallel',
       ...(c.createdAt ? { created_at: c.createdAt } : {}),
     }))
   );
@@ -420,5 +438,234 @@ export async function getRecentSubmissions(limit = 100) {
     .limit(limit);
   if (error) throw error;
   return data || [];
+}
+
+// ---------- COLLABORATIVE MODE ----------
+// Видача справи юзеру: лочимо на lockMinutes хвилин.
+export async function lockCase(caseId: string, tgId: string, lockMinutes: number): Promise<void> {
+  const until = new Date(Date.now() + lockMinutes * 60_000).toISOString();
+  const { error } = await db()
+    .from(T.cases)
+    .update({ locked_by_tg_id: tgId, locked_until: until })
+    .eq('case_id', caseId);
+  if (error) throw error;
+}
+
+// Зняти блокування (юзер завершив дію або відмовився).
+export async function unlockCase(caseId: string): Promise<void> {
+  const { error } = await db()
+    .from(T.cases)
+    .update({ locked_by_tg_id: '', locked_until: null })
+    .eq('case_id', caseId);
+  if (error) throw error;
+}
+
+// Записати участь юзера у справі. UNIQUE (case_id, tg_id) — якщо є, просто апдейт kind/at.
+export async function recordCaseEvent(
+  caseId: string,
+  tgId: string,
+  kind: 'create' | 'edit' | 'confirm'
+): Promise<void> {
+  const { error } = await db()
+    .from(T.caseConfirmations)
+    .upsert(
+      { case_id: caseId, tg_id: tgId, kind, at: new Date().toISOString() },
+      { onConflict: 'case_id,tg_id' }
+    );
+  if (error) throw error;
+}
+
+// Список case_id, до яких юзер уже доторкався (для виключення з dispatch).
+export async function getTouchedCaseIds(tgId: string): Promise<string[]> {
+  const { data, error } = await db()
+    .from(T.caseConfirmations)
+    .select('case_id')
+    .eq('tg_id', tgId);
+  if (error) throw error;
+  return (data || []).map((r: any) => r.case_id);
+}
+
+// Остання дія юзера у collab (для чергування create/review при наступному dispatch).
+export async function getLastUserCaseKind(
+  tgId: string
+): Promise<'create' | 'edit' | 'confirm' | null> {
+  const { data, error } = await db()
+    .from(T.caseConfirmations)
+    .select('kind, at')
+    .eq('tg_id', tgId)
+    .order('at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return ((data as any)?.kind as any) || null;
+}
+
+// Чи юзер уже брав участь у цій справі.
+export async function hasUserTouchedCase(caseId: string, tgId: string): Promise<boolean> {
+  const { data, error } = await db()
+    .from(T.caseConfirmations)
+    .select('case_id')
+    .eq('case_id', caseId)
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
+// Зберегти ПЕРШУ версію (creation): встановити current_answers, current_author, count = 1.
+export async function setCaseCreated(
+  caseId: string,
+  authorTgId: string,
+  answers: string[]
+): Promise<void> {
+  const { error } = await db()
+    .from(T.cases)
+    .update({
+      current_answers: answers,
+      current_author_tg_id: authorTgId,
+      confirmations_count: 1,
+      locked_by_tg_id: '',
+      locked_until: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('case_id', caseId);
+  if (error) throw error;
+}
+
+// Edit: замінити відповіді, скинути лічильник до 1 (редактор неявно підтверджує).
+// bot_case_confirmations НЕ чистимо (попередні юзери не отримають справу повторно).
+export async function setCaseEdited(
+  caseId: string,
+  editorTgId: string,
+  answers: string[]
+): Promise<void> {
+  const { error } = await db()
+    .from(T.cases)
+    .update({
+      current_answers: answers,
+      current_author_tg_id: editorTgId,
+      confirmations_count: 1,
+      locked_by_tg_id: '',
+      locked_until: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('case_id', caseId);
+  if (error) throw error;
+}
+
+// Підтвердження: атомарно інкрементує лічильник, повертає нове значення.
+// Закриває справу, якщо досягнуто minConfirmations.
+export async function confirmCase(
+  caseId: string,
+  minConfirmations: number
+): Promise<{ count: number; closed: boolean }> {
+  // Читаємо поточне значення, рахуємо, апдейтимо. Коротка race-window прийнятна
+  // для швидкості бота — справу все одно тримає лок.
+  const cur = await getCase(caseId);
+  if (!cur) throw new Error(`Case not found: ${caseId}`);
+  const next = cur.confirmationsCount + 1;
+  const closed = next >= minConfirmations;
+  const { error } = await db()
+    .from(T.cases)
+    .update({
+      confirmations_count: next,
+      locked_by_tg_id: '',
+      locked_until: null,
+      updated_at: new Date().toISOString(),
+      ...(closed ? { status: 'done' } : {}),
+    })
+    .eq('case_id', caseId);
+  if (error) throw error;
+  return { count: next, closed };
+}
+
+// Усі collab-справи в межах опису (для експорту як "віртуальні submissions").
+export async function getCollabCasesByDescription(
+  archive: string,
+  fund: string,
+  opys: string
+): Promise<BotCase[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: BotCase[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.cases)
+      .select('*')
+      .eq('archive', archive)
+      .eq('fund', fund)
+      .eq('opys', opys)
+      .eq('mode', 'collaborative')
+      .order('updated_at', { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(...rows.map(mapCase));
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
+// Останні collab-справи по даті створення (для глобального overview).
+export async function getRecentCollabCases(limit = 100): Promise<BotCase[]> {
+  const { data, error } = await db()
+    .from(T.cases)
+    .select('*')
+    .eq('mode', 'collaborative')
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map(mapCase);
+}
+
+// Map tg_id → display_name. Для денормалізації collab-справ при експорті.
+export async function getDisplayNamesMap(tgIds: string[]): Promise<Record<string, string>> {
+  const unique = [...new Set(tgIds.filter(Boolean))];
+  if (unique.length === 0) return {};
+  const { data, error } = await db().from(T.users).select('tg_id, display_name').in('tg_id', unique);
+  if (error) throw error;
+  const m: Record<string, string> = {};
+  for (const r of data || []) m[(r as any).tg_id] = (r as any).display_name || '';
+  return m;
+}
+
+// Усі рядки confirmations для заданого набору case_id (для адмін-перегляду).
+export async function getConfirmationsForCases(
+  caseIds: string[]
+): Promise<Array<{ caseId: string; tgId: string; kind: 'create' | 'edit' | 'confirm'; at: string }>> {
+  if (caseIds.length === 0) return [];
+  // Пагінуємо на випадок великого опису.
+  const out: Array<{ caseId: string; tgId: string; kind: any; at: string }> = [];
+  const chunkSize = 500;
+  for (let i = 0; i < caseIds.length; i += chunkSize) {
+    const chunk = caseIds.slice(i, i + chunkSize);
+    const { data, error } = await db()
+      .from(T.caseConfirmations)
+      .select('case_id, tg_id, kind, at')
+      .in('case_id', chunk);
+    if (error) throw error;
+    for (const r of data || []) {
+      out.push({
+        caseId: (r as any).case_id,
+        tgId: (r as any).tg_id,
+        kind: (r as any).kind,
+        at: (r as any).at,
+      });
+    }
+  }
+  return out;
+}
+
+// Прострочені блокування — на випадок ручної очистки (бот і так враховує locked_until).
+export async function clearExpiredLocks(): Promise<number> {
+  const { data, error } = await db()
+    .from(T.cases)
+    .update({ locked_by_tg_id: '', locked_until: null })
+    .lt('locked_until', new Date().toISOString())
+    .select('case_id');
+  if (error) throw error;
+  return (data || []).length;
 }
 

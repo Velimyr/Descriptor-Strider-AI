@@ -4,6 +4,7 @@ import {
   appendSubmission,
   BotSession,
   BotUser,
+  BotCase,
   deleteSession,
   getAllUsers,
   getCase,
@@ -18,6 +19,14 @@ import {
   getDailyCount,
   getResultsTotals,
   getAllCases,
+  // Collab helpers
+  lockCase,
+  unlockCase,
+  recordCaseEvent,
+  hasUserTouchedCase,
+  setCaseCreated,
+  setCaseEdited,
+  confirmCase,
 } from './storage.js';
 import {
   answerCallbackQuery,
@@ -125,17 +134,18 @@ function helpBackKeyboard(): any {
   };
 }
 
-function keyboardForQuestion(qIndex: number): any {
+function keyboardForQuestion(qIndex: number, hasPrefill = false): any {
   // Skip-кнопка в окремий ряд — її текст довгий і обрізається коли вона поряд з іншими.
   const navRow: any[] = [];
   if (qIndex > 0) navRow.push({ text: T.backButton, callback_data: 'back' });
   navRow.push({ text: T.cancelButton, callback_data: 'cancel' });
-  return {
-    inline_keyboard: [
-      [{ text: T.fieldEmptyButton, callback_data: 'skip' }],
-      navRow,
-    ],
-  };
+  const rows: any[] = [];
+  if (hasPrefill) {
+    rows.push([{ text: '✅ Залишити поточну', callback_data: `keep:${qIndex}` }]);
+  }
+  rows.push([{ text: T.fieldEmptyButton, callback_data: 'skip' }]);
+  rows.push(navRow);
+  return { inline_keyboard: rows };
 }
 
 // Reply-клавіатура головного меню (внизу екрана). Pause/Resume — динамічно.
@@ -180,6 +190,32 @@ function keyboardForEdit(questions: TableColumn[]): any {
 function buildSummary(questions: TableColumn[], answers: string[]): string {
   const lines = questions.map((q, i) => `<b>${escapeHtml(q.label)}</b>: ${escapeHtml(answers[i] ?? '—')}`);
   return `${T.confirmHeader}\n\n${lines.join('\n')}`;
+}
+
+// --------- Collaborative mode helpers ---------
+
+// Клавіатура екрану перегляду чужого варіанту: підтвердити / редагувати / пропустити.
+function keyboardForCollabPreview(): any {
+  return {
+    inline_keyboard: [
+      [
+        { text: T.confirmButton, callback_data: 'collab:confirm' },
+        { text: T.editButton, callback_data: 'collab:edit' },
+      ],
+      [{ text: T.cancelButton, callback_data: 'collab:cancel' }],
+    ],
+  };
+}
+
+async function getMinConfirmations(): Promise<number> {
+  const raw = await getMeta('min_confirmations');
+  const n = parseInt(raw || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 3;
+}
+async function getCollabLockMinutes(): Promise<number> {
+  const raw = await getMeta('collab_lock_minutes');
+  const n = parseInt(raw || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : 30;
 }
 
 // --------- main handler ---------
@@ -310,6 +346,15 @@ async function handleMessage(msg: any) {
       } catch (e) {
         console.error('recordSkippedCase failed', e);
       }
+      // Збити лок, якщо collab.
+      try {
+        const cse = await getCase(session.caseId);
+        if (cse?.mode === 'collaborative' && cse.lockedByTgId === tgId) {
+          await unlockCase(session.caseId);
+        }
+      } catch (e) {
+        console.error('unlockCase failed', e);
+      }
     }
     const had = await deleteSession(tgId);
     await sendMessage(chatId, had ? T.cancelled : T.nothingToCancel, {
@@ -432,9 +477,65 @@ async function handleCallback(cb: any) {
       } catch (e) {
         console.error('recordSkippedCase failed', e);
       }
+      // Якщо collab-справа була залочена за цим юзером — звільняємо.
+      try {
+        const cse = await getCase(session.caseId);
+        if (cse?.mode === 'collaborative' && cse.lockedByTgId === tgId) {
+          await unlockCase(session.caseId);
+        }
+      } catch (e) {
+        console.error('unlockCase failed', e);
+      }
     }
     await deleteSession(tgId);
     await sendMessage(chatId, T.cancelled);
+    return;
+  }
+
+  // ----- Collaborative mode preview buttons -----
+  if (data === 'collab:cancel') {
+    if (session.caseId) {
+      try { await recordSkippedCase(tgId, session.caseId); } catch (e) { console.error(e); }
+      try { await unlockCase(session.caseId); } catch (e) { console.error(e); }
+    }
+    await deleteSession(tgId);
+    await sendMessage(chatId, T.cancelled);
+    return;
+  }
+
+  if (data === 'collab:confirm') {
+    if (!session.caseId) { await sendMessage(chatId, T.sessionExpired); return; }
+    const ack = await sendMessage(chatId, T.savingNotice);
+    await collabConfirm(chatId, tgId, session.caseId, ack?.message_id);
+    return;
+  }
+
+  if (data === 'collab:edit') {
+    if (!session.caseId) { await sendMessage(chatId, T.sessionExpired); return; }
+    // Фіксуємо намір редагувати: записуємо edit-подію зараз.
+    try { await recordCaseEvent(session.caseId, tgId, 'edit'); } catch (e) { console.error(e); }
+    // Переходимо у 'confirming' (щоб після зміни поля повертатись у summary з [Підтвердити]),
+    // і одразу показуємо список полів для вибору.
+    const next: BotSession = {
+      ...session,
+      state: 'confirming',
+      updatedAt: nowIsoUtc(),
+    };
+    await Promise.all([
+      setSession(next, session.rowIndex),
+      sendMessage(chatId, 'Оберіть питання для редагування:', {
+        reply_markup: keyboardForEdit(questions),
+      }),
+    ]);
+    return;
+  }
+
+  // "Залишити поточну" — користувач погоджується з prefilled відповіддю.
+  // Поведінка ідентична набору цього самого тексту вручну.
+  if (data.startsWith('keep:')) {
+    const idx = parseInt(data.split(':')[1], 10) || 0;
+    const current = answers[idx] ?? '';
+    await processAnswer(chatId, tgId, session, current);
     return;
   }
 
@@ -515,7 +616,7 @@ async function handleCallback(cb: any) {
     const next: BotSession = { ...session, currentQ: idx, state: 'editing', updatedAt: nowIsoUtc() };
     await Promise.all([
       setSession(next, session.rowIndex),
-      askQuestion(chatId, questions, idx),
+      askQuestion(chatId, questions, idx, answers[idx]),
     ]);
     return;
   }
@@ -543,6 +644,14 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
         sendMessage(chatId, T.sessionAlreadyOpen),
         sendMessage(chatId, buildSummary(questions, answers), {
           reply_markup: keyboardForConfirm(),
+        }),
+      ]);
+    } else if (existing.state === 'previewing') {
+      const answers: string[] = JSON.parse(existing.answersJson || '[]');
+      await Promise.all([
+        sendMessage(chatId, T.sessionAlreadyOpen),
+        sendMessage(chatId, buildSummary(questions, answers), {
+          reply_markup: keyboardForCollabPreview(),
         }),
       ]);
     } else {
@@ -669,12 +778,13 @@ export async function dispatchCaseToUser(
   tgId: string,
   // ignorePaused=true — ручний виклик (кнопка «Нова справа») іґнорує статус paused.
   // Опція «Зупинити розсилку» — тільки для авторозсилок за розкладом.
-  ignorePaused = false
+  ignorePaused = false,
+  preloadedCases?: BotCase[]
 ): Promise<boolean> {
   // Паралельні незалежні читання.
   const [user, next, questions] = await Promise.all([
     getUser(tgId),
-    selectNextCaseForUser(tgId),
+    selectNextCaseForUser(tgId, preloadedCases),
     getQuestions(),
   ]);
   console.log('[dispatch]', { tgId, userStatus: user?.status, ignorePaused, hasNext: !!next, nextCaseId: next?.caseId, questions: questions.length });
@@ -687,10 +797,44 @@ export async function dispatchCaseToUser(
   if (questions.length === 0) return false;
 
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
-  // Telegram гарантує порядок доставки тільки для послідовних API-викликів.
   await sendPhotoByFileId(tgId, next.tgFileId, `Документ №${next.caseId.slice(0, 8)}`);
 
-  // Решта побічних дій — паралельно (питання має йти ПІСЛЯ фото).
+  console.log('[dispatch.next]', {
+    caseId: next.caseId,
+    mode: next.mode,
+    confirmationsCount: next.confirmationsCount,
+    rawKeys: Object.keys(next),
+  });
+  // ----- Collab-режим: якщо вже є current версія, показуємо preview замість опитування. -----
+  if (next.mode === 'collaborative' && next.confirmationsCount > 0) {
+    const lockMinutes = await getCollabLockMinutes();
+    await lockCase(next.caseId, tgId, lockMinutes);
+    const summary = buildSummary(questions, next.currentAnswers);
+    await Promise.all([
+      setSession({
+        tgId,
+        caseId: next.caseId,
+        // У previewing зберігаємо current_answers, щоб edit міг почати з них.
+        answersJson: JSON.stringify(next.currentAnswers),
+        currentQ: 0,
+        startedAt: nowIsoUtc(),
+        updatedAt: nowIsoUtc(),
+        state: 'previewing',
+      }),
+      upsertUser(
+        { ...user, lastDispatchedCaseId: next.caseId, lastDispatchedAt: nowIsoUtc() },
+        user.rowIndex
+      ),
+      sendMessage(tgId, summary, { reply_markup: keyboardForCollabPreview() }),
+    ]);
+    return true;
+  }
+
+  // ----- Звичайний flow (parallel або collab без current версії — creation). -----
+  if (next.mode === 'collaborative') {
+    const lockMinutes = await getCollabLockMinutes();
+    await lockCase(next.caseId, tgId, lockMinutes);
+  }
   await Promise.all([
     setSession({
       tgId,
@@ -723,20 +867,39 @@ export async function sendScheduledGreeting(tgId: string): Promise<void> {
   await sendMessage(tgId, greeting);
 }
 
-async function askQuestion(chatId: number | string, questions: TableColumn[], index: number) {
+async function askQuestion(
+  chatId: number | string,
+  questions: TableColumn[],
+  index: number,
+  prefilledAnswer?: string
+) {
   const q = questions[index];
   if (!q) {
     console.warn('[askQuestion] no question at index', { chatId, index, total: questions.length });
     return;
   }
+  const hasPrefill = !!(prefilledAnswer && prefilledAnswer.trim());
   await sendMessage(chatId, questionPromptText(q, index, questions.length), {
-    reply_markup: keyboardForQuestion(index),
+    reply_markup: keyboardForQuestion(index, hasPrefill),
   });
+  if (hasPrefill) {
+    // Підказка для копіювання + сама поточна відповідь окремим повідомленням
+    // (на мобілці long-press → Copy → вставити у поле і відредагувати).
+    await sendMessage(
+      chatId,
+      '💡 Поточна відповідь нижче. Затисніть її → Скопіювати → вставте у поле вводу і відредагуйте. Або тисніть «Залишити поточну» щоб не міняти.'
+    );
+    await sendMessage(chatId, prefilledAnswer!);
+  }
 }
 
 async function processAnswer(chatId: number, tgId: string, session: BotSession, text: string) {
   if (session.state === 'confirming') {
     await sendMessage(chatId, 'Натисніть кнопку Підтвердити або Виправити.');
+    return;
+  }
+  if (session.state === 'previewing') {
+    await sendMessage(chatId, 'Натисніть Підтвердити, Редагувати або Скасувати.');
     return;
   }
 
@@ -817,6 +980,17 @@ async function confirmAndSubmit(
     return;
   }
 
+  console.log('[confirmAndSubmit] case', {
+    caseId: cse.caseId,
+    mode: cse.mode,
+    confirmationsCount: cse.confirmationsCount,
+    hasMode: 'mode' in cse,
+  });
+  // Collab-режим: розгалуження на create vs edit.
+  if (cse.mode === 'collaborative') {
+    return collabSubmit(chatId, tgId, cse, user, questions, answers, ackMessageId);
+  }
+
   const sourceLinkEnabled = telegramBotConfig.sheets.sourceLink.mode !== 'none';
   const sourceLink = sourceLinkEnabled ? buildSourceLink(cse) : '';
 
@@ -883,6 +1057,101 @@ async function confirmAndSubmit(
   if (tierMsg) {
     await sendMessage(chatId, tierMsg);
   }
+}
+
+// ----- Collaborative submit: спільна логіка для create і edit. -----
+// Викликається з confirmAndSubmit коли case.mode === 'collaborative'.
+// Розрізняє create vs edit по тому, чи юзер уже фігурує в bot_case_confirmations
+// (collab:edit вписує 'edit' одразу при натисканні; для creation запису ще немає).
+async function collabSubmit(
+  chatId: number,
+  tgId: string,
+  cse: BotCase,
+  user: BotUser,
+  questions: TableColumn[],
+  answers: string[],
+  ackMessageId?: number
+) {
+  const finalAnswers = questions.map((_, i) => answers[i] ?? '');
+  const alreadyEdit = await hasUserTouchedCase(cse.caseId, tgId);
+
+  if (alreadyEdit) {
+    // EDIT: оновлюємо current_answers, скидаємо лічильник до 1.
+    await setCaseEdited(cse.caseId, tgId, finalAnswers);
+    // recordCaseEvent('edit') вже зроблено при натисканні collab:edit.
+  } else {
+    // CREATE: перша версія справи.
+    await Promise.all([
+      setCaseCreated(cse.caseId, tgId, finalAnswers),
+      recordCaseEvent(cse.caseId, tgId, 'create'),
+    ]);
+  }
+
+  // Розпізнавання (create) — 3 бали база; редагування — 1 (це перевірка з правкою).
+  const actionBase = alreadyEdit ? 1 : 3;
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase);
+  await deleteSession(tgId);
+}
+
+// Обробка натискання "Підтвердити" на preview.
+async function collabConfirm(
+  chatId: number,
+  tgId: string,
+  caseId: string,
+  ackMessageId?: number
+) {
+  const [user, cse] = await Promise.all([getUser(tgId), getCase(caseId)]);
+  if (!user) return;
+  if (!cse) {
+    await sendMessage(chatId, 'Справу видалено. Скасовано.');
+    await deleteSession(tgId);
+    return;
+  }
+  const min = await getMinConfirmations();
+  await recordCaseEvent(caseId, tgId, 'confirm');
+  const { closed } = await confirmCase(caseId, min);
+  // Перевірка — 1 бал база.
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1);
+  await deleteSession(tgId);
+}
+
+// Спільна частина для collab create/edit/confirm: бали, повідомлення.
+async function deliverCollabPoints(
+  chatId: number,
+  tgId: string,
+  user: BotUser,
+  ackMessageId: number | undefined,
+  closed: boolean,
+  actionBase: number
+) {
+  const today = kyivDateString();
+  const todayCount = await incDailyCount(tgId, today);
+  const pts = computePointsForToday(todayCount, actionBase);
+  const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1, actionBase) : { multiplier: 1 };
+  const newTotal = Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100;
+
+  const cfgPts = telegramBotConfig.points;
+  const tierMsgs = telegramBotConfig.tierMessages;
+  let tierMsg: string | undefined;
+  const reachedTier2 = pts.multiplier === cfgPts.tier2.multiplier;
+  const reachedTier1Now =
+    pts.multiplier === cfgPts.tier1.multiplier && prevPts.multiplier !== cfgPts.tier1.multiplier;
+  if (reachedTier2) tierMsg = pickRandom(tierMsgs.tier2);
+  else if (reachedTier1Now) tierMsg = pickRandom(tierMsgs.tier1);
+
+  const finalText =
+    fmt(T.pointsEarned, { points: pts.pointsEarned, todayCount, total: newTotal }) +
+    (closed ? '\n\n✅ Справу зведено — дякую за допомогу!' : '');
+
+  await Promise.all([
+    upsertUser({ ...user, totalPoints: newTotal, consecutiveMisses: 0 }, user.rowIndex),
+    ackMessageId
+      ? editMessageText(chatId, ackMessageId, finalText)
+          .catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))
+      : sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }),
+  ]);
+
+  if (tierMsg) await sendMessage(chatId, tierMsg);
 }
 
 function buildSourceLink(cse: any): string {

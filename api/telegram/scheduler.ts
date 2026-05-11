@@ -4,8 +4,10 @@ import {
   BotUser,
   countSubmissionsByCase,
   getAllCases,
+  getLastUserCaseKind,
   getSkippedForUser,
   getSubmissionsForUser,
+  getTouchedCaseIds,
   patchCase,
 } from './storage.js';
 
@@ -46,37 +48,67 @@ function buildDescriptionOrder(cases: BotCase[]): Map<string, string> {
   return order;
 }
 
-export async function selectNextCaseForUser(tgId: string): Promise<BotCase | null> {
-  const [allCases, seenIds, skippedIds] = await Promise.all([
-    getAllCases(),
+export async function selectNextCaseForUser(
+  tgId: string,
+  preloadedCases?: BotCase[]
+): Promise<BotCase | null> {
+  const [allCases, seenIds, skippedIds, touchedIds, lastKind] = await Promise.all([
+    preloadedCases ? Promise.resolve(preloadedCases) : getAllCases(),
     getSubmissionsForUser(tgId),
     getSkippedForUser(tgId),
+    getTouchedCaseIds(tgId), // collab: справи, де юзер уже брав участь
+    getLastUserCaseKind(tgId), // collab: остання дія юзера (для чергування)
   ]);
-  // "Бачені" = підтверджені АБО відмовлені — і ті, і ті повторно не показуємо.
-  const seen = new Set([...seenIds, ...skippedIds]);
-  const target = cfg.cases.targetSubmissions;
+  // "Бачені" = підтверджені АБО відмовлені АБО участь у collab — повторно не показуємо.
+  const seen = new Set([...seenIds, ...skippedIds, ...touchedIds]);
+  const targetParallel = cfg.cases.targetSubmissions;
   const descOrder = buildDescriptionOrder(allCases);
+  const nowMs = Date.now();
 
-  // Сортування: спочатку за віком опису (найстаріший — першим),
-  // потім всередині опису — спершу майже-готові, далі за датою створення справи.
+  const isAvailable = (c: BotCase): boolean => {
+    if (c.status !== 'open') return false;
+    if (seen.has(c.caseId)) return false;
+    // Collab-режим: пропускаємо заблоковані іншим юзером (поки лок не сплив).
+    if (c.mode === 'collaborative' && c.lockedUntil && c.lockedByTgId && c.lockedByTgId !== tgId) {
+      const exp = Date.parse(c.lockedUntil);
+      if (Number.isFinite(exp) && exp > nowMs) return false;
+    }
+    return true;
+  };
+
+  // "Майже-готові" — сортування: для parallel за submissionsCount, для collab за confirmationsCount.
+  const progressOf = (c: BotCase): number =>
+    c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
+
   const compare = (a: BotCase, b: BotCase) => {
     const ageA = descOrder.get(descriptionKey(a)) || a.createdAt;
     const ageB = descOrder.get(descriptionKey(b)) || b.createdAt;
     if (ageA !== ageB) return ageA.localeCompare(ageB);
-    if (b.submissionsCount !== a.submissionsCount) return b.submissionsCount - a.submissionsCount;
+    const pa = progressOf(a);
+    const pb = progressOf(b);
+    if (pb !== pa) return pb - pa;
     return a.createdAt.localeCompare(b.createdAt);
   };
 
-  // Пріоритет 1: відкриті справи, не бачені, count < target.
+  // Пріоритет 1: відкриті, доступні, не досягли цілі.
   const primary = allCases
-    .filter(c => c.status === 'open' && !seen.has(c.caseId) && c.submissionsCount < target)
+    .filter(c => isAvailable(c) && progressOf(c) < targetParallel)
     .sort(compare);
-  if (primary.length > 0) return primary[0];
+  if (primary.length > 0) {
+    // Чергування для collab: якщо в пулі є і "розпізнавання" (count=0),
+    // і "перевірка" (count>0) — даємо протилежне до останньої дії юзера.
+    const collabCreate = primary.find(c => c.mode === 'collaborative' && c.confirmationsCount === 0);
+    const collabReview = primary.find(c => c.mode === 'collaborative' && c.confirmationsCount > 0);
+    if (collabCreate && collabReview) {
+      // lastKind === 'create' → юзер останнім робив розпізнавання, тепер даємо перевірку.
+      // інакше (confirm/edit/null) → даємо розпізнавання.
+      return lastKind === 'create' ? collabReview : collabCreate;
+    }
+    return primary[0];
+  }
 
-  // Пріоритет 2 (опційно): уже досягли target, але добираємо для надійності.
-  // Все одно — у порядку описів.
   if (cfg.cases.allowExtraAfterTarget) {
-    const extra = allCases.filter(c => !seen.has(c.caseId)).sort(compare);
+    const extra = allCases.filter(isAvailable).sort(compare);
     if (extra.length > 0) return extra[0];
   }
   return null;
@@ -91,14 +123,19 @@ export interface PointsResult {
 /**
  * Бал = base × multiplier(todayCount після інкременту).
  * Множник: < tier1 → 1, < tier2 → tier1.multiplier, інакше tier2.multiplier.
+ * baseOverride — для collab-режиму (3 за розпізнавання, 1 за перевірку).
  */
-export function computePointsForToday(todayCountAfterInc: number): PointsResult {
+export function computePointsForToday(
+  todayCountAfterInc: number,
+  baseOverride?: number
+): PointsResult {
   const { base, tier1, tier2 } = cfg.points;
+  const b = typeof baseOverride === 'number' ? baseOverride : base;
   let multiplier = 1;
   if (todayCountAfterInc >= tier2.thresholdInclusive) multiplier = tier2.multiplier;
   else if (todayCountAfterInc >= tier1.thresholdInclusive) multiplier = tier1.multiplier;
   return {
-    pointsEarned: Math.round(base * multiplier * 100) / 100,
+    pointsEarned: Math.round(b * multiplier * 100) / 100,
     todayCount: todayCountAfterInc,
     multiplier,
   };
@@ -118,6 +155,14 @@ export function leaderboardSorted(users: BotUser[]) {
   return [...users].sort((a, b) => b.totalPoints - a.totalPoints);
 }
 
+// "Прогрес" справи — для parallel це submissionsCount, для collab — confirmationsCount.
+function caseProgress(c: BotCase): number {
+  return c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
+}
+function caseDone(c: BotCase, target: number): boolean {
+  return c.status === 'done' || caseProgress(c) >= target;
+}
+
 export function progressOfAllCases(cases: BotCase[]): {
   totalCases: number;
   doneCases: number;
@@ -126,8 +171,8 @@ export function progressOfAllCases(cases: BotCase[]): {
   const total = cases.length;
   const target = cfg.cases.targetSubmissions;
   if (total === 0) return { totalCases: 0, doneCases: 0, donePct: 0 };
-  const cappedSum = cases.reduce((s, c) => s + Math.min(c.submissionsCount, target), 0);
-  const doneCases = cases.filter(c => c.submissionsCount >= target).length;
+  const cappedSum = cases.reduce((s, c) => s + Math.min(caseProgress(c), target), 0);
+  const doneCases = cases.filter(c => caseDone(c, target)).length;
   return {
     totalCases: total,
     doneCases,
@@ -161,8 +206,8 @@ export function progressByDescription(cases: BotCase[]): DescriptionProgress[] {
       (acc, c) => (c.createdAt.localeCompare(acc) < 0 ? c.createdAt : acc),
       arr[0].createdAt
     );
-    const cappedSum = arr.reduce((s, c) => s + Math.min(c.submissionsCount, target), 0);
-    const doneCases = arr.filter(c => c.submissionsCount >= target).length;
+    const cappedSum = arr.reduce((s, c) => s + Math.min(caseProgress(c), target), 0);
+    const doneCases = arr.filter(c => caseDone(c, target)).length;
     result.push({
       key,
       name: descriptionName(arr[0]),

@@ -38,6 +38,35 @@ alter table botdev_cases add column if not exists sprava  text not null default 
 create index if not exists idx_botdev_cases_status on botdev_cases(status);
 create index if not exists idx_botdev_cases_count  on botdev_cases(submissions_count);
 
+-- Collaborative-режим: нові поля для справи.
+-- mode = 'parallel' (як зараз, кожен юзер пише власний варіант) | 'collaborative' (один спільний варіант)
+alter table botdev_cases add column if not exists mode                 text        not null default 'parallel';
+alter table botdev_cases add column if not exists current_answers      jsonb       not null default '[]'::jsonb;
+alter table botdev_cases add column if not exists current_author_tg_id text        not null default '';
+alter table botdev_cases add column if not exists confirmations_count  int         not null default 0;
+-- Блокування при видачі справи юзеру (collab-режим). locked_until null = вільна.
+alter table botdev_cases add column if not exists locked_by_tg_id      text        not null default '';
+alter table botdev_cases add column if not exists locked_until         timestamptz;
+-- updated_at: фіксується при collab-подіях (create/edit/confirm), щоб коректно сортувати експорт.
+alter table botdev_cases add column if not exists updated_at           timestamptz not null default now();
+alter table botdev_cases drop constraint if exists botdev_cases_mode_check;
+alter table botdev_cases
+  add  constraint botdev_cases_mode_check
+  check (mode in ('parallel','collaborative'));
+create index if not exists idx_botdev_cases_mode on botdev_cases(mode);
+create index if not exists idx_botdev_cases_lock on botdev_cases(locked_until);
+
+-- Аудит-таблиця для collab-режиму. UNIQUE (case_id, tg_id) гарантує:
+-- один юзер = одна дія на справу (create XOR edit XOR confirm).
+create table if not exists botdev_case_confirmations (
+  case_id text        not null,
+  tg_id   text        not null,
+  kind    text        not null check (kind in ('create','edit','confirm')),
+  at      timestamptz not null default now(),
+  primary key (case_id, tg_id)
+);
+create index if not exists idx_botdev_confirms_case on botdev_case_confirmations(case_id);
+
 create table if not exists botdev_sessions (
   tg_id         text primary key references botdev_users(tg_id) on delete cascade,
   case_id       text        not null,
@@ -51,7 +80,7 @@ create table if not exists botdev_sessions (
 alter table botdev_sessions drop constraint if exists botdev_sessions_state_check;
 alter table botdev_sessions
   add  constraint botdev_sessions_state_check
-  check (state in ('asking','confirming','editing'));
+  check (state in ('asking','confirming','editing','previewing'));
 
 create table if not exists botdev_submissions (
   id            bigserial primary key,
@@ -125,5 +154,6 @@ alter table botdev_daily_scores enable row level security;
 alter table botdev_dispatch_log enable row level security;
 alter table botdev_skipped      enable row level security;
 alter table botdev_meta         enable row level security;
+alter table botdev_case_confirmations enable row level security;
 
 revoke all on function botdev_inc_daily(text, date) from public, anon, authenticated;
