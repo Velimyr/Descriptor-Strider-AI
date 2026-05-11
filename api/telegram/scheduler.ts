@@ -152,6 +152,14 @@ export function leaderboardSorted(users: BotUser[]) {
   return [...users].sort((a, b) => b.totalPoints - a.totalPoints);
 }
 
+// "Прогрес" справи — для parallel це submissionsCount, для collab — confirmationsCount.
+function caseProgress(c: BotCase): number {
+  return c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
+}
+function caseDone(c: BotCase, target: number): boolean {
+  return c.status === 'done' || caseProgress(c) >= target;
+}
+
 export function progressOfAllCases(cases: BotCase[]): {
   totalCases: number;
   doneCases: number;
@@ -160,8 +168,8 @@ export function progressOfAllCases(cases: BotCase[]): {
   const total = cases.length;
   const target = cfg.cases.targetSubmissions;
   if (total === 0) return { totalCases: 0, doneCases: 0, donePct: 0 };
-  const cappedSum = cases.reduce((s, c) => s + Math.min(c.submissionsCount, target), 0);
-  const doneCases = cases.filter(c => c.submissionsCount >= target).length;
+  const cappedSum = cases.reduce((s, c) => s + Math.min(caseProgress(c), target), 0);
+  const doneCases = cases.filter(c => caseDone(c, target)).length;
   return {
     totalCases: total,
     doneCases,
@@ -195,8 +203,8 @@ export function progressByDescription(cases: BotCase[]): DescriptionProgress[] {
       (acc, c) => (c.createdAt.localeCompare(acc) < 0 ? c.createdAt : acc),
       arr[0].createdAt
     );
-    const cappedSum = arr.reduce((s, c) => s + Math.min(c.submissionsCount, target), 0);
-    const doneCases = arr.filter(c => c.submissionsCount >= target).length;
+    const cappedSum = arr.reduce((s, c) => s + Math.min(caseProgress(c), target), 0);
+    const doneCases = arr.filter(c => caseDone(c, target)).length;
     result.push({
       key,
       name: descriptionName(arr[0]),

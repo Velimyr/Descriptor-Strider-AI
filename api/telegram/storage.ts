@@ -631,6 +631,33 @@ export async function getDisplayNamesMap(tgIds: string[]): Promise<Record<string
   return m;
 }
 
+// Усі рядки confirmations для заданого набору case_id (для адмін-перегляду).
+export async function getConfirmationsForCases(
+  caseIds: string[]
+): Promise<Array<{ caseId: string; tgId: string; kind: 'create' | 'edit' | 'confirm'; at: string }>> {
+  if (caseIds.length === 0) return [];
+  // Пагінуємо на випадок великого опису.
+  const out: Array<{ caseId: string; tgId: string; kind: any; at: string }> = [];
+  const chunkSize = 500;
+  for (let i = 0; i < caseIds.length; i += chunkSize) {
+    const chunk = caseIds.slice(i, i + chunkSize);
+    const { data, error } = await db()
+      .from(T.caseConfirmations)
+      .select('case_id, tg_id, kind, at')
+      .in('case_id', chunk);
+    if (error) throw error;
+    for (const r of data || []) {
+      out.push({
+        caseId: (r as any).case_id,
+        tgId: (r as any).tg_id,
+        kind: (r as any).kind,
+        at: (r as any).at,
+      });
+    }
+  }
+  return out;
+}
+
 // Прострочені блокування — на випадок ручної очистки (бот і так враховує locked_until).
 export async function clearExpiredLocks(): Promise<number> {
   const { data, error } = await db()

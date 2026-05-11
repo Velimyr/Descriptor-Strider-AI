@@ -49,7 +49,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['questions', 'Питання'],
           ['cases', 'Підготовка справ'],
           ['results', 'Результати'],
-          ['process', 'Опрацювати опис'],
+          ['process', 'Експортувати опис'],
           ['overview', 'Огляд'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
@@ -2203,8 +2203,9 @@ const ResultsView: React.FC = () => {
 
   const buildHeaders = (questions: any[]) => [
     'submitted_at',
-    'display_name',
-    'tg_id',
+    'Тип',
+    'Автор',
+    'Перевірили',
     'Опис',
     'Файл',
     'Сторінка',
@@ -2213,12 +2214,24 @@ const ResultsView: React.FC = () => {
     'source_link',
   ];
 
+  const summarizeConfirmations = (s: any): string => {
+    if (!s.is_collab) return '';
+    const list: any[] = Array.isArray(s.confirmations) ? s.confirmations : [];
+    const reviewers = list
+      .filter(x => x.kind === 'confirm' || x.kind === 'edit')
+      .map(x => `${x.display_name || x.tg_id}${x.kind === 'edit' ? ' (правка)' : ''}`);
+    const cnt = s.confirmations_count ?? 0;
+    const head = `${cnt} підтв.${s.case_status === 'done' ? ' ✓' : ''}`;
+    return reviewers.length ? `${head} • ${reviewers.join(', ')}` : head;
+  };
+
   const buildRow = (s: any, questions: any[]) => {
     const answers = Array.isArray(s.answers) ? s.answers : [];
     return [
       s.submitted_at || '',
-      s.display_name || '',
-      s.tg_id || '',
+      s.is_collab ? 'collab' : 'parallel',
+      `${s.display_name || ''}${s.tg_id ? ` (${s.tg_id})` : ''}`,
+      summarizeConfirmations(s),
       descNameOf(s),
       s.source_pdf || '',
       s.page || '',

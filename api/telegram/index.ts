@@ -377,7 +377,11 @@ router.post('/admin/detect-bboxes', async (req, res) => {
 });
 
 // Перетворює collab-справу на запис у форматі submission для уніфікованого експорту.
-function collabCaseToSubmission(c: any, displayName: string) {
+function collabCaseToSubmission(
+  c: any,
+  displayName: string,
+  confirmations: Array<{ tg_id: string; display_name: string; kind: string; at: string }>
+) {
   return {
     case_id: c.caseId,
     tg_id: c.currentAuthorTgId || '',
@@ -394,6 +398,7 @@ function collabCaseToSubmission(c: any, displayName: string) {
     is_collab: true,
     confirmations_count: c.confirmationsCount || 0,
     case_status: c.status,
+    confirmations,
   };
 }
 
@@ -406,6 +411,7 @@ router.get('/admin/results', async (req, res) => {
       getMeta,
       getRecentCollabCases,
       getDisplayNamesMap,
+      getConfirmationsForCases,
     } = await import('./storage.js');
     const [subs, qRaw, collab] = await Promise.all([
       getRecentSubmissions(limit),
@@ -413,10 +419,22 @@ router.get('/admin/results', async (req, res) => {
       getRecentCollabCases(limit),
     ]);
     const collabFiltered = collab.filter(c => c.confirmationsCount > 0);
-    const names = await getDisplayNamesMap(collabFiltered.map(c => c.currentAuthorTgId));
-    const collabAsSubs = collabFiltered.map(c =>
-      collabCaseToSubmission(c, names[c.currentAuthorTgId] || '')
-    );
+    const allUserIds = new Set<string>(collabFiltered.map(c => c.currentAuthorTgId).filter(Boolean));
+    const confirms = await getConfirmationsForCases(collabFiltered.map(c => c.caseId));
+    for (const cf of confirms) allUserIds.add(cf.tgId);
+    const names = await getDisplayNamesMap([...allUserIds]);
+    const confirmsByCase = new Map<string, typeof confirms>();
+    for (const cf of confirms) {
+      const arr = confirmsByCase.get(cf.caseId) || [];
+      arr.push(cf);
+      confirmsByCase.set(cf.caseId, arr);
+    }
+    const collabAsSubs = collabFiltered.map(c => {
+      const list = (confirmsByCase.get(c.caseId) || [])
+        .sort((a, b) => a.at.localeCompare(b.at))
+        .map(cf => ({ tg_id: cf.tgId, display_name: names[cf.tgId] || '', kind: cf.kind, at: cf.at }));
+      return collabCaseToSubmission(c, names[c.currentAuthorTgId] || '', list);
+    });
     let questions: any[] = [];
     try {
       questions = qRaw ? JSON.parse(qRaw) : [];
@@ -447,6 +465,7 @@ router.get('/admin/submissions-by-description', async (req, res) => {
       getSubmissionsByDescription,
       getCollabCasesByDescription,
       getDisplayNamesMap,
+      getConfirmationsForCases,
     } = await import('./storage.js');
     const [subs, qRaw, collab] = await Promise.all([
       getSubmissionsByDescription(archive, fund, opys),
@@ -454,10 +473,22 @@ router.get('/admin/submissions-by-description', async (req, res) => {
       getCollabCasesByDescription(archive, fund, opys),
     ]);
     const collabFiltered = collab.filter(c => c.confirmationsCount > 0);
-    const names = await getDisplayNamesMap(collabFiltered.map(c => c.currentAuthorTgId));
-    const collabAsSubs = collabFiltered.map(c =>
-      collabCaseToSubmission(c, names[c.currentAuthorTgId] || '')
-    );
+    const allUserIds = new Set<string>(collabFiltered.map(c => c.currentAuthorTgId).filter(Boolean));
+    const confirms = await getConfirmationsForCases(collabFiltered.map(c => c.caseId));
+    for (const cf of confirms) allUserIds.add(cf.tgId);
+    const names = await getDisplayNamesMap([...allUserIds]);
+    const confirmsByCase = new Map<string, typeof confirms>();
+    for (const cf of confirms) {
+      const arr = confirmsByCase.get(cf.caseId) || [];
+      arr.push(cf);
+      confirmsByCase.set(cf.caseId, arr);
+    }
+    const collabAsSubs = collabFiltered.map(c => {
+      const list = (confirmsByCase.get(c.caseId) || [])
+        .sort((a, b) => a.at.localeCompare(b.at))
+        .map(cf => ({ tg_id: cf.tgId, display_name: names[cf.tgId] || '', kind: cf.kind, at: cf.at }));
+      return collabCaseToSubmission(c, names[c.currentAuthorTgId] || '', list);
+    });
     let questions: any[] = [];
     try {
       questions = qRaw ? JSON.parse(qRaw) : [];
