@@ -171,9 +171,23 @@ export async function setMeta(key: string, value: string) {
 
 // ---------- USERS ----------
 export async function getAllUsers(): Promise<BotUser[]> {
-  const { data, error } = await db().from(T.users).select('*');
-  if (error) throw error;
-  return (data || []).map(mapUser);
+  // Пагінація — Supabase за замовчуванням обмежує 1000 рядками.
+  const pageSize = 1000;
+  let from = 0;
+  const out: BotUser[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.users)
+      .select('*')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(...rows.map(mapUser));
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
 }
 
 export async function getUser(tgId: string): Promise<BotUser | null> {
@@ -222,9 +236,23 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
 
 // ---------- CASES ----------
 export async function getAllCases(): Promise<BotCase[]> {
-  const { data, error } = await db().from(T.cases).select('*');
-  if (error) throw error;
-  return (data || []).map(mapCase);
+  // Пагінація — Supabase за замовчуванням обмежує 1000 рядками.
+  const pageSize = 1000;
+  let from = 0;
+  const out: BotCase[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.cases)
+      .select('*')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(...rows.map(mapCase));
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
 }
 
 export async function getCase(caseId: string): Promise<BotCase | null> {
