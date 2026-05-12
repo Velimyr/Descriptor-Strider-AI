@@ -4,10 +4,8 @@ import {
   BotUser,
   countSubmissionsByCase,
   getAllCases,
+  getCandidateCasesForUser,
   getLastUserCaseKind,
-  getSkippedForUser,
-  getSubmissionsForUser,
-  getTouchedCaseIds,
   patchCase,
 } from './storage.js';
 
@@ -50,36 +48,19 @@ function buildDescriptionOrder(cases: BotCase[]): Map<string, string> {
 
 export async function selectNextCaseForUser(
   tgId: string,
-  preloadedCases?: BotCase[]
+  _preloadedCases?: BotCase[] // legacy, ігнорується — фільтр перенесли в SQL
 ): Promise<BotCase | null> {
-  const [allCases, seenIds, skippedIds, touchedIds, lastKind] = await Promise.all([
-    preloadedCases ? Promise.resolve(preloadedCases) : getAllCases(),
-    getSubmissionsForUser(tgId),
-    getSkippedForUser(tgId),
-    getTouchedCaseIds(tgId), // collab: справи, де юзер уже брав участь
-    getLastUserCaseKind(tgId), // collab: остання дія юзера (для чергування)
+  // Один SQL: тільки кандидати, які цьому юзеру можна показати.
+  // Фільтри: status='open', не сабмітив/пропустив/торкався, не лочена іншим.
+  const [candidates, lastKind] = await Promise.all([
+    getCandidateCasesForUser(tgId),
+    getLastUserCaseKind(tgId),
   ]);
-  // "Бачені" = підтверджені АБО відмовлені АБО участь у collab — повторно не показуємо.
-  const seen = new Set([...seenIds, ...skippedIds, ...touchedIds]);
+  if (candidates.length === 0) return null;
   const targetParallel = cfg.cases.targetSubmissions;
-  const descOrder = buildDescriptionOrder(allCases);
-  const nowMs = Date.now();
-
-  const isAvailable = (c: BotCase): boolean => {
-    if (c.status !== 'open') return false;
-    if (seen.has(c.caseId)) return false;
-    // Collab-режим: пропускаємо заблоковані іншим юзером (поки лок не сплив).
-    if (c.mode === 'collaborative' && c.lockedUntil && c.lockedByTgId && c.lockedByTgId !== tgId) {
-      const exp = Date.parse(c.lockedUntil);
-      if (Number.isFinite(exp) && exp > nowMs) return false;
-    }
-    return true;
-  };
-
-  // "Майже-готові" — сортування: для parallel за submissionsCount, для collab за confirmationsCount.
+  const descOrder = buildDescriptionOrder(candidates);
   const progressOf = (c: BotCase): number =>
     c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
-
   const compare = (a: BotCase, b: BotCase) => {
     const ageA = descOrder.get(descriptionKey(a)) || a.createdAt;
     const ageB = descOrder.get(descriptionKey(b)) || b.createdAt;
@@ -90,10 +71,8 @@ export async function selectNextCaseForUser(
     return a.createdAt.localeCompare(b.createdAt);
   };
 
-  // Пріоритет 1: відкриті, доступні, не досягли цілі.
-  const primary = allCases
-    .filter(c => isAvailable(c) && progressOf(c) < targetParallel)
-    .sort(compare);
+  // Пріоритет 1: ще не досягли цілі.
+  const primary = candidates.filter(c => progressOf(c) < targetParallel).sort(compare);
   if (primary.length > 0) {
     // Чергування create/review застосовуємо ЛИШЕ в межах найстарішого доступного опису —
     // інакше юзера тягне в свіжіший collab-опис, поки старіші parallel-описи не закриті.
@@ -106,9 +85,8 @@ export async function selectNextCaseForUser(
     }
     return primary[0];
   }
-
   if (cfg.cases.allowExtraAfterTarget) {
-    const extra = allCases.filter(isAvailable).sort(compare);
+    const extra = [...candidates].sort(compare);
     if (extra.length > 0) return extra[0];
   }
   return null;

@@ -56,12 +56,11 @@ router.get('/cron/tick', async (req, res) => {
   }
 
   const cfg = telegramBotConfig.dispatch;
-  const { getAllCases } = await import('./storage.js');
-  // Префетчимо справи 1 раз на весь тик і пробрасуємо в dispatch.
-  const [users, sessions, allCases] = await Promise.all([
+  // selectNextCaseForUser тепер тягне кандидатів через SQL-RPC per-user,
+  // тож префетч усіх справ більше не потрібен.
+  const [users, sessions] = await Promise.all([
     getAllUsers(),
     getAllSessions(),
-    getAllCases(),
   ]);
   const sessionMap = new Map(sessions.map(s => [s.tgId, s]));
 
@@ -108,7 +107,7 @@ router.get('/cron/tick', async (req, res) => {
       } catch (e) {
         console.error('greeting failed', u.tgId, e);
       }
-      const sent = await dispatchCaseToUser(u.tgId, false, allCases);
+      const sent = await dispatchCaseToUser(u.tgId, false);
       if (sent) {
         stats.sent++;
         results.push({ tgId: u.tgId, sent: true });
