@@ -19,6 +19,7 @@ import {
   getDailyCount,
   getResultsTotals,
   getAllCases,
+  getDescriptionProgressViaRpc,
   // Collab helpers
   lockCase,
   unlockCase,
@@ -689,11 +690,24 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
 }
 
 async function cmdProgress(chatId: number, user: BotUser) {
-  const cases = await getAllCases();
-  const descriptions = progressByDescription(cases);
-  // Показуємо перші 3 НЕ повністю розпізнані описи (щоб мотивувати докрутити).
+  // SQL-агрегація: один запит замість витягувати всі справи в код.
+  const target = telegramBotConfig.cases.targetSubmissions;
+  const rawDescriptions = await getDescriptionProgressViaRpc(target);
+  // Перетворюємо у формат для відображення: name + donePct.
+  const descriptions = rawDescriptions
+    .map(d => ({
+      name: `${d.archive} ${d.fund}-${d.opys}`,
+      earliestCreatedAt: d.earliestCreatedAt,
+      totalCases: d.totalCases,
+      doneCases: d.doneCases,
+      donePct:
+        d.totalCases > 0
+          ? Math.round((d.cappedSum / (d.totalCases * target)) * 1000) / 10
+          : 0,
+    }))
+    .sort((a, b) => a.earliestCreatedAt.localeCompare(b.earliestCreatedAt));
+  // Перші 3 НЕ повністю розпізнані описи (щоб мотивувати докрутити).
   const top = descriptions.filter(d => d.doneCases < d.totalCases).slice(0, 3);
-  // Лічимо лише повністю розпізнані описи (всі справи опису підтверджено).
   const fullyDoneCount = descriptions.filter(d => d.doneCases === d.totalCases).length;
   const header = fmt(T.progressTotalDescriptions, { count: fullyDoneCount });
   const blocks = top.map(d =>

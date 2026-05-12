@@ -18,6 +18,8 @@ export const T = {
   caseConfirmations: `${PREFIX}case_confirmations`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
+const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
+const RPC_CANDIDATE_CASES = `${PREFIX}candidate_cases`;
 
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
@@ -171,9 +173,23 @@ export async function setMeta(key: string, value: string) {
 
 // ---------- USERS ----------
 export async function getAllUsers(): Promise<BotUser[]> {
-  const { data, error } = await db().from(T.users).select('*');
-  if (error) throw error;
-  return (data || []).map(mapUser);
+  // Пагінація — Supabase за замовчуванням обмежує 1000 рядками.
+  const pageSize = 1000;
+  let from = 0;
+  const out: BotUser[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.users)
+      .select('*')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(...rows.map(mapUser));
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
 }
 
 export async function getUser(tgId: string): Promise<BotUser | null> {
@@ -222,9 +238,23 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
 
 // ---------- CASES ----------
 export async function getAllCases(): Promise<BotCase[]> {
-  const { data, error } = await db().from(T.cases).select('*');
-  if (error) throw error;
-  return (data || []).map(mapCase);
+  // Пагінація — Supabase за замовчуванням обмежує 1000 рядками.
+  const pageSize = 1000;
+  let from = 0;
+  const out: BotCase[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.cases)
+      .select('*')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(...rows.map(mapCase));
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
 }
 
 export async function getCase(caseId: string): Promise<BotCase | null> {
@@ -629,6 +659,39 @@ export async function getDisplayNamesMap(tgIds: string[]): Promise<Record<string
   const m: Record<string, string> = {};
   for (const r of data || []) m[(r as any).tg_id] = (r as any).display_name || '';
   return m;
+}
+
+// Серверна агрегація прогресу по описах. Один SQL замість тягнути всі справи в код.
+export async function getDescriptionProgressViaRpc(target: number): Promise<
+  Array<{
+    archive: string;
+    fund: string;
+    opys: string;
+    earliestCreatedAt: string;
+    totalCases: number;
+    doneCases: number;
+    cappedSum: number;
+  }>
+> {
+  const { data, error } = await db().rpc(RPC_DESCRIPTION_PROGRESS, { p_target: target });
+  if (error) throw error;
+  return ((data as any[]) || []).map(r => ({
+    archive: r.archive || '',
+    fund: r.fund || '',
+    opys: r.opys || '',
+    earliestCreatedAt: r.earliest_created_at || '',
+    totalCases: Number(r.total_cases || 0),
+    doneCases: Number(r.done_cases || 0),
+    cappedSum: Number(r.capped_sum || 0),
+  }));
+}
+
+// Кандидати для dispatch для конкретного юзера (виключає вже опрацьовані).
+// Виконує всі фільтри в SQL — масштабується незалежно від розміру bot_cases.
+export async function getCandidateCasesForUser(tgId: string): Promise<BotCase[]> {
+  const { data, error } = await db().rpc(RPC_CANDIDATE_CASES, { p_tg_id: tgId });
+  if (error) throw error;
+  return ((data as any[]) || []).map(mapCase);
 }
 
 // Усі рядки confirmations для заданого набору case_id (для адмін-перегляду).

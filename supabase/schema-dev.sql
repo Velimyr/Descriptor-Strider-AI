@@ -157,3 +157,50 @@ alter table botdev_meta         enable row level security;
 alter table botdev_case_confirmations enable row level security;
 
 revoke all on function botdev_inc_daily(text, date) from public, anon, authenticated;
+
+-- Агрегований прогрес опису. Уникає підкачки всіх справ у код.
+create or replace function botdev_description_progress(p_target int)
+returns table (
+  archive text,
+  fund text,
+  opys text,
+  earliest_created_at timestamptz,
+  total_cases bigint,
+  done_cases bigint,
+  capped_sum bigint
+) language sql security definer as $$
+  select
+    c.archive, c.fund, c.opys,
+    min(c.created_at) as earliest_created_at,
+    count(*) as total_cases,
+    count(*) filter (
+      where c.status = 'done'
+         or (c.mode = 'collaborative' and c.confirmations_count >= p_target)
+         or (c.mode <> 'collaborative' and c.submissions_count >= p_target)
+    ) as done_cases,
+    sum(least(
+      case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end,
+      p_target
+    )) as capped_sum
+  from botdev_cases c
+  group by c.archive, c.fund, c.opys;
+$$;
+revoke all on function botdev_description_progress(int) from public, anon, authenticated;
+
+-- Кандидати на dispatch: відкриті справи, не заблоковані іншим юзером,
+-- де користувач НЕ брав участі (не сабмітив, не пропустив, не торкався в collab).
+create or replace function botdev_candidate_cases(p_tg_id text)
+returns setof botdev_cases language sql security definer as $$
+  select c.* from botdev_cases c
+  where c.status = 'open'
+    and not exists (select 1 from botdev_submissions s where s.case_id = c.case_id and s.tg_id = p_tg_id)
+    and not exists (select 1 from botdev_skipped sk where sk.case_id = c.case_id and sk.tg_id = p_tg_id)
+    and not exists (select 1 from botdev_case_confirmations cc where cc.case_id = c.case_id and cc.tg_id = p_tg_id)
+    and (
+      c.mode <> 'collaborative'
+      or c.locked_until is null
+      or c.locked_until < now()
+      or c.locked_by_tg_id = p_tg_id
+    );
+$$;
+revoke all on function botdev_candidate_cases(text) from public, anon, authenticated;
