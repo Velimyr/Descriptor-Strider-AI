@@ -995,22 +995,26 @@ async function confirmAndSubmit(
   const sourceLinkEnabled = telegramBotConfig.sheets.sourceLink.mode !== 'none';
   const sourceLink = sourceLinkEnabled ? buildSourceLink(cse) : '';
 
-  // Паралельно: пишемо submission, видаляємо сесію, перераховуємо лічильник, інкрементуємо денний рахунок.
+  // Спочатку записуємо submission, потім інше паралельно. ВАЖЛИВО:
+  // recomputeCaseSubmissionCount читає кількість submissions з БД — якщо запустити
+  // паралельно з appendSubmission, він побачить стару кількість і лічильник
+  // зросте на 1 менше за фактичне. Через це справи з 3 підтвердженнями могли
+  // залишатися "open" з count=2.
   const today = kyivDateString();
-  const [, , , todayCount] = await Promise.all([
-    appendSubmission({
-      caseId: cse.caseId,
-      tgId,
-      displayName: user.displayName,
-      answers: questions.map((_, i) => answers[i] ?? ''),
-      sourceLink,
-      archive: cse.archive,
-      fund: cse.fund,
-      opys: cse.opys,
-      sprava: cse.sprava,
-      sourcePdf: cse.sourcePdf,
-      page: cse.page,
-    }),
+  await appendSubmission({
+    caseId: cse.caseId,
+    tgId,
+    displayName: user.displayName,
+    answers: questions.map((_, i) => answers[i] ?? ''),
+    sourceLink,
+    archive: cse.archive,
+    fund: cse.fund,
+    opys: cse.opys,
+    sprava: cse.sprava,
+    sourcePdf: cse.sourcePdf,
+    page: cse.page,
+  });
+  const [, , todayCount] = await Promise.all([
     deleteSession(tgId),
     recomputeCaseSubmissionCount(cse.caseId),
     incDailyCount(tgId, today),
