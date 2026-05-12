@@ -95,13 +95,13 @@ export async function selectNextCaseForUser(
     .filter(c => isAvailable(c) && progressOf(c) < targetParallel)
     .sort(compare);
   if (primary.length > 0) {
-    // Чергування для collab: якщо в пулі є і "розпізнавання" (count=0),
-    // і "перевірка" (count>0) — даємо протилежне до останньої дії юзера.
-    const collabCreate = primary.find(c => c.mode === 'collaborative' && c.confirmationsCount === 0);
-    const collabReview = primary.find(c => c.mode === 'collaborative' && c.confirmationsCount > 0);
+    // Чергування create/review застосовуємо ЛИШЕ в межах найстарішого доступного опису —
+    // інакше юзера тягне в свіжіший collab-опис, поки старіші parallel-описи не закриті.
+    const firstDescKey = descriptionKey(primary[0]);
+    const sameDesc = primary.filter(c => descriptionKey(c) === firstDescKey);
+    const collabCreate = sameDesc.find(c => c.mode === 'collaborative' && c.confirmationsCount === 0);
+    const collabReview = sameDesc.find(c => c.mode === 'collaborative' && c.confirmationsCount > 0);
     if (collabCreate && collabReview) {
-      // lastKind === 'create' → юзер останнім робив розпізнавання, тепер даємо перевірку.
-      // інакше (confirm/edit/null) → даємо розпізнавання.
       return lastKind === 'create' ? collabReview : collabCreate;
     }
     return primary[0];
