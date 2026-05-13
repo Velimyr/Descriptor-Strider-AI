@@ -149,12 +149,11 @@ export function progressOfAllCases(cases: BotCase[]): {
   const total = cases.length;
   const target = cfg.cases.targetSubmissions;
   if (total === 0) return { totalCases: 0, doneCases: 0, donePct: 0 };
-  const cappedSum = cases.reduce((s, c) => s + Math.min(caseProgress(c), target), 0);
   const doneCases = cases.filter(c => caseDone(c, target)).length;
   return {
     totalCases: total,
     doneCases,
-    donePct: Math.round((cappedSum / (total * target)) * 1000) / 10,
+    donePct: Math.round((doneCases / total) * 1000) / 10,
   };
 }
 
@@ -184,7 +183,6 @@ export function progressByDescription(cases: BotCase[]): DescriptionProgress[] {
       (acc, c) => (c.createdAt.localeCompare(acc) < 0 ? c.createdAt : acc),
       arr[0].createdAt
     );
-    const cappedSum = arr.reduce((s, c) => s + Math.min(caseProgress(c), target), 0);
     const doneCases = arr.filter(c => caseDone(c, target)).length;
     result.push({
       key,
@@ -192,7 +190,7 @@ export function progressByDescription(cases: BotCase[]): DescriptionProgress[] {
       earliestCreatedAt: earliest,
       totalCases: arr.length,
       doneCases,
-      donePct: Math.round((cappedSum / (arr.length * target)) * 1000) / 10,
+      donePct: Math.round((doneCases / arr.length) * 1000) / 10,
     });
   }
   result.sort((a, b) => a.earliestCreatedAt.localeCompare(b.earliestCreatedAt));

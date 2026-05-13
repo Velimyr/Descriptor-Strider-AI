@@ -702,7 +702,7 @@ async function cmdProgress(chatId: number, user: BotUser) {
       doneCases: d.doneCases,
       donePct:
         d.totalCases > 0
-          ? Math.round((d.cappedSum / (d.totalCases * target)) * 1000) / 10
+          ? Math.round((d.doneCases / d.totalCases) * 1000) / 10
           : 0,
     }))
     .sort((a, b) => a.earliestCreatedAt.localeCompare(b.earliestCreatedAt));
