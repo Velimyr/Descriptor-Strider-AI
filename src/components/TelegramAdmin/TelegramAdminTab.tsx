@@ -598,7 +598,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const [fund, setFund] = useState('');
   const [opys, setOpys] = useState('');
   // Режим обробки для всієї пачки. Фіксується при завантаженні справи.
-  const [batchMode, setBatchMode] = useState<'parallel' | 'collaborative'>('parallel');
+  const [batchMode, setBatchMode] = useState<'parallel' | 'collaborative'>('collaborative');
+  // Згорнути блок «Архівні реквізити + Режим», коли все заповнено і PDF уже відкрито —
+  // звільняє ~120px по вертикалі для скану.
+  const [metaCollapsed, setMetaCollapsed] = useState(false);
   // Діапазон сторінок для авто-розпізнавання. Порожньо → поточна сторінка.
   const [autoRange, setAutoRange] = useState('');
   const [autoProgress, setAutoProgress] = useState<{ done: number; total: number; page?: number } | null>(null);
@@ -640,6 +643,11 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
   const metaValid = !!(archive.trim() && fund.trim() && opys.trim());
   const boxes: Box[] = pageBoxes[page] || [];
+
+  // Авто-згортання блоку реквізитів, щойно все заповнено і відкрито PDF.
+  useEffect(() => {
+    if (metaValid && pageImage) setMetaCollapsed(true);
+  }, [metaValid, pageImage]);
   const totalBoxes = (Object.values(pageBoxes) as Box[][]).reduce((s, b) => s + b.length, 0);
   const pagesWithBoxes = (Object.entries(pageBoxes) as [string, Box[]][])
     .filter(([, v]) => v.length > 0)
@@ -1596,6 +1604,15 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       return;
     }
 
+    // Дефолтний режим — колективний. Якщо обрано інший, перепитуємо.
+    if (batchMode !== 'collaborative') {
+      const ok = window.confirm(
+        'За замовчуванням рекомендується колективний режим (один варіант + підтвердження).\n\n' +
+          'Ви обрали "Паралельний" — кожен користувач писатиме власний варіант (≥3 версії на справу). Продовжити?'
+      );
+      if (!ok) return;
+    }
+
     // Кешуємо зображення сторінок щоб не рендерити одну і ту саму двічі
     // (у випадку груп з кількома зонами на одній сторінці).
     const pageCache = new Map<number, string>();
@@ -1663,14 +1680,46 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   };
 
   return (
-    <div className="space-y-4">
-      {/* Архівні реквізити — обовʼязкові, спільні для всієї пачки */}
+    <div className="space-y-2">
+      {/* Архівні реквізити — обовʼязкові, спільні для всієї пачки.
+          Коли все заповнено і PDF відкрито, згортаємо в один компактний рядок. */}
+      {metaCollapsed && metaValid ? (
+        <section className="border rounded px-3 py-1.5 bg-slate-50 flex flex-wrap items-center gap-3 text-xs">
+          <span className="text-slate-500">Опис:</span>
+          <span className="font-medium text-slate-800">
+            {archive.trim()} {fund.trim()}-{opys.trim()}
+          </span>
+          <span className="text-slate-400">•</span>
+          <span className="text-slate-500">Режим:</span>
+          <span className="font-medium text-slate-800">
+            {batchMode === 'collaborative' ? 'Колективний' : 'Паралельний'}
+          </span>
+          <button
+            onClick={() => setMetaCollapsed(false)}
+            className="ml-auto text-slate-500 hover:text-indigo-700"
+            title="Розгорнути для редагування"
+          >
+            ✎ Змінити
+          </button>
+        </section>
+      ) : (
       <section className={`border rounded p-3 ${metaValid ? 'bg-slate-50' : 'bg-amber-50 border-amber-300'}`}>
         <div className="flex items-center justify-between mb-2">
           <div className="text-sm font-medium">Архівні реквізити (обовʼязкові)</div>
-          {!metaValid && (
-            <div className="text-xs text-amber-700">⚠ Заповніть усі 3 поля перед завантаженням</div>
-          )}
+          <div className="flex items-center gap-3">
+            {!metaValid && (
+              <div className="text-xs text-amber-700">⚠ Заповніть усі 3 поля перед завантаженням</div>
+            )}
+            {metaValid && (
+              <button
+                onClick={() => setMetaCollapsed(true)}
+                className="text-xs text-slate-500 hover:text-indigo-700"
+                title="Згорнути"
+              >
+                ▲ Згорнути
+              </button>
+            )}
+          </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
           <input
@@ -1724,6 +1773,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           </div>
         </div>
       </section>
+      )}
 
       {/* Дропзона */}
       {!pdf && (
@@ -1895,41 +1945,49 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       )}
 
       {pageImage && (
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           {/* Перемикач режиму введення */}
           <div className="flex flex-wrap gap-2 items-center">
             <span className="text-xs text-slate-500">Режим:</span>
             <div className="inline-flex rounded border border-slate-300 overflow-hidden text-xs">
               <button
                 onClick={() => setInputMode('zones')}
-                className={`px-3 py-1 ${inputMode === 'zones' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-100'}`}
+                className={`px-3 py-0.5 ${inputMode === 'zones' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-100'}`}
               >
                 Зони
               </button>
               <button
                 onClick={() => setInputMode('lines')}
-                className={`px-3 py-1 border-l border-slate-300 ${inputMode === 'lines' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-100'}`}
+                className={`px-3 py-0.5 border-l border-slate-300 ${inputMode === 'lines' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-700 hover:bg-slate-100'}`}
               >
                 Лінії
               </button>
             </div>
             {inputMode === 'lines' && (
-              <span className="text-xs text-slate-500">
-                Клік зверху/знизу (15% висоти) — вертикальна (макс 4); після 4 — будь-який клік дає горизонтальну. Вертикалі паруються: <b>[1 ... 1]</b>, <b>[2 ... 2]</b> = смуги. Горизонталі живуть у своїй смузі. Зони — між сусідніми горизонталями.
+              <span
+                className="text-xs text-slate-500 truncate"
+                title={
+                  'Клік зверху/знизу (15% висоти) — вертикальна (макс 4); після 4 — будь-який клік дає горизонтальну. ' +
+                  'Вертикалі паруються: [1 ... 1], [2 ... 2] = смуги. Горизонталі живуть у своїй смузі. Зони — між сусідніми горизонталями.'
+                }
+              >
+                клік зверху/знизу — V • далі — H • перетини = авто-зони ⓘ
               </span>
             )}
           </div>
-          {inputMode === 'zones' ? (
-            <p className="text-sm text-slate-600">
-              Малюйте прямокутники мишкою навколо кожної справи. Натисніть <span className="text-red-600 font-medium">червоний хрестик</span> у куті зони — видалити її.
-              {' '}Зони зберігаються при перемиканні сторінок.
-            </p>
-          ) : (
-            <p className="text-sm text-slate-600">
-              Тягніть лінію — посунути; клац на <span className="text-red-600 font-medium">червоний хрестик</span> — видалити. Перетин пар вертикальних і горизонтальних — авто-зона (зелений пунктир).
-            </p>
-          )}
-          <div className="border rounded bg-slate-50 max-h-[70vh] overflow-auto">
+          <p
+            className="text-xs text-slate-500 truncate"
+            title={
+              inputMode === 'zones'
+                ? 'Малюйте прямокутники мишкою навколо кожної справи. Натисніть червоний хрестик у куті зони — видалити її. Зони зберігаються при перемиканні сторінок.'
+                : 'Тягніть лінію — посунути; клац на червоний хрестик — видалити. Перетин пар вертикальних і горизонтальних — авто-зона (зелений пунктир).'
+            }
+          >
+            {inputMode === 'zones'
+              ? 'Малюйте прямокутники навколо справ • × у куті — видалити • зони зберігаються між сторінками'
+              : 'Тягніть лінію — посунути • × — видалити • перетин V/H — авто-зона'}
+          </p>
+          <div className="border rounded bg-slate-50 max-h-[82vh] overflow-auto">
             <canvas
               ref={canvasRef}
               onMouseDown={onCanvasMouseDown}

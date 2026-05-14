@@ -701,7 +701,6 @@ router.post('/admin/penalize', async (req, res) => {
     const descLine = archive || fund || opys
       ? `\nОпис: <b>${String(archive || '')} ${String(fund || '')}-${String(opys || '')}</b>`
       : '';
-    const caseLine = caseId ? `\nСправа: <code>${String(caseId).slice(0, 8)}</code>` : '';
     const safeFields = Array.isArray(fields)
       ? fields
           .filter((f: any) => f && (f.label || f.text))
@@ -714,8 +713,8 @@ router.post('/admin/penalize', async (req, res) => {
       : '';
 
     const text =
-      `Привіт! Ваша відповідь на одну зі справ помітно відрізнялась від того, що було на зображенні.${descLine}${caseLine}\n\n` +
-      (safeFields ? `Ваш ввід, який викликав питання:\n${safeFields}\n\n` : '') +
+      `Привіт! Ваша відповідь на одну зі справ помітно відрізнялась від того, що було на зображенні.${descLine}\n\n` +
+      (safeFields ? `Ваша відповідь, яка викликала питання:\n${safeFields}\n\n` : '') +
       `Щоб усі могли довіряти результатам, ми скоригували ваш баланс на −${points} балів. Новий баланс: <b>${newTotal}</b>.\n\n` +
       `Будь ласка, переписуйте текст саме так, як він на зображенні — навіть з помилками і скороченнями. Дякуємо за розуміння 🙏`;
 
