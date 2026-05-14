@@ -978,26 +978,32 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           ctx.lineWidth = 2;
           ctx.strokeRect(hx - handleSize / 2, hy - handleSize / 2, handleSize, handleSize);
         }
-        // Ручка повороту — гачок над верхньою серединою зони (тільки для виділених).
-        if (isSelected) {
+        // Ручка повороту — гачок над верхньою серединою зони. Видима завжди.
+        {
           const rx = x + w / 2;
           const ryAnchor = y;
-          const ryHandle = y - 28; // 28 px над зоною
+          const rotateOffset = 44; // px над верхньою стороною зони
+          const rotateRadius = 16;
+          const ryHandle = y - rotateOffset;
           ctx.strokeStyle = color;
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 2.5;
           ctx.beginPath();
           ctx.moveTo(rx, ryAnchor);
-          ctx.lineTo(rx, ryHandle);
+          ctx.lineTo(rx, ryHandle + rotateRadius);
           ctx.stroke();
           ctx.fillStyle = 'white';
           ctx.beginPath();
-          ctx.arc(rx, ryHandle, 9, 0, Math.PI * 2);
+          ctx.arc(rx, ryHandle, rotateRadius, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
           // іконка «↻» всередині
           ctx.fillStyle = color;
-          ctx.font = 'bold 12px sans-serif';
-          ctx.fillText('↻', rx - 5, ryHandle + 4);
+          ctx.font = 'bold 22px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('↻', rx, ryHandle + 1);
+          ctx.textAlign = 'start';
+          ctx.textBaseline = 'alphabetic';
         }
         ctx.restore();
       });
@@ -1154,19 +1160,17 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     return lp.x >= b.x && lp.x <= b.x + b.w && lp.y >= b.y && lp.y <= b.y + b.h;
   };
 
-  // Хіт-тест ручки повороту (коло над верхньою серединою зони).
-  // Рендеримо її лише для виділених — тому й хіт-тест має сенс тільки для виділених.
+  // Хіт-тест ручки повороту (коло над верхньою серединою зони). Доступна завжди.
   const hitRotateHandle = (point: { x: number; y: number }, b: Box): boolean => {
     if (!canvasRef.current) return false;
-    if (!selectedIds.has(b.id)) return false;
     const W = canvasRef.current.width;
     const H = canvasRef.current.height;
     const lp = toBoxLocal(point, b);
     const rxN = b.x + b.w / 2;
-    const ryN = b.y - 28 / H;
+    const ryN = b.y - 44 / H;
     const dx = (lp.x - rxN) * W;
     const dy = (lp.y - ryN) * H;
-    return Math.sqrt(dx * dx + dy * dy) <= 14;
+    return Math.sqrt(dx * dx + dy * dy) <= 20;
   };
 
   const toggleSelected = (id: string) => {
