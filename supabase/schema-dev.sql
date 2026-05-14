@@ -67,6 +67,11 @@ create table if not exists botdev_case_confirmations (
 );
 create index if not exists idx_botdev_confirms_case on botdev_case_confirmations(case_id);
 
+-- Снапшот відповідей користувача в момент події (create/edit/confirm).
+-- Потрібен для перевірки доброчесності у collab-режимі: без нього старі
+-- відповіді губляться, бо botdev_cases.current_answers перезаписується при edit.
+alter table botdev_case_confirmations add column if not exists answers jsonb not null default '[]'::jsonb;
+
 create table if not exists botdev_sessions (
   tg_id         text primary key references botdev_users(tg_id) on delete cascade,
   case_id       text        not null,

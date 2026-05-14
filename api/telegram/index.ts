@@ -522,6 +522,167 @@ router.get('/admin/submissions-by-description', async (req, res) => {
   }
 });
 
+// ----------- Integrity check (Перевірка доброчесності) -----------
+// Знаходимо пари submissions для однієї справи, де якась відповідь
+// відрізняється від попередньої більше ніж на 5 символів (Levenshtein).
+// Допомагає виявити користувачів, які вводять текст «від балди».
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const m = a.length, n = b.length;
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    const ca = a.charCodeAt(i - 1);
+    for (let j = 1; j <= n; j++) {
+      const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+router.get('/admin/integrity', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const threshold = Math.max(0, parseInt((req.query.threshold as string) || '5', 10) || 5);
+  try {
+    const {
+      getAllSubmissionsOrdered,
+      getMeta,
+      getAllConfirmationsWithAnswers,
+      getAllCases,
+      getDisplayNamesMap,
+    } = await import('./storage.js');
+    const [subs, qRaw, confirms, cases] = await Promise.all([
+      getAllSubmissionsOrdered(),
+      getMeta('questions'),
+      getAllConfirmationsWithAnswers(),
+      getAllCases(),
+    ]);
+    let questions: any[] = [];
+    try {
+      questions = qRaw ? JSON.parse(qRaw) : [];
+      if (!Array.isArray(questions)) questions = [];
+    } catch {
+      questions = [];
+    }
+
+    // Уніфікований формат "запису": case_id, tgId, displayName, submittedAt, answers, метадані.
+    type Entry = {
+      caseId: string;
+      tgId: string;
+      displayName: string;
+      submittedAt: string;
+      answers: string[];
+      archive: string;
+      fund: string;
+      opys: string;
+    };
+
+    const caseById = new Map<string, any>();
+    for (const c of cases) caseById.set(c.caseId, c);
+
+    // Імена для collab-юзерів (parallel вже має display_name денормалізовано).
+    const namesMap = await getDisplayNamesMap([...new Set(confirms.map(c => c.tgId))]);
+
+    const entries: Entry[] = [];
+    for (const s of subs) {
+      entries.push({
+        caseId: s.case_id,
+        tgId: s.tg_id || '',
+        displayName: s.display_name || '',
+        submittedAt: s.submitted_at || '',
+        answers: Array.isArray(s.answers) ? s.answers.map(String) : [],
+        archive: s.archive || '',
+        fund: s.fund || '',
+        opys: s.opys || '',
+      });
+    }
+    for (const c of confirms) {
+      // Пусті снапшоти (старі записи до міграції або edit-intent без подальшого submit)
+      // не дають корисної інформації для порівняння — пропускаємо.
+      if (!c.answers || c.answers.length === 0) continue;
+      const cs = caseById.get(c.caseId);
+      entries.push({
+        caseId: c.caseId,
+        tgId: c.tgId,
+        displayName: namesMap[c.tgId] || '',
+        submittedAt: c.at,
+        answers: c.answers,
+        archive: cs?.archive || '',
+        fund: cs?.fund || '',
+        opys: cs?.opys || '',
+      });
+    }
+
+    // Групуємо за case_id, сортуємо за датою.
+    const byCase = new Map<string, Entry[]>();
+    for (const e of entries) {
+      const arr = byCase.get(e.caseId) || [];
+      arr.push(e);
+      byCase.set(e.caseId, arr);
+    }
+    for (const arr of byCase.values()) {
+      arr.sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
+    }
+
+    const diffs: any[] = [];
+    for (const [caseId, list] of byCase) {
+      if (list.length < 2) continue;
+      // Порівнюємо ВСІ пари (a < b) — якщо в одній зі справ є кілька різних відповідей,
+      // хочемо бачити всі підозрілі замінники.
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i];
+          const b = list[j];
+          // Один і той самий користувач — пропускаємо (це не «двоє різних увели по-різному»).
+          if (a.tgId && b.tgId && a.tgId === b.tgId) continue;
+          const aa = a.answers;
+          const bb = b.answers;
+          const fieldDiffs: any[] = [];
+          const max = Math.max(aa.length, bb.length, questions.length);
+          for (let k = 0; k < max; k++) {
+            const va = String(aa[k] ?? '');
+            const vb = String(bb[k] ?? '');
+            if (va === vb) continue;
+            const d = levenshtein(va, vb);
+            if (d > threshold) {
+              fieldDiffs.push({
+                questionIndex: k,
+                questionLabel: questions[k]?.label || `Q${k + 1}`,
+                from: va,
+                to: vb,
+                distance: d,
+              });
+            }
+          }
+          if (fieldDiffs.length === 0) continue;
+          diffs.push({
+            caseId,
+            archive: a.archive || b.archive || '',
+            fund: a.fund || b.fund || '',
+            opys: a.opys || b.opys || '',
+            first: { tgId: a.tgId, displayName: a.displayName, submittedAt: a.submittedAt },
+            second: { tgId: b.tgId, displayName: b.displayName, submittedAt: b.submittedAt },
+            fields: fieldDiffs,
+          });
+        }
+      }
+    }
+
+    diffs.sort((a, b) =>
+      String(b.second.submittedAt || '').localeCompare(String(a.second.submittedAt || ''))
+    );
+    res.json({ ok: true, threshold, totalCases: byCase.size, diffs });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/admin/overview', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const [users, cases] = await Promise.all([getAllUsers(), getAllCases()]);

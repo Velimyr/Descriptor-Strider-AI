@@ -71,6 +71,7 @@ export const tgApi = {
     }),
   overview: () => call('/admin/overview'),
   results: (limit = 500) => call(`/admin/results?limit=${limit}`),
+  integrity: (threshold = 5) => call(`/admin/integrity?threshold=${threshold}`),
   submissionsByDescription: (archive: string, fund: string, opys: string) =>
     call(
       `/admin/submissions-by-description?archive=${encodeURIComponent(archive)}` +

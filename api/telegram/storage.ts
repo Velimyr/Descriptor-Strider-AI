@@ -459,6 +459,29 @@ export async function getSubmissionsByDescription(
   return out;
 }
 
+// Усі submissions для аналізу доброчесності (повна пагінація).
+// Сортуємо за case_id + submitted_at, щоб у коді легко групувати.
+export async function getAllSubmissionsOrdered(): Promise<any[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: any[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.submissions)
+      .select('case_id, tg_id, display_name, answers, submitted_at, archive, fund, opys')
+      .order('case_id', { ascending: true })
+      .order('submitted_at', { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(...rows);
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
 // Експортуємо submissions для адмінського перегляду / експорту.
 export async function getRecentSubmissions(limit = 100) {
   const { data, error } = await db()
@@ -491,15 +514,23 @@ export async function unlockCase(caseId: string): Promise<void> {
 }
 
 // Записати участь юзера у справі. UNIQUE (case_id, tg_id) — якщо є, просто апдейт kind/at.
+// answers — снапшот відповідей у момент події (потрібен для перевірки доброчесності).
 export async function recordCaseEvent(
   caseId: string,
   tgId: string,
-  kind: 'create' | 'edit' | 'confirm'
+  kind: 'create' | 'edit' | 'confirm',
+  answers: string[] = []
 ): Promise<void> {
   const { error } = await db()
     .from(T.caseConfirmations)
     .upsert(
-      { case_id: caseId, tg_id: tgId, kind, at: new Date().toISOString() },
+      {
+        case_id: caseId,
+        tg_id: tgId,
+        kind,
+        at: new Date().toISOString(),
+        answers,
+      },
       { onConflict: 'case_id,tg_id' }
     );
   if (error) throw error;
@@ -697,26 +728,61 @@ export async function getCandidateCasesForUser(tgId: string): Promise<BotCase[]>
 // Усі рядки confirmations для заданого набору case_id (для адмін-перегляду).
 export async function getConfirmationsForCases(
   caseIds: string[]
-): Promise<Array<{ caseId: string; tgId: string; kind: 'create' | 'edit' | 'confirm'; at: string }>> {
+): Promise<Array<{ caseId: string; tgId: string; kind: 'create' | 'edit' | 'confirm'; at: string; answers: string[] }>> {
   if (caseIds.length === 0) return [];
   // Пагінуємо на випадок великого опису.
-  const out: Array<{ caseId: string; tgId: string; kind: any; at: string }> = [];
+  const out: Array<{ caseId: string; tgId: string; kind: any; at: string; answers: string[] }> = [];
   const chunkSize = 500;
   for (let i = 0; i < caseIds.length; i += chunkSize) {
     const chunk = caseIds.slice(i, i + chunkSize);
     const { data, error } = await db()
       .from(T.caseConfirmations)
-      .select('case_id, tg_id, kind, at')
+      .select('case_id, tg_id, kind, at, answers')
       .in('case_id', chunk);
     if (error) throw error;
     for (const r of data || []) {
+      const ans = (r as any).answers;
       out.push({
         caseId: (r as any).case_id,
         tgId: (r as any).tg_id,
         kind: (r as any).kind,
         at: (r as any).at,
+        answers: Array.isArray(ans) ? ans.map(String) : [],
       });
     }
+  }
+  return out;
+}
+
+// Усі collab-події з відповідями (для інтегриті-перевірки).
+export async function getAllConfirmationsWithAnswers(): Promise<
+  Array<{ caseId: string; tgId: string; kind: 'create' | 'edit' | 'confirm'; at: string; answers: string[] }>
+> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: any[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.caseConfirmations)
+      .select('case_id, tg_id, kind, at, answers')
+      .order('case_id', { ascending: true })
+      .order('at', { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) {
+      const ans = (r as any).answers;
+      out.push({
+        caseId: (r as any).case_id,
+        tgId: (r as any).tg_id,
+        kind: (r as any).kind,
+        at: (r as any).at,
+        answers: Array.isArray(ans) ? ans.map(String) : [],
+      });
+    }
+    if (rows.length < pageSize) break;
+    from += pageSize;
   }
   return out;
 }

@@ -12,7 +12,7 @@ interface Props {
   initialQuestions?: TableColumn[]; // зазвичай tableStructure активного проєкту
 }
 
-type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview';
+type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity';
 
 export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => {
   const [tab, setTab] = useState<TabKey>('setup');
@@ -51,6 +51,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['results', 'Результати'],
           ['process', 'Експортувати опис'],
           ['overview', 'Огляд'],
+          ['integrity', 'Перевірка доброчесності'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
             key={k}
@@ -71,6 +72,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         {tab === 'results' && <ResultsView />}
         {tab === 'process' && <ProcessDescriptionView geminiKey={geminiKey} />}
         {tab === 'overview' && <OverviewView />}
+        {tab === 'integrity' && <IntegrityView />}
       </div>
     </div>
   );
@@ -3523,6 +3525,160 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+// ==================== INTEGRITY (Перевірка доброчесності) ====================
+
+type IntegrityField = {
+  questionIndex: number;
+  questionLabel: string;
+  from: string;
+  to: string;
+  distance: number;
+};
+type IntegrityUser = { tgId: string; displayName: string; submittedAt: string };
+type IntegrityDiff = {
+  caseId: string;
+  archive: string;
+  fund: string;
+  opys: string;
+  first: IntegrityUser;
+  second: IntegrityUser;
+  fields: IntegrityField[];
+};
+
+const IntegrityView: React.FC = () => {
+  const [diffs, setDiffs] = useState<IntegrityDiff[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [threshold, setThreshold] = useState(5);
+  const [filter, setFilter] = useState('');
+
+  const refresh = async () => {
+    setBusy(true);
+    setMsg('');
+    try {
+      const r = await tgApi.integrity(threshold);
+      setDiffs(r.diffs || []);
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const userLabel = (u: IntegrityUser) =>
+    `${u.displayName || '—'}${u.tgId ? ` (${u.tgId})` : ''}`;
+
+  const filtered = (diffs || []).filter(d => {
+    if (!filter.trim()) return true;
+    const q = filter.toLowerCase();
+    return (
+      d.caseId.toLowerCase().includes(q) ||
+      userLabel(d.first).toLowerCase().includes(q) ||
+      userLabel(d.second).toLowerCase().includes(q) ||
+      d.fields.some(f =>
+        f.from.toLowerCase().includes(q) ||
+        f.to.toLowerCase().includes(q) ||
+        f.questionLabel.toLowerCase().includes(q)
+      )
+    );
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="text-sm text-slate-600">
+        Шукаємо пари підтверджень однієї справи, де відповідь відрізняється від
+        попередньої більше ніж на N символів (Levenshtein). Допомагає виявити
+        користувачів, які не списують текст з зображення.
+      </div>
+      <div className="flex flex-wrap gap-2 items-center">
+        <button
+          onClick={refresh}
+          disabled={busy}
+          className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1"
+        >
+          <RefreshCw size={14} /> {busy ? 'Завантаження…' : 'Оновити'}
+        </button>
+        <label className="text-sm text-slate-600">Поріг різниці (символів):</label>
+        <input
+          type="number"
+          min={0}
+          value={threshold}
+          onChange={e => setThreshold(parseInt(e.target.value, 10) || 0)}
+          className="border rounded px-2 py-1 text-sm w-20"
+        />
+        <input
+          type="text"
+          value={filter}
+          onChange={e => setFilter(e.target.value)}
+          placeholder="Пошук: текст, користувач, case_id"
+          className="border rounded px-2 py-1 text-sm flex-1 min-w-[200px]"
+        />
+        <div className="text-sm text-slate-600 ml-auto">
+          Знайдено: <b>{filtered.length}</b>
+        </div>
+      </div>
+
+      {msg && <div className="text-sm">{msg}</div>}
+
+      {filtered.length === 0 && !busy && (
+        <div className="text-sm text-slate-500 border rounded p-4 bg-slate-50">
+          Розбіжностей понад порогом не знайдено.
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {filtered.map((d, idx) => (
+          <div key={`${d.caseId}-${idx}`} className="border rounded p-3 bg-white shadow-sm">
+            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-2 text-sm">
+              <div className="font-mono text-xs text-slate-500">{d.caseId}</div>
+              <div className="text-slate-700">
+                {d.archive} {d.fund}-{d.opys}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm mb-2">
+              <div className="border rounded p-2 bg-slate-50">
+                <div className="text-xs text-slate-500">Перша відповідь</div>
+                <div className="font-medium">{userLabel(d.first)}</div>
+                <div className="text-xs text-slate-500">{d.first.submittedAt}</div>
+              </div>
+              <div className="border rounded p-2 bg-slate-50">
+                <div className="text-xs text-slate-500">Друга відповідь</div>
+                <div className="font-medium">{userLabel(d.second)}</div>
+                <div className="text-xs text-slate-500">{d.second.submittedAt}</div>
+              </div>
+            </div>
+            <table className="w-full text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-100 text-left">
+                  <th className="p-1.5 border">Поле</th>
+                  <th className="p-1.5 border">Було</th>
+                  <th className="p-1.5 border">Стало</th>
+                  <th className="p-1.5 border w-16">Δ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.fields.map(f => (
+                  <tr key={f.questionIndex} className="align-top">
+                    <td className="p-1.5 border font-medium">{f.questionLabel}</td>
+                    <td className="p-1.5 border bg-red-50 whitespace-pre-wrap break-words">{f.from || '—'}</td>
+                    <td className="p-1.5 border bg-green-50 whitespace-pre-wrap break-words">{f.to || '—'}</td>
+                    <td className="p-1.5 border text-center font-mono">{f.distance}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+      </div>
     </div>
   );
 };

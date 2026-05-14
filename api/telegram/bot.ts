@@ -188,6 +188,18 @@ function keyboardForEdit(questions: TableColumn[]): any {
   };
 }
 
+// Перед показом блоку підтвердження надсилаємо ту ж картинку ще раз —
+// щоб користувачу не довелось скролити вгору, щоб її побачити.
+async function resendCasePhoto(chatId: number | string, caseId: string): Promise<void> {
+  if (!caseId) return;
+  try {
+    const cse = await getCase(caseId);
+    if (cse?.tgFileId) await sendPhotoByFileId(chatId, cse.tgFileId);
+  } catch (e) {
+    console.error('resendCasePhoto failed', e);
+  }
+}
+
 function buildSummary(questions: TableColumn[], answers: string[]): string {
   const lines = questions.map((q, i) => `<b>${escapeHtml(q.label)}</b>: ${escapeHtml(answers[i] ?? '—')}`);
   return `${T.confirmHeader}\n\n${lines.join('\n')}`;
@@ -552,6 +564,7 @@ async function handleCallback(cb: any) {
         state: 'confirming',
         updatedAt: nowIsoUtc(),
       };
+      await resendCasePhoto(chatId, session.caseId);
       await Promise.all([
         setSession(editedSession, session.rowIndex),
         sendMessage(chatId, buildSummary(questions, answers), {
@@ -568,6 +581,7 @@ async function handleCallback(cb: any) {
         state: 'confirming',
         updatedAt: nowIsoUtc(),
       };
+      await resendCasePhoto(chatId, session.caseId);
       await Promise.all([
         setSession(nextSession, session.rowIndex),
         sendMessage(chatId, buildSummary(questions, answers), {
@@ -641,20 +655,18 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
     const questions = await getQuestions();
     if (existing.state === 'confirming') {
       const answers: string[] = JSON.parse(existing.answersJson || '[]');
-      await Promise.all([
-        sendMessage(chatId, T.sessionAlreadyOpen),
-        sendMessage(chatId, buildSummary(questions, answers), {
-          reply_markup: keyboardForConfirm(),
-        }),
-      ]);
+      await sendMessage(chatId, T.sessionAlreadyOpen);
+      await resendCasePhoto(chatId, existing.caseId);
+      await sendMessage(chatId, buildSummary(questions, answers), {
+        reply_markup: keyboardForConfirm(),
+      });
     } else if (existing.state === 'previewing') {
       const answers: string[] = JSON.parse(existing.answersJson || '[]');
-      await Promise.all([
-        sendMessage(chatId, T.sessionAlreadyOpen),
-        sendMessage(chatId, buildSummary(questions, answers), {
-          reply_markup: keyboardForCollabPreview(),
-        }),
-      ]);
+      await sendMessage(chatId, T.sessionAlreadyOpen);
+      await resendCasePhoto(chatId, existing.caseId);
+      await sendMessage(chatId, buildSummary(questions, answers), {
+        reply_markup: keyboardForCollabPreview(),
+      });
     } else {
       await Promise.all([
         sendMessage(chatId, T.sessionAlreadyOpen),
@@ -812,7 +824,7 @@ export async function dispatchCaseToUser(
   if (questions.length === 0) return false;
 
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
-  await sendPhotoByFileId(tgId, next.tgFileId, `Документ №${next.caseId.slice(0, 8)}`);
+  await sendPhotoByFileId(tgId, next.tgFileId);
 
   console.log('[dispatch.next]', {
     caseId: next.caseId,
@@ -941,6 +953,7 @@ async function processAnswer(chatId: number, tgId: string, session: BotSession, 
       state: 'confirming',
       updatedAt: nowIsoUtc(),
     };
+    await resendCasePhoto(chatId, session.caseId);
     await Promise.all([
       setSession(next, session.rowIndex),
       sendMessage(chatId, buildSummary(questions, answers), {
@@ -958,6 +971,7 @@ async function processAnswer(chatId: number, tgId: string, session: BotSession, 
       state: 'confirming',
       updatedAt: nowIsoUtc(),
     };
+    await resendCasePhoto(chatId, session.caseId);
     await Promise.all([
       setSession(next, session.rowIndex),
       sendMessage(chatId, buildSummary(questions, answers), {
@@ -1096,13 +1110,17 @@ async function collabSubmit(
 
   if (alreadyEdit) {
     // EDIT: оновлюємо current_answers, скидаємо лічильник до 1.
-    await setCaseEdited(cse.caseId, tgId, finalAnswers);
-    // recordCaseEvent('edit') вже зроблено при натисканні collab:edit.
+    // Перезаписуємо edit-подію зі снапшотом фактичних відповідей (recordCaseEvent
+    // при натисканні collab:edit ще не знав, що саме введе користувач).
+    await Promise.all([
+      setCaseEdited(cse.caseId, tgId, finalAnswers),
+      recordCaseEvent(cse.caseId, tgId, 'edit', finalAnswers),
+    ]);
   } else {
     // CREATE: перша версія справи.
     await Promise.all([
       setCaseCreated(cse.caseId, tgId, finalAnswers),
-      recordCaseEvent(cse.caseId, tgId, 'create'),
+      recordCaseEvent(cse.caseId, tgId, 'create', finalAnswers),
     ]);
   }
 
@@ -1127,7 +1145,8 @@ async function collabConfirm(
     return;
   }
   const min = await getMinConfirmations();
-  await recordCaseEvent(caseId, tgId, 'confirm');
+  // Снапшот того, що користувач підтвердив — поточні current_answers справи.
+  await recordCaseEvent(caseId, tgId, 'confirm', cse.currentAnswers || []);
   const { closed } = await confirmCase(caseId, min);
   // Перевірка — 1 бал база.
   await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1);

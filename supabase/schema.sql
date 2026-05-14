@@ -70,6 +70,11 @@ create table if not exists bot_case_confirmations (
 );
 create index if not exists idx_confirms_case on bot_case_confirmations(case_id);
 
+-- Снапшот відповідей користувача в момент події (create/edit/confirm).
+-- Потрібен для перевірки доброчесності у collab-режимі: без нього старі
+-- відповіді губляться, бо bot_cases.current_answers перезаписується при edit.
+alter table bot_case_confirmations add column if not exists answers jsonb not null default '[]'::jsonb;
+
 create table if not exists bot_sessions (
   tg_id         text primary key references bot_users(tg_id) on delete cascade,
   case_id       text        not null,
