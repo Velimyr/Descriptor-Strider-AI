@@ -3055,7 +3055,9 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [questions, setQuestions] = useState<any[]>([]);
-  const [descriptions, setDescriptions] = useState<{ key: string; name: string }[]>([]);
+  const [descriptions, setDescriptions] = useState<
+    { key: string; name: string; donePct: number; doneCases: number; totalCases: number }[]
+  >([]);
   const [descKey, setDescKey] = useState('');
   const [numberColIdx, setNumberColIdx] = useState<number>(0);
   const [groups, setGroups] = useState<ProcessGroup[]>([]);
@@ -3076,7 +3078,13 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       setQuestions(qs);
       setDescriptions(
         ((ov.descriptions || []) as any[])
-          .map(d => ({ key: d.key, name: d.name }))
+          .map(d => ({
+            key: d.key,
+            name: d.name,
+            donePct: Number(d.donePct) || 0,
+            doneCases: Number(d.doneCases) || 0,
+            totalCases: Number(d.totalCases) || 0,
+          }))
           .sort((a, b) => a.name.localeCompare(b.name))
       );
       if (numberColIdx >= qs.length) setNumberColIdx(qs.length > 0 ? 0 : -1);
@@ -3460,8 +3468,41 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     { key: 'page', label: 'Сторінка' },
   ];
 
+  // Перевірка дублікатів у колонці-«номері» — блокує експорт, поки не виправлено.
+  // Порожні значення (—) ігноруємо: вони не вважаються номерами, не порівнюються.
+  const duplicateInfo = React.useMemo(() => {
+    const byValue = new Map<string, string[]>();
+    if (numberColIdx < 0) return { items: [] as { value: string; rowIds: string[] }[], rowIds: new Set<string>() };
+    for (const r of step2Rows) {
+      const v = String(r.answers[numberColIdx] ?? '').trim();
+      if (!v) continue;
+      const list = byValue.get(v) || [];
+      list.push(r.id);
+      byValue.set(v, list);
+    }
+    const items: { value: string; rowIds: string[] }[] = [];
+    const rowIds = new Set<string>();
+    for (const [value, ids] of byValue) {
+      if (ids.length > 1) {
+        items.push({ value, rowIds: ids });
+        for (const id of ids) rowIds.add(id);
+      }
+    }
+    items.sort((a, b) =>
+      compareNumberInfo(parseNumberCell(a.value), parseNumberCell(b.value))
+    );
+    return { items, rowIds };
+  }, [step2Rows, numberColIdx]);
+
   const exportCsv = () => {
     if (questions.length === 0) return;
+    if (duplicateInfo.items.length > 0) {
+      setMsg(
+        `❌ Експорт заблоковано — у колонці «${questions[numberColIdx]?.label || 'Номер'}» є дублікати: ` +
+          duplicateInfo.items.map(d => `"${d.value}" ×${d.rowIds.length}`).join(', ')
+      );
+      return;
+    }
     const qHeaders = questions.map((q: any, i: number) => q.label || `Q${i + 1}`);
     const metaHeaders = META_COLS.map(c => c.label);
     const headers = [...qHeaders, ...metaHeaders];
@@ -3547,7 +3588,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
               <option value="">— оберіть опис —</option>
               {descriptions.map(d => (
                 <option key={d.key} value={d.key}>
-                  {d.name}
+                  {d.name} — {d.donePct}% ({d.doneCases}/{d.totalCases})
                 </option>
               ))}
             </select>
@@ -3753,7 +3794,13 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
             </button>
             <button
               onClick={exportCsv}
-              className="px-4 py-1.5 bg-emerald-600 text-white rounded text-sm"
+              disabled={duplicateInfo.items.length > 0}
+              title={
+                duplicateInfo.items.length > 0
+                  ? 'Є дублікати в колонці-номері — виправте, щоб експортувати'
+                  : ''
+              }
+              className="px-4 py-1.5 bg-emerald-600 text-white rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Експорт CSV
             </button>
@@ -3761,8 +3808,25 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
               Рядків: {step2Rows.length} (порожніх: {step2Rows.filter(r => r.isEmpty).length})
             </div>
           </div>
+          {duplicateInfo.items.length > 0 && (
+            <div className="border border-rose-300 bg-rose-50 rounded p-2 text-xs text-rose-800">
+              <div className="font-medium mb-1">
+                ⚠ Дублікати в колонці «{questions[numberColIdx]?.label || 'Номер'}» ({duplicateInfo.items.length}):
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {duplicateInfo.items.map(d => (
+                  <span key={d.value} className="px-2 py-0.5 bg-rose-100 border border-rose-300 rounded">
+                    «{d.value}» ×{d.rowIds.length}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-1 text-rose-700/80">
+                Виправте значення в підсвічених рядках, щоб розблокувати експорт.
+              </div>
+            </div>
+          )}
           <div className="text-xs text-slate-500">
-            Жовтим виділено рядки, додані для відсутніх номерів. Усі поля редаговані.
+            Жовтим виділено рядки, додані для відсутніх номерів. Червоним — рядки з дублікатами номера.
           </div>
           <div className="border rounded overflow-auto max-h-[70vh]">
             <table className="w-full text-xs border-collapse">
@@ -3782,15 +3846,26 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                 </tr>
               </thead>
               <tbody>
-                {step2Rows.map((r, ri) => (
-                  <tr key={r.id} className={`${r.isEmpty ? 'bg-amber-50' : ''} border-b`}>
+                {step2Rows.map((r, ri) => {
+                  const isDup = duplicateInfo.rowIds.has(r.id);
+                  const rowBg = isDup
+                    ? 'bg-rose-100'
+                    : r.isEmpty
+                    ? 'bg-amber-50'
+                    : '';
+                  return (
+                  <tr key={r.id} className={`${rowBg} border-b`}>
                     {questions.map((_: any, qi: number) => (
                       <td key={qi} className="p-1 align-top">
                         <textarea
                           value={r.answers[qi] ?? ''}
                           onChange={e => updateCell(ri, qi, e.target.value)}
                           rows={1}
-                          className="w-full border rounded px-1.5 py-1 text-xs resize-y bg-white"
+                          className={`w-full border rounded px-1.5 py-1 text-xs resize-y ${
+                            qi === numberColIdx && isDup
+                              ? 'bg-rose-50 border-rose-400'
+                              : 'bg-white'
+                          }`}
                         />
                       </td>
                     ))}
@@ -3805,7 +3880,8 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                       </td>
                     ))}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
