@@ -486,7 +486,30 @@ type Box = {
   // Порядок у групі для склеювання (визначається порядком виділення при merge).
   // Менше число = вище у склеєному зображенні. Для одиночних зон не використовується.
   groupOrder?: number;
+  // Поворот зони у градусах навколо її центру. Додатне значення — за годинниковою стрілкою.
+  // 0 / undefined — вісь-вирівняний прямокутник (поведінка за замовчуванням).
+  rotation?: number;
 };
+
+// Поворот точки навколо центру на заданий кут (у градусах).
+function rotatePt(p: { x: number; y: number }, c: { x: number; y: number }, deg: number) {
+  if (!deg) return p;
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = p.x - c.x;
+  const dy = p.y - c.y;
+  return { x: c.x + dx * cos - dy * sin, y: c.y + dx * sin + dy * cos };
+}
+function boxCenter(b: Box) {
+  return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+}
+// Перетворити точку клавіатури/миші у локальну (вісь-вирівняну) систему зони:
+// розкручуємо її назад на -rotation навколо центру.
+function toBoxLocal(p: { x: number; y: number }, b: Box) {
+  if (!b.rotation) return p;
+  return rotatePt(p, boxCenter(b), -b.rotation);
+}
 
 const newId = () =>
   (typeof crypto !== 'undefined' && crypto.randomUUID
@@ -874,6 +897,16 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         const color = inGroup ? colorFromId(b.groupId) : 'rgba(99,102,241,0.95)';
         const isSelected = selectedIds.has(b.id);
         ctx.globalAlpha = dimZones ? 0.35 : 1;
+        // Поворот зони — обертаємо систему координат навколо центру; усе нижче
+        // (рамка, чіп, хрестик, ресайз-маркери) автоматично рендериться повернутим.
+        ctx.save();
+        if (b.rotation) {
+          const cx = (b.x + b.w / 2) * canvas.width;
+          const cy = (b.y + b.h / 2) * canvas.height;
+          ctx.translate(cx, cy);
+          ctx.rotate((b.rotation * Math.PI) / 180);
+          ctx.translate(-cx, -cy);
+        }
         ctx.strokeStyle = color;
         ctx.lineWidth = isSelected ? 6 : 3;
         if (isSelected) {
@@ -894,7 +927,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           ctx.font = 'bold 14px sans-serif';
           ctx.fillText('🔗', x + 30, y + 19);
         }
-        if (dimZones) { ctx.globalAlpha = 1; return; }
+        if (dimZones) { ctx.globalAlpha = 1; ctx.restore(); return; }
         // Хрестик «видалити»
         const cx = x + w - 14;
         const cy = y + 14;
@@ -930,6 +963,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           ctx.lineWidth = 2;
           ctx.strokeRect(hx - handleSize / 2, hy - handleSize / 2, handleSize, handleSize);
         }
+        ctx.restore();
       });
       ctx.globalAlpha = 1;
 
@@ -1040,10 +1074,11 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     if (!canvasRef.current) return false;
     const W = canvasRef.current.width;
     const H = canvasRef.current.height;
+    const lp = toBoxLocal(point, b);
     const cxPx = (b.x + b.w) * W - 14;
     const cyPx = b.y * H + 14;
-    const px = point.x * W;
-    const py = point.y * H;
+    const px = lp.x * W;
+    const py = lp.y * H;
     const dx = px - cxPx;
     const dy = py - cyPx;
     return Math.sqrt(dx * dx + dy * dy) <= 14;
@@ -1057,8 +1092,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     if (!canvasRef.current) return null;
     const W = canvasRef.current.width;
     const H = canvasRef.current.height;
-    const px = point.x * W;
-    const py = point.y * H;
+    const lp = toBoxLocal(point, b);
+    const px = lp.x * W;
+    const py = lp.y * H;
     // Маркер ~12px, додамо запас 4px для зручності кліку.
     const r = 10;
     const points: [number, number, NonNullable<ReturnType<typeof hitResizeHandle>>][] = [
@@ -1077,8 +1113,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     return null;
   };
 
-  const pointInsideBox = (point: { x: number; y: number }, b: Box): boolean =>
-    point.x >= b.x && point.x <= b.x + b.w && point.y >= b.y && point.y <= b.y + b.h;
+  const pointInsideBox = (point: { x: number; y: number }, b: Box): boolean => {
+    const lp = toBoxLocal(point, b);
+    return lp.x >= b.x && lp.x <= b.x + b.w && lp.y >= b.y && lp.y <= b.y + b.h;
+  };
 
   const toggleSelected = (id: string) => {
     setSelectedIds(prev => {
@@ -1182,18 +1220,19 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     setBoxesForPage(page, prev =>
       prev.map(b => {
         if (b.id !== a.boxId) return b;
-        // Залежно від типу маркера — змінюємо лише потрібні осі. По осі, яку
-        // не рухаємо, беремо поточні значення (anchor + сторона).
+        // Для повернутих зон рахуємо все в локальній (вісь-вирівняній) системі —
+        // anchor зберігали при mousedown теж у локальній системі.
+        const pLocal = toBoxLocal(p, b);
         let newX = b.x, newY = b.y, newW = b.w, newH = b.h;
         const movesX = a.handle.includes('e') || a.handle.includes('w');
         const movesY = a.handle.includes('n') || a.handle.includes('s');
         if (movesX) {
-          newX = Math.min(a.anchorX, p.x);
-          newW = Math.abs(a.anchorX - p.x);
+          newX = Math.min(a.anchorX, pLocal.x);
+          newW = Math.abs(a.anchorX - pLocal.x);
         }
         if (movesY) {
-          newY = Math.min(a.anchorY, p.y);
-          newH = Math.abs(a.anchorY - p.y);
+          newY = Math.min(a.anchorY, pLocal.y);
+          newH = Math.abs(a.anchorY - pLocal.y);
         }
         // Не даємо колапс у нуль.
         if (newW < 0.005) newW = 0.005;
@@ -1546,17 +1585,29 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         canvas.width = Math.round(box.w * img.width);
         canvas.height = Math.round(box.h * img.height);
         const ctx = canvas.getContext('2d')!;
-        ctx.drawImage(
-          img,
-          box.x * img.width,
-          box.y * img.height,
-          box.w * img.width,
-          box.h * img.height,
-          0,
-          0,
-          canvas.width,
-          canvas.height
-        );
+        if (box.rotation) {
+          // Розкручуємо джерело так, щоб повернутий прямокутник став вісь-вирівняним
+          // у вихідному канвасі. Точне обернення трансформації, яку ми
+          // використовуємо при рендері в редакторі.
+          const cx = (box.x + box.w / 2) * img.width;
+          const cy = (box.y + box.h / 2) * img.height;
+          ctx.translate(canvas.width / 2, canvas.height / 2);
+          ctx.rotate((-box.rotation * Math.PI) / 180);
+          ctx.translate(-cx, -cy);
+          ctx.drawImage(img, 0, 0);
+        } else {
+          ctx.drawImage(
+            img,
+            box.x * img.width,
+            box.y * img.height,
+            box.w * img.width,
+            box.h * img.height,
+            0,
+            0,
+            canvas.width,
+            canvas.height
+          );
+        }
         resolve(canvas.toDataURL('image/jpeg', 0.85));
       };
       img.src = sourceDataUrl;
@@ -2071,6 +2122,36 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
               >
                 🔗 Обʼєднати в одну справу
               </button>
+              {/* Поворот — застосовується до всіх виділених зон. */}
+              {(() => {
+                const rotateSelected = (delta: number, set?: number) => {
+                  setBoxesForPage(page, prev =>
+                    prev.map(b => {
+                      if (!selectedIds.has(b.id)) return b;
+                      const cur = b.rotation || 0;
+                      let next = set !== undefined ? set : cur + delta;
+                      // Нормалізуємо в [-180, 180].
+                      next = ((next + 540) % 360) - 180;
+                      // Округляємо «чисто 0» щоб не тягати дробові.
+                      if (Math.abs(next) < 0.001) next = 0;
+                      return { ...b, rotation: next };
+                    })
+                  );
+                };
+                const firstSel = boxes.find(b => selectedIds.has(b.id));
+                const angle = firstSel?.rotation || 0;
+                return (
+                  <span className="inline-flex items-center gap-1 border-l border-amber-300 pl-2 ml-1">
+                    <span className="text-xs text-slate-700">Поворот:</span>
+                    <button onClick={() => rotateSelected(-15)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs" title="−15°">↺15°</button>
+                    <button onClick={() => rotateSelected(-1)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs" title="−1°">↺1°</button>
+                    <span className="font-mono text-xs w-12 text-center">{angle.toFixed(1)}°</span>
+                    <button onClick={() => rotateSelected(+1)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs" title="+1°">↻1°</button>
+                    <button onClick={() => rotateSelected(+15)} className="px-2 py-1 bg-white border border-slate-300 rounded text-xs" title="+15°">↻15°</button>
+                    <button onClick={() => rotateSelected(0, 0)} className="px-2 py-1 bg-slate-200 rounded text-xs" title="Скинути до 0°">×</button>
+                  </span>
+                );
+              })()}
               <button
                 onClick={() => setSelectedIds(new Set())}
                 className="px-3 py-1 bg-slate-200 rounded text-xs"
