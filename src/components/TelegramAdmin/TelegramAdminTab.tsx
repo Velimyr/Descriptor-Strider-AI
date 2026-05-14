@@ -2139,7 +2139,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       )}
 
       {pageImage && (
-        <div className="space-y-1.5">
+        // translate="no" — критично: при увімкненому Google Translate / розширеннях,
+        // що підмінюють текстові вузли (типу V={count}), React падає з
+        // «Failed to execute removeChild». Робочий регіон редактора не перекладаємо.
+        <div className="space-y-1.5" translate="no">
           {/* Перемикач режиму введення */}
           <div className="flex flex-wrap gap-2 items-center">
             <span className="text-xs text-slate-500">Режим:</span>
@@ -2205,9 +2208,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
               0
             );
             return (
-              <div className="flex flex-wrap gap-2 items-center bg-emerald-50 border border-emerald-300 rounded p-2 text-xs">
+              <div className="flex flex-wrap gap-2 items-center bg-emerald-50 border border-emerald-300 rounded p-2 text-xs" translate="no">
                 <span>
-                  На сторінці: V={ls.v.length}, H={ls.h.length} → авто-зон: <b>{previewCount}</b>
+                  {`На сторінці: V=${ls.v.length}, H=${ls.h.length} → авто-зон: `}
+                  <b>{previewCount}</b>
                 </span>
                 <button
                   onClick={clearLinesPage}
