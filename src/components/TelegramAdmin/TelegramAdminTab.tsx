@@ -661,16 +661,31 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         handle: 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w';
         anchorX: number; // фіксована протилежна точка
         anchorY: number;
+      }
+    | {
+        type: 'rotate';
+        boxId: string;
+        // Кут (у градусах) між «вертикаллю вгору» зони і вектором від центру
+        // до точки початку drag-у. Різниця між поточним і стартовим кутом дає delta.
+        startPointerAngle: number;
+        startBoxRotation: number;
       };
   const actionRef = useRef<CanvasAction | null>(null);
 
   const metaValid = !!(archive.trim() && fund.trim() && opys.trim());
   const boxes: Box[] = pageBoxes[page] || [];
 
-  // Авто-згортання блоку реквізитів, щойно все заповнено і відкрито PDF.
-  useEffect(() => {
-    if (metaValid && pageImage) setMetaCollapsed(true);
-  }, [metaValid, pageImage]);
+  // Авто-згортання блоку реквізитів — рівно один раз за сесію, в момент
+  // ПЕРШОЇ взаємодії з канвасом (mousedown). Тригерити по metaValid не можна:
+  // в момент вводу першого символу третього поля metaValid стає true і блок
+  // схлопнувся б, не давши донабрати решту значення.
+  const autoCollapsedOnceRef = useRef(false);
+  const maybeAutoCollapseOnCanvas = () => {
+    if (autoCollapsedOnceRef.current) return;
+    if (!metaValid) return;
+    autoCollapsedOnceRef.current = true;
+    setMetaCollapsed(true);
+  };
   const totalBoxes = (Object.values(pageBoxes) as Box[][]).reduce((s, b) => s + b.length, 0);
   const pagesWithBoxes = (Object.entries(pageBoxes) as [string, Box[]][])
     .filter(([, v]) => v.length > 0)
@@ -963,6 +978,27 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           ctx.lineWidth = 2;
           ctx.strokeRect(hx - handleSize / 2, hy - handleSize / 2, handleSize, handleSize);
         }
+        // Ручка повороту — гачок над верхньою серединою зони (тільки для виділених).
+        if (isSelected) {
+          const rx = x + w / 2;
+          const ryAnchor = y;
+          const ryHandle = y - 28; // 28 px над зоною
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(rx, ryAnchor);
+          ctx.lineTo(rx, ryHandle);
+          ctx.stroke();
+          ctx.fillStyle = 'white';
+          ctx.beginPath();
+          ctx.arc(rx, ryHandle, 9, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          // іконка «↻» всередині
+          ctx.fillStyle = color;
+          ctx.font = 'bold 12px sans-serif';
+          ctx.fillText('↻', rx - 5, ryHandle + 4);
+        }
         ctx.restore();
       });
       ctx.globalAlpha = 1;
@@ -1118,6 +1154,21 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     return lp.x >= b.x && lp.x <= b.x + b.w && lp.y >= b.y && lp.y <= b.y + b.h;
   };
 
+  // Хіт-тест ручки повороту (коло над верхньою серединою зони).
+  // Рендеримо її лише для виділених — тому й хіт-тест має сенс тільки для виділених.
+  const hitRotateHandle = (point: { x: number; y: number }, b: Box): boolean => {
+    if (!canvasRef.current) return false;
+    if (!selectedIds.has(b.id)) return false;
+    const W = canvasRef.current.width;
+    const H = canvasRef.current.height;
+    const lp = toBoxLocal(point, b);
+    const rxN = b.x + b.w / 2;
+    const ryN = b.y - 28 / H;
+    const dx = (lp.x - rxN) * W;
+    const dy = (lp.y - ryN) * H;
+    return Math.sqrt(dx * dx + dy * dy) <= 14;
+  };
+
   const toggleSelected = (id: string) => {
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -1144,6 +1195,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
   const onCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) return;
+    maybeAutoCollapseOnCanvas();
     const p = normFromEvent(e);
     // ----- Lines mode -----
     if (inputMode === 'lines') {
@@ -1182,7 +1234,23 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       actionRef.current = null;
       return;
     }
-    // 2) Resize-маркер.
+    // 2) Ручка повороту (тільки на виділених зонах).
+    for (const b of boxes) {
+      if (!hitRotateHandle(p, b)) continue;
+      const c = boxCenter(b);
+      // Кут від центру зони до точки кліку (у градусах, від «вгору»).
+      const dx = p.x - c.x;
+      const dy = p.y - c.y;
+      const startPointerAngle = (Math.atan2(dx, -dy) * 180) / Math.PI;
+      actionRef.current = {
+        type: 'rotate',
+        boxId: b.id,
+        startPointerAngle,
+        startBoxRotation: b.rotation || 0,
+      };
+      return;
+    }
+    // 3) Resize-маркер.
     for (const b of boxes) {
       const handle = hitResizeHandle(p, b);
       if (handle) {
@@ -1197,7 +1265,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         return;
       }
     }
-    // 3) Інакше — нова зона (drag).
+    // 4) Інакше — нова зона (drag).
     actionRef.current = { type: 'draw', startX: p.x, startY: p.y };
   };
 
@@ -1215,8 +1283,27 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       return;
     }
     const a = actionRef.current;
-    if (!a || a.type !== 'resize') return;
+    if (!a) return;
     const p = normFromEvent(e);
+    if (a.type === 'rotate') {
+      setBoxesForPage(page, prev =>
+        prev.map(b => {
+          if (b.id !== a.boxId) return b;
+          const c = boxCenter(b);
+          const dx = p.x - c.x;
+          const dy = p.y - c.y;
+          const pointerAngle = (Math.atan2(dx, -dy) * 180) / Math.PI;
+          let next = a.startBoxRotation + (pointerAngle - a.startPointerAngle);
+          // Shift — снап до 15°.
+          if (e.shiftKey) next = Math.round(next / 15) * 15;
+          next = ((next + 540) % 360) - 180;
+          if (Math.abs(next) < 0.05) next = 0;
+          return { ...b, rotation: next };
+        })
+      );
+      return;
+    }
+    if (a.type !== 'resize') return;
     setBoxesForPage(page, prev =>
       prev.map(b => {
         if (b.id !== a.boxId) return b;
@@ -1251,7 +1338,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     const a = actionRef.current;
     actionRef.current = null;
     if (!a) return;
-    if (a.type === 'resize') return; // готово, оновлення вже сталось у move.
+    if (a.type === 'resize' || a.type === 'rotate') return; // готово, оновлення вже сталось у move.
     // Завершення малювання нової зони.
     const p = normFromEvent(e);
     const x = Math.min(a.startX, p.x);
@@ -1747,10 +1834,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           </span>
           <button
             onClick={() => setMetaCollapsed(false)}
-            className="ml-auto text-slate-500 hover:text-indigo-700"
-            title="Розгорнути для редагування"
+            className="ml-auto px-2 py-1 bg-white border border-slate-300 rounded text-slate-700 hover:bg-indigo-50 hover:border-indigo-400 hover:text-indigo-700"
+            title="Розгорнути блок реквізитів і режиму для редагування"
           >
-            ✎ Змінити
+            ✎ Змінити реквізити / режим
           </button>
         </section>
       ) : (
