@@ -492,6 +492,9 @@ type Box = {
 };
 
 // Поворот точки навколо центру на заданий кут (у градусах).
+// ВАЖЛИВО: завжди застосовується в ПІКСЕЛЬНОМУ просторі — інакше для
+// неквадратних сторінок (PDF A4 ~ 1:1.41) кут у нормалізованих координатах
+// «спотворюється», бо нормалізовані одиниці X і Y мають різний фізичний розмір.
 function rotatePt(p: { x: number; y: number }, c: { x: number; y: number }, deg: number) {
   if (!deg) return p;
   const rad = (deg * Math.PI) / 180;
@@ -504,11 +507,20 @@ function rotatePt(p: { x: number; y: number }, c: { x: number; y: number }, deg:
 function boxCenter(b: Box) {
   return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
 }
-// Перетворити точку клавіатури/миші у локальну (вісь-вирівняну) систему зони:
-// розкручуємо її назад на -rotation навколо центру.
-function toBoxLocal(p: { x: number; y: number }, b: Box) {
-  if (!b.rotation) return p;
-  return rotatePt(p, boxCenter(b), -b.rotation);
+// Перетворити точку миші (нормовані 0..1) у локальну (вісь-вирівняну) систему
+// зони з урахуванням повороту. Конвертуємо в пікселі канвасу, обертаємо, повертаємо назад.
+function rotateNormPoint(
+  p: { x: number; y: number },
+  c: { x: number; y: number },
+  deg: number,
+  W: number,
+  H: number
+) {
+  if (!deg) return p;
+  const pPx = { x: p.x * W, y: p.y * H };
+  const cPx = { x: c.x * W, y: c.y * H };
+  const r = rotatePt(pPx, cPx, deg);
+  return { x: r.x / W, y: r.y / H };
 }
 
 const newId = () =>
@@ -1112,12 +1124,17 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     };
   };
 
+  const localPoint = (point: { x: number; y: number }, b: Box) => {
+    if (!b.rotation || !canvasRef.current) return point;
+    return rotateNormPoint(point, boxCenter(b), -b.rotation, canvasRef.current.width, canvasRef.current.height);
+  };
+
   // Перевірка попадання в "хрестик видалити".
   const hitCloseHandle = (point: { x: number; y: number }, b: Box): boolean => {
     if (!canvasRef.current) return false;
     const W = canvasRef.current.width;
     const H = canvasRef.current.height;
-    const lp = toBoxLocal(point, b);
+    const lp = localPoint(point, b);
     const cxPx = (b.x + b.w) * W - 14;
     const cyPx = b.y * H + 14;
     const px = lp.x * W;
@@ -1135,7 +1152,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     if (!canvasRef.current) return null;
     const W = canvasRef.current.width;
     const H = canvasRef.current.height;
-    const lp = toBoxLocal(point, b);
+    const lp = localPoint(point, b);
     const px = lp.x * W;
     const py = lp.y * H;
     // Маркер ~12px, додамо запас 4px для зручності кліку.
@@ -1157,7 +1174,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   };
 
   const pointInsideBox = (point: { x: number; y: number }, b: Box): boolean => {
-    const lp = toBoxLocal(point, b);
+    const lp = localPoint(point, b);
     return lp.x >= b.x && lp.x <= b.x + b.w && lp.y >= b.y && lp.y <= b.y + b.h;
   };
 
@@ -1166,7 +1183,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     if (!canvasRef.current) return false;
     const W = canvasRef.current.width;
     const H = canvasRef.current.height;
-    const lp = toBoxLocal(point, b);
+    const lp = localPoint(point, b);
     const rxN = b.x + b.w / 2;
     const ryN = b.y - 44 / H;
     const dx = (lp.x - rxN) * W;
@@ -1239,13 +1256,16 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       actionRef.current = null;
       return;
     }
-    // 2) Ручка повороту (тільки на виділених зонах).
+    // 2) Ручка повороту.
     for (const b of boxes) {
       if (!hitRotateHandle(p, b)) continue;
+      const W = canvasRef.current.width;
+      const H = canvasRef.current.height;
       const c = boxCenter(b);
-      // Кут від центру зони до точки кліку (у градусах, від «вгору»).
-      const dx = p.x - c.x;
-      const dy = p.y - c.y;
+      // Кут рахуємо в ПІКСЕЛЬНОМУ просторі — інакше для неквадратного канвасу
+      // він буде спотворений.
+      const dx = (p.x - c.x) * W;
+      const dy = (p.y - c.y) * H;
       const startPointerAngle = (Math.atan2(dx, -dy) * 180) / Math.PI;
       actionRef.current = {
         type: 'rotate',
@@ -1289,12 +1309,15 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     if (!a) return;
     const p = normFromEvent(e);
     if (a.type === 'rotate') {
+      if (!canvasRef.current) return;
+      const W = canvasRef.current.width;
+      const H = canvasRef.current.height;
       setBoxesForPage(page, prev =>
         prev.map(b => {
           if (b.id !== a.boxId) return b;
           const c = boxCenter(b);
-          const dx = p.x - c.x;
-          const dy = p.y - c.y;
+          const dx = (p.x - c.x) * W;
+          const dy = (p.y - c.y) * H;
           const pointerAngle = (Math.atan2(dx, -dy) * 180) / Math.PI;
           let next = a.startBoxRotation + (pointerAngle - a.startPointerAngle);
           // Shift — снап до 15°.
@@ -1307,54 +1330,56 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       return;
     }
     if (a.type !== 'resize') return;
+    if (!canvasRef.current) return;
+    const W = canvasRef.current.width;
+    const H = canvasRef.current.height;
     const preB = a.preB;
-    const preCenter = { x: preB.x + preB.w / 2, y: preB.y + preB.h / 2 };
     const rotation = preB.rotation || 0;
-    // pLocal — курсор у замороженій локальній системі (відносно центру preB).
-    const pLocal = rotation ? rotatePt(p, preCenter, -rotation) : p;
-    // Якірна точка (протилежний край) у локальній системі preB.
-    const anchorLocalAbs = (() => {
+    // ВАЖЛИВО: всі геометричні обчислення в ПІКСЕЛЬНОМУ просторі. Поворот у нормованих
+    // координатах (0..1) спотворюється на неквадратних канвасах (типовий PDF A4).
+    const preCenterPx = { x: (preB.x + preB.w / 2) * W, y: (preB.y + preB.h / 2) * H };
+    const pPx = { x: p.x * W, y: p.y * H };
+    const pLocalPx = rotation ? rotatePt(pPx, preCenterPx, -rotation) : pPx;
+    const anchorLocalPx = (() => {
       const ax =
-        a.handle.includes('w') ? preB.x + preB.w :
-        a.handle.includes('e') ? preB.x :
-        preB.x + preB.w / 2;
+        a.handle.includes('w') ? (preB.x + preB.w) * W :
+        a.handle.includes('e') ? preB.x * W :
+        (preB.x + preB.w / 2) * W;
       const ay =
-        a.handle.includes('n') ? preB.y + preB.h :
-        a.handle.includes('s') ? preB.y :
-        preB.y + preB.h / 2;
+        a.handle.includes('n') ? (preB.y + preB.h) * H :
+        a.handle.includes('s') ? preB.y * H :
+        (preB.y + preB.h / 2) * H;
       return { x: ax, y: ay };
     })();
-    // Нові розміри (тільки ті, що змінюються залежно від типу маркера).
-    let newW = preB.w;
-    let newH = preB.h;
+    let newWpx = preB.w * W;
+    let newHpx = preB.h * H;
     if (a.handle.includes('e') || a.handle.includes('w')) {
-      newW = Math.max(0.005, Math.abs(pLocal.x - anchorLocalAbs.x));
+      newWpx = Math.max(5, Math.abs(pLocalPx.x - anchorLocalPx.x));
     }
     if (a.handle.includes('n') || a.handle.includes('s')) {
-      newH = Math.max(0.005, Math.abs(pLocal.y - anchorLocalAbs.y));
+      newHpx = Math.max(5, Math.abs(pLocalPx.y - anchorLocalPx.y));
     }
-    // Вектор від якоря до центру нової коробки в ЛОКАЛЬНІЙ системі.
     let offDx = 0;
     let offDy = 0;
-    if (a.handle.includes('e')) offDx = +newW / 2;
-    else if (a.handle.includes('w')) offDx = -newW / 2;
-    if (a.handle.includes('n')) offDy = -newH / 2;
-    else if (a.handle.includes('s')) offDy = +newH / 2;
-    // Екранна позиція якоря — фіксована.
-    const anchorScreen = rotation
-      ? rotatePt(anchorLocalAbs, preCenter, rotation)
-      : anchorLocalAbs;
-    // Поворот вектора (offDx, offDy) на rotation.
+    if (a.handle.includes('e')) offDx = +newWpx / 2;
+    else if (a.handle.includes('w')) offDx = -newWpx / 2;
+    if (a.handle.includes('n')) offDy = -newHpx / 2;
+    else if (a.handle.includes('s')) offDy = +newHpx / 2;
+    const anchorScreenPx = rotation
+      ? rotatePt(anchorLocalPx, preCenterPx, rotation)
+      : anchorLocalPx;
     const rad = (rotation * Math.PI) / 180;
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
-    const offScreen = { x: offDx * cos - offDy * sin, y: offDx * sin + offDy * cos };
-    const newCenterScreen = {
-      x: anchorScreen.x + offScreen.x,
-      y: anchorScreen.y + offScreen.y,
+    const offScreenPx = { x: offDx * cos - offDy * sin, y: offDx * sin + offDy * cos };
+    const newCenterPx = {
+      x: anchorScreenPx.x + offScreenPx.x,
+      y: anchorScreenPx.y + offScreenPx.y,
     };
-    const newX = newCenterScreen.x - newW / 2;
-    const newY = newCenterScreen.y - newH / 2;
+    const newX = (newCenterPx.x - newWpx / 2) / W;
+    const newY = (newCenterPx.y - newHpx / 2) / H;
+    const newW = newWpx / W;
+    const newH = newHpx / H;
     setBoxesForPage(page, prev =>
       prev.map(b => (b.id === a.boxId ? { ...b, x: newX, y: newY, w: newW, h: newH } : b))
     );
