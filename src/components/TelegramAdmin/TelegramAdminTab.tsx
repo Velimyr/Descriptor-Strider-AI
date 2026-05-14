@@ -659,8 +659,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         type: 'resize';
         boxId: string;
         handle: 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w';
-        anchorX: number; // фіксована протилежна точка
-        anchorY: number;
+        // Заморожений знімок коробки на момент початку drag-у. Усі обчислення
+        // ведемо у локальній системі координат preB (нерухомий центр + кут).
+        preB: { x: number; y: number; w: number; h: number; rotation: number };
       }
     | {
         type: 'rotate';
@@ -1258,13 +1259,11 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     for (const b of boxes) {
       const handle = hitResizeHandle(p, b);
       if (handle) {
-        const a = anchorOf(b, handle);
         actionRef.current = {
           type: 'resize',
           boxId: b.id,
           handle,
-          anchorX: a.x,
-          anchorY: a.y,
+          preB: { x: b.x, y: b.y, w: b.w, h: b.h, rotation: b.rotation || 0 },
         };
         return;
       }
@@ -1308,28 +1307,56 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       return;
     }
     if (a.type !== 'resize') return;
+    const preB = a.preB;
+    const preCenter = { x: preB.x + preB.w / 2, y: preB.y + preB.h / 2 };
+    const rotation = preB.rotation || 0;
+    // pLocal — курсор у замороженій локальній системі (відносно центру preB).
+    const pLocal = rotation ? rotatePt(p, preCenter, -rotation) : p;
+    // Якірна точка (протилежний край) у локальній системі preB.
+    const anchorLocalAbs = (() => {
+      const ax =
+        a.handle.includes('w') ? preB.x + preB.w :
+        a.handle.includes('e') ? preB.x :
+        preB.x + preB.w / 2;
+      const ay =
+        a.handle.includes('n') ? preB.y + preB.h :
+        a.handle.includes('s') ? preB.y :
+        preB.y + preB.h / 2;
+      return { x: ax, y: ay };
+    })();
+    // Нові розміри (тільки ті, що змінюються залежно від типу маркера).
+    let newW = preB.w;
+    let newH = preB.h;
+    if (a.handle.includes('e') || a.handle.includes('w')) {
+      newW = Math.max(0.005, Math.abs(pLocal.x - anchorLocalAbs.x));
+    }
+    if (a.handle.includes('n') || a.handle.includes('s')) {
+      newH = Math.max(0.005, Math.abs(pLocal.y - anchorLocalAbs.y));
+    }
+    // Вектор від якоря до центру нової коробки в ЛОКАЛЬНІЙ системі.
+    let offDx = 0;
+    let offDy = 0;
+    if (a.handle.includes('e')) offDx = +newW / 2;
+    else if (a.handle.includes('w')) offDx = -newW / 2;
+    if (a.handle.includes('n')) offDy = -newH / 2;
+    else if (a.handle.includes('s')) offDy = +newH / 2;
+    // Екранна позиція якоря — фіксована.
+    const anchorScreen = rotation
+      ? rotatePt(anchorLocalAbs, preCenter, rotation)
+      : anchorLocalAbs;
+    // Поворот вектора (offDx, offDy) на rotation.
+    const rad = (rotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const offScreen = { x: offDx * cos - offDy * sin, y: offDx * sin + offDy * cos };
+    const newCenterScreen = {
+      x: anchorScreen.x + offScreen.x,
+      y: anchorScreen.y + offScreen.y,
+    };
+    const newX = newCenterScreen.x - newW / 2;
+    const newY = newCenterScreen.y - newH / 2;
     setBoxesForPage(page, prev =>
-      prev.map(b => {
-        if (b.id !== a.boxId) return b;
-        // Для повернутих зон рахуємо все в локальній (вісь-вирівняній) системі —
-        // anchor зберігали при mousedown теж у локальній системі.
-        const pLocal = toBoxLocal(p, b);
-        let newX = b.x, newY = b.y, newW = b.w, newH = b.h;
-        const movesX = a.handle.includes('e') || a.handle.includes('w');
-        const movesY = a.handle.includes('n') || a.handle.includes('s');
-        if (movesX) {
-          newX = Math.min(a.anchorX, pLocal.x);
-          newW = Math.abs(a.anchorX - pLocal.x);
-        }
-        if (movesY) {
-          newY = Math.min(a.anchorY, pLocal.y);
-          newH = Math.abs(a.anchorY - pLocal.y);
-        }
-        // Не даємо колапс у нуль.
-        if (newW < 0.005) newW = 0.005;
-        if (newH < 0.005) newH = 0.005;
-        return { ...b, x: newX, y: newY, w: newW, h: newH };
-      })
+      prev.map(b => (b.id === a.boxId ? { ...b, x: newX, y: newY, w: newW, h: newH } : b))
     );
   };
 
