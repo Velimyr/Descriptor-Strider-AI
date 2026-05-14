@@ -3549,18 +3549,22 @@ type IntegrityDiff = {
   fields: IntegrityField[];
 };
 
+const PENALTY_POINTS = 100;
+
 const IntegrityView: React.FC = () => {
   const [diffs, setDiffs] = useState<IntegrityDiff[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [threshold, setThreshold] = useState(5);
   const [filter, setFilter] = useState('');
+  // Локальний стан по кнопках «Зняти бали»: tgId|caseId|idx → 'busy' | 'done' | 'err:<msg>'
+  const [penaltyState, setPenaltyState] = useState<Record<string, string>>({});
 
-  const refresh = async () => {
+  const refresh = async (t = threshold) => {
     setBusy(true);
     setMsg('');
     try {
-      const r = await tgApi.integrity(threshold);
+      const r = await tgApi.integrity(t);
       setDiffs(r.diffs || []);
     } catch (e: any) {
       setMsg('❌ ' + e.message);
@@ -3569,13 +3573,53 @@ const IntegrityView: React.FC = () => {
     }
   };
 
+  // Debounce авто-перезавантаження при зміні порогу.
   useEffect(() => {
-    refresh();
+    const t = setTimeout(() => refresh(threshold), 400);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [threshold]);
 
   const userLabel = (u: IntegrityUser) =>
     `${u.displayName || '—'}${u.tgId ? ` (${u.tgId})` : ''}`;
+
+  // Знімає бали з користувача + надсилає йому повідомлення з його ж введеним текстом.
+  const penalize = async (
+    d: IntegrityDiff,
+    side: 'first' | 'second',
+    diffIdx: number
+  ) => {
+    const u = side === 'first' ? d.first : d.second;
+    if (!u.tgId) return;
+    const fields = d.fields.map(f => ({
+      label: f.questionLabel,
+      text: side === 'first' ? f.from : f.to,
+    }));
+    const key = `${u.tgId}|${d.caseId}|${diffIdx}|${side}`;
+    const ok = window.confirm(
+      `Зняти ${PENALTY_POINTS} балів у користувача "${userLabel(u)}" і надіслати йому повідомлення з його відповіддю?`
+    );
+    if (!ok) return;
+    setPenaltyState(s => ({ ...s, [key]: 'busy' }));
+    try {
+      const r = await tgApi.penalize({
+        tgId: u.tgId,
+        points: PENALTY_POINTS,
+        caseId: d.caseId,
+        archive: d.archive,
+        fund: d.fund,
+        opys: d.opys,
+        fields,
+      });
+      const warn = (r as any)?.warning ? ` ⚠️ ${(r as any).warning}` : '';
+      setPenaltyState(s => ({
+        ...s,
+        [key]: `done:Новий баланс ${(r as any)?.newTotal ?? '?'}${warn}`,
+      }));
+    } catch (e: any) {
+      setPenaltyState(s => ({ ...s, [key]: `err:${e.message || 'помилка'}` }));
+    }
+  };
 
   const filtered = (diffs || []).filter(d => {
     if (!filter.trim()) return true;
@@ -3601,7 +3645,7 @@ const IntegrityView: React.FC = () => {
       </div>
       <div className="flex flex-wrap gap-2 items-center">
         <button
-          onClick={refresh}
+          onClick={() => refresh()}
           disabled={busy}
           className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1"
         >
@@ -3612,8 +3656,9 @@ const IntegrityView: React.FC = () => {
           type="number"
           min={0}
           value={threshold}
-          onChange={e => setThreshold(parseInt(e.target.value, 10) || 0)}
+          onChange={e => setThreshold(Math.max(0, parseInt(e.target.value, 10) || 0))}
           className="border rounded px-2 py-1 text-sm w-20"
+          title="За замовчуванням 5. Сторінка перезавантажиться автоматично."
         />
         <input
           type="text"
@@ -3645,16 +3690,42 @@ const IntegrityView: React.FC = () => {
               </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm mb-2">
-              <div className="border rounded p-2 bg-slate-50">
-                <div className="text-xs text-slate-500">Перша відповідь</div>
-                <div className="font-medium">{userLabel(d.first)}</div>
-                <div className="text-xs text-slate-500">{d.first.submittedAt}</div>
-              </div>
-              <div className="border rounded p-2 bg-slate-50">
-                <div className="text-xs text-slate-500">Друга відповідь</div>
-                <div className="font-medium">{userLabel(d.second)}</div>
-                <div className="text-xs text-slate-500">{d.second.submittedAt}</div>
-              </div>
+              {(['first', 'second'] as const).map(side => {
+                const u = side === 'first' ? d.first : d.second;
+                const label = side === 'first' ? 'Перша відповідь' : 'Друга відповідь';
+                const key = `${u.tgId}|${d.caseId}|${idx}|${side}`;
+                const st = penaltyState[key] || '';
+                const isBusy = st === 'busy';
+                const isDone = st.startsWith('done:');
+                const isErr = st.startsWith('err:');
+                return (
+                  <div key={side} className="border rounded p-2 bg-slate-50 flex flex-col gap-1">
+                    <div className="text-xs text-slate-500">{label}</div>
+                    <div className="font-medium">{userLabel(u)}</div>
+                    <div className="text-xs text-slate-500">{u.submittedAt}</div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <button
+                        disabled={!u.tgId || isBusy || isDone}
+                        onClick={() => penalize(d, side, idx)}
+                        className={`px-2 py-1 text-xs rounded font-medium ${
+                          isDone
+                            ? 'bg-green-100 text-green-700 cursor-default'
+                            : 'bg-rose-100 text-rose-700 hover:bg-rose-200 disabled:opacity-50'
+                        }`}
+                        title="Зняти 100 балів і повідомити користувача"
+                      >
+                        {isBusy ? 'Надсилаю…' : isDone ? '✓ Знято −100' : `Зняти −${PENALTY_POINTS} балів`}
+                      </button>
+                      {isDone && (
+                        <span className="text-xs text-green-700">{st.slice(5)}</span>
+                      )}
+                      {isErr && (
+                        <span className="text-xs text-rose-700">{st.slice(4)}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
             <table className="w-full text-xs border-collapse">
               <thead>

@@ -72,6 +72,16 @@ export const tgApi = {
   overview: () => call('/admin/overview'),
   results: (limit = 500) => call(`/admin/results?limit=${limit}`),
   integrity: (threshold = 5) => call(`/admin/integrity?threshold=${threshold}`),
+  penalize: (payload: {
+    tgId: string;
+    points: number;
+    caseId?: string;
+    archive?: string;
+    fund?: string;
+    opys?: string;
+    fields?: Array<{ label: string; text: string }>;
+  }) =>
+    call('/admin/penalize', { method: 'POST', body: JSON.stringify(payload) }),
   submissionsByDescription: (archive: string, fund: string, opys: string) =>
     call(
       `/admin/submissions-by-description?archive=${encodeURIComponent(archive)}` +

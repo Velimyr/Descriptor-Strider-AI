@@ -683,6 +683,55 @@ router.get('/admin/integrity', async (req, res) => {
   }
 });
 
+// Зняти бали з користувача за недоброчесний ввід + повідомити його.
+// Формулювання м'яке, без слова «штраф» — це навчальний меседж, не покарання.
+router.post('/admin/penalize', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { tgId, points, caseId, archive, fund, opys, fields } = req.body || {};
+  if (!tgId || !Number.isFinite(points) || points <= 0) {
+    return res.status(400).json({ error: 'tgId і додатній points обовʼязкові' });
+  }
+  try {
+    const { getUser, patchUser } = await import('./storage.js');
+    const user = await getUser(String(tgId));
+    if (!user) return res.status(404).json({ error: 'Користувача не знайдено' });
+    const newTotal = Math.round((user.totalPoints - Number(points)) * 100) / 100;
+    await patchUser(user.tgId, { totalPoints: newTotal });
+
+    const descLine = archive || fund || opys
+      ? `\nОпис: <b>${String(archive || '')} ${String(fund || '')}-${String(opys || '')}</b>`
+      : '';
+    const caseLine = caseId ? `\nСправа: <code>${String(caseId).slice(0, 8)}</code>` : '';
+    const safeFields = Array.isArray(fields)
+      ? fields
+          .filter((f: any) => f && (f.label || f.text))
+          .map((f: any) => {
+            const label = String(f.label || '').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
+            const text = String(f.text || '').replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
+            return `• <b>${label}</b>: ${text || '—'}`;
+          })
+          .join('\n')
+      : '';
+
+    const text =
+      `Привіт! Ваша відповідь на одну зі справ помітно відрізнялась від того, що було на зображенні.${descLine}${caseLine}\n\n` +
+      (safeFields ? `Ваш ввід, який викликав питання:\n${safeFields}\n\n` : '') +
+      `Щоб усі могли довіряти результатам, ми скоригували ваш баланс на −${points} балів. Новий баланс: <b>${newTotal}</b>.\n\n` +
+      `Будь ласка, переписуйте текст саме так, як він на зображенні — навіть з помилками і скороченнями. Дякуємо за розуміння 🙏`;
+
+    try {
+      const { sendMessage } = await import('./tg-api.js');
+      await sendMessage(user.tgId, text);
+    } catch (e: any) {
+      // Користувача оновили, але повідомлення не дійшло — повертаємо успіх + warning.
+      return res.json({ ok: true, newTotal, warning: `Бали знято, але повідомлення не доставлено: ${e?.message || e}` });
+    }
+    res.json({ ok: true, newTotal });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/admin/overview', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const [users, cases] = await Promise.all([getAllUsers(), getAllCases()]);
