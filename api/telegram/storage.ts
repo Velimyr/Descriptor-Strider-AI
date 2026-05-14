@@ -49,6 +49,7 @@ export interface BotUser {
   status: 'active' | 'paused';
   pendingAction: '' | 'rename';
   createdAt: string;
+  introShownAt: string; // ISO або '' якщо ще не показували
 }
 
 export interface BotCase {
@@ -101,6 +102,7 @@ function mapUser(r: any): BotUser {
     status: (r.status || 'active') as 'active' | 'paused',
     pendingAction: (r.pending_action || '') as '' | 'rename',
     createdAt: r.created_at || '',
+    introShownAt: r.intro_shown_at || '',
   };
 }
 
@@ -214,6 +216,7 @@ export async function upsertUser(
         consecutive_misses: u.consecutiveMisses,
         status: u.status,
         pending_action: u.pendingAction || '',
+        intro_shown_at: u.introShownAt || null,
         // created_at — не оновлюємо при апдейті, але дамо при insert
         ...(u.createdAt ? { created_at: u.createdAt } : {}),
       },
@@ -231,6 +234,7 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.consecutiveMisses !== undefined) dbPatch.consecutive_misses = patch.consecutiveMisses;
   if (patch.status !== undefined) dbPatch.status = patch.status;
   if (patch.pendingAction !== undefined) dbPatch.pending_action = patch.pendingAction;
+  if (patch.introShownAt !== undefined) dbPatch.intro_shown_at = patch.introShownAt || null;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;

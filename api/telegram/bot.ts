@@ -9,6 +9,7 @@ import {
   getAllUsers,
   getCase,
   getMeta,
+  setMeta,
   getSession,
   getUser,
   incDailyCount,
@@ -105,6 +106,7 @@ function helpMenuKeyboard(): any {
   return {
     inline_keyboard: [
       [{ text: 'ℹ Про що цей бот', callback_data: 'help:about' }],
+      [{ text: '📑 З чого складається опис', callback_data: 'help:descstruct' }],
       [{ text: '📝 Як відповідати на справу', callback_data: 'help:howto' }],
       [{ text: '🏆 Бали і рейтинг', callback_data: 'help:points' }],
       [{ text: '🔔 Розклад і сповіщення', callback_data: 'help:schedule' }],
@@ -186,6 +188,80 @@ function keyboardForEdit(questions: TableColumn[]): any {
       { text: `${i + 1}. ${q.label.slice(0, 40)}`, callback_data: `edit:${i}` },
     ]),
   };
+}
+
+// --------- Intro onboarding («З чого складається опис») ---------
+// File-id картинки кешуємо в bot_meta('intro_file_id'). Якщо ще не залито —
+// читаємо public/sample.png з диска, шлемо в канал, зберігаємо file_id.
+async function getIntroFileId(): Promise<string | null> {
+  const cached = await getMeta('intro_file_id');
+  if (cached) return cached;
+  try {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    // На Vercel serverless лише файли, що лежать поряд із кодом функції, потрапляють
+    // у бандл. Пробуємо кілька шляхів у такому порядку, що покриває dev і прод.
+    const candidates = [
+      path.join(process.cwd(), 'api', 'telegram', 'sample.png'),
+      path.join(process.cwd(), 'public', 'sample.png'),
+    ];
+    let buf: Buffer | null = null;
+    for (const p of candidates) {
+      try {
+        buf = await fs.readFile(p);
+        if (buf) break;
+      } catch {
+        // спробуємо наступний
+      }
+    }
+    if (!buf) {
+      console.warn('[intro] sample.png not found in', candidates);
+      return null;
+    }
+    const channelId = process.env[telegramBotConfig.tg.channelIdEnv];
+    if (!channelId) return null;
+    const { sendPhotoByBuffer } = await import('./tg-api.js');
+    const res = await sendPhotoByBuffer(channelId, buf, 'sample.png');
+    const photoArr = res?.photo || [];
+    const fid = photoArr.length ? photoArr[photoArr.length - 1].file_id : '';
+    if (fid) await setMeta('intro_file_id', fid);
+    return fid || null;
+  } catch (e) {
+    console.error('getIntroFileId failed', e);
+    return null;
+  }
+}
+
+// Шле користувачу пам'ятку з картинкою. Caption Telegram обмежений 1024 символами —
+// якщо текст довший за caption-ліміт, шлемо як photo+text окремо.
+async function sendIntroHelp(chatId: number | string, withAckButton: boolean): Promise<void> {
+  const text = T.helpDescStruct;
+  const replyMarkup = withAckButton
+    ? { inline_keyboard: [[{ text: T.introAckButton, callback_data: 'intro:ack' }]] }
+    : helpBackKeyboard();
+  const fid = await getIntroFileId();
+  if (fid && text.length <= 1024) {
+    await sendPhotoByFileId(chatId, fid, text, { reply_markup: replyMarkup });
+    return;
+  }
+  if (fid) {
+    await sendPhotoByFileId(chatId, fid);
+  }
+  await sendMessage(chatId, text, { reply_markup: replyMarkup });
+}
+
+// Якщо користувачу ще не показували онбординг — показуємо зараз і фіксуємо час.
+// Викликається на старті будь-якої дії існуючого користувача.
+async function maybeShowIntro(chatId: number | string, user: BotUser): Promise<void> {
+  if (user.introShownAt) return;
+  if (!user.displayName) return; // ще не зареєстрований остаточно — інший шлях
+  try {
+    await patchUser(user.tgId, { introShownAt: nowIsoUtc() });
+    user.introShownAt = nowIsoUtc();
+    await sendIntroHelp(chatId, true);
+  } catch (e) {
+    console.error('maybeShowIntro failed', e);
+  }
 }
 
 // Перед показом блоку підтвердження надсилаємо ту ж картинку ще раз —
@@ -277,6 +353,7 @@ async function handleMessage(msg: any) {
         status: 'active',
         pendingAction: '',
         createdAt: nowIsoUtc(),
+        introShownAt: '',
       };
       await Promise.all([
         upsertUser(newUser),
@@ -321,15 +398,23 @@ async function handleMessage(msg: any) {
       await sendMessage(chatId, fmt(T.nameTaken || 'Імʼя «{name}» вже зайняте, оберіть інше.', { name }));
       return;
     }
-    const updatedUser = { ...user, displayName: name };
+    // Фіксуємо ім'я + одразу позначаємо, що онбординг показано (нижче його надішлемо).
+    // Якщо інтро впаде з помилкою — користувач все одно зможе натиснути «❓ Допомога → 📑 З чого складається опис».
+    const introTime = nowIsoUtc();
+    const updatedUser = { ...user, displayName: name, introShownAt: introTime };
     await Promise.all([
       upsertUser(updatedUser, user.rowIndex),
       sendMessage(chatId, fmt(T.nameSaved, { name }), {
         reply_markup: mainMenuKeyboard(updatedUser),
       }),
     ]);
+    await sendIntroHelp(chatId, true);
     return;
   }
+
+  // Існуючий користувач робить дію — якщо інтро ще не показували, покажемо зараз.
+  // patchUser виставляє introShownAt усередині, щоб більше не повторювати.
+  await maybeShowIntro(chatId, user);
 
   if (text === '/help') {
     await sendMessage(chatId, T.helpText, { reply_markup: helpMenuKeyboard() });
@@ -416,6 +501,11 @@ async function handleCallback(cb: any) {
   if (data.startsWith('help:')) {
     await answerCallbackQuery(cb.id);
     const section = data.slice(5);
+    // «З чого складається опис» — окремий шлях: фото + caption, editMessageText не підходить.
+    if (section === 'descstruct') {
+      await sendIntroHelp(chatId, false);
+      return;
+    }
     const sections: Record<string, string> = {
       menu: T.helpText,
       about: T.helpAbout,
@@ -435,6 +525,23 @@ async function handleCallback(cb: any) {
       }
     }
     await sendMessage(chatId, text, { reply_markup: markup });
+    return;
+  }
+
+  // Ack кнопки «Ознайомився» в онбординг-пам'ятці.
+  if (data === 'intro:ack') {
+    await answerCallbackQuery(cb.id, T.introAcknowledged);
+    // introShownAt уже виставлений у момент показу — тут просто ховаємо кнопку.
+    if (messageId) {
+      try {
+        // У caption-повідомлень edit працює через editMessageCaption, а не editMessageText.
+        // Простіше — просто прибрати reply_markup. Telegram дозволяє editMessageReplyMarkup.
+        const { tg } = await import('./tg-api.js');
+        await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } });
+      } catch (e) {
+        // не критично
+      }
+    }
     return;
   }
 

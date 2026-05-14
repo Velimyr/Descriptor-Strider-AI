@@ -14,6 +14,8 @@ create table if not exists botdev_users (
   created_at               timestamptz not null default now()
 );
 alter table botdev_users add column if not exists pending_action text not null default '';
+-- Час показу онбординг-підказки «З чого складається опис».
+alter table botdev_users add column if not exists intro_shown_at timestamptz;
 
 create table if not exists botdev_cases (
   case_id            text primary key,

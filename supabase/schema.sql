@@ -16,6 +16,9 @@ create table if not exists bot_users (
 -- Міграція для існуючих установок (no-op якщо колонка вже є).
 -- pending_action: '' | 'rename' — стан очікування вводу від користувача поза опитуванням.
 alter table bot_users add column if not exists pending_action text not null default '';
+-- Час, коли користувачу показали онбординг-підказку «З чого складається опис».
+-- NULL означає «ще не показували» — наступна дія тригерить показ.
+alter table bot_users add column if not exists intro_shown_at timestamptz;
 
 create table if not exists bot_cases (
   case_id            text primary key,
