@@ -497,6 +497,15 @@ async function handleCallback(cb: any) {
   const messageId = cb.message?.message_id;
   const data: string = cb.data || '';
 
+  // Якщо існуючий користувач уже зареєстрований і ще не бачив онбординг —
+  // показуємо зараз. Не блокуємо обробку основного callback-у (fire-and-forget).
+  // Виняток — сам callback 'intro:ack', щоб не зациклити.
+  if (data !== 'intro:ack') {
+    getUser(tgId)
+      .then(u => (u ? maybeShowIntro(chatId, u) : null))
+      .catch(e => console.error('maybeShowIntro (callback) failed', e));
+  }
+
   // Help-навігація — не залежить від сесії, обробляємо одразу.
   if (data.startsWith('help:')) {
     await answerCallbackQuery(cb.id);

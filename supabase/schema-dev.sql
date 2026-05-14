@@ -17,6 +17,17 @@ alter table botdev_users add column if not exists pending_action text not null d
 -- Час показу онбординг-підказки «З чого складається опис».
 alter table botdev_users add column if not exists intro_shown_at timestamptz;
 
+create table if not exists botdev_integrity_reviews (
+  case_id          text        not null,
+  first_tg_id      text        not null,
+  second_tg_id     text        not null,
+  action           text        not null check (action in ('penalized','dismissed')),
+  penalized_tg_id  text,
+  at               timestamptz not null default now(),
+  primary key (case_id, first_tg_id, second_tg_id)
+);
+create index if not exists idx_botdev_integrity_reviews_case on botdev_integrity_reviews(case_id);
+
 create table if not exists botdev_cases (
   case_id            text primary key,
   tg_file_id         text        not null,
@@ -162,6 +173,7 @@ alter table botdev_dispatch_log enable row level security;
 alter table botdev_skipped      enable row level security;
 alter table botdev_meta         enable row level security;
 alter table botdev_case_confirmations enable row level security;
+alter table botdev_integrity_reviews  enable row level security;
 
 revoke all on function botdev_inc_daily(text, date) from public, anon, authenticated;
 

@@ -71,7 +71,8 @@ export const tgApi = {
     }),
   overview: () => call('/admin/overview'),
   results: (limit = 500) => call(`/admin/results?limit=${limit}`),
-  integrity: (threshold = 5) => call(`/admin/integrity?threshold=${threshold}`),
+  integrity: (threshold = 5, includeResolved = false) =>
+    call(`/admin/integrity?threshold=${threshold}${includeResolved ? '&includeResolved=1' : ''}`),
   penalize: (payload: {
     tgId: string;
     points: number;
@@ -80,8 +81,20 @@ export const tgApi = {
     fund?: string;
     opys?: string;
     fields?: Array<{ label: string; text: string }>;
+    pairTgIdA?: string;
+    pairTgIdB?: string;
   }) =>
     call('/admin/penalize', { method: 'POST', body: JSON.stringify(payload) }),
+  integrityDismiss: (caseId: string, pairTgIdA: string, pairTgIdB: string) =>
+    call('/admin/integrity/dismiss', {
+      method: 'POST',
+      body: JSON.stringify({ caseId, pairTgIdA, pairTgIdB }),
+    }),
+  integrityReopen: (caseId: string, pairTgIdA: string, pairTgIdB: string) =>
+    call('/admin/integrity/reopen', {
+      method: 'POST',
+      body: JSON.stringify({ caseId, pairTgIdA, pairTgIdB }),
+    }),
   submissionsByDescription: (archive: string, fund: string, opys: string) =>
     call(
       `/admin/submissions-by-description?archive=${encodeURIComponent(archive)}` +

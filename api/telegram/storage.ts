@@ -16,6 +16,7 @@ export const T = {
   daily:             `${PREFIX}daily_scores`,
   skipped:           `${PREFIX}skipped`,
   caseConfirmations: `${PREFIX}case_confirmations`,
+  integrityReviews:  `${PREFIX}integrity_reviews`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
@@ -783,6 +784,66 @@ export async function getAllConfirmationsWithAnswers(): Promise<
         kind: (r as any).kind,
         at: (r as any).at,
         answers: Array.isArray(ans) ? ans.map(String) : [],
+      });
+    }
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
+// ---------- INTEGRITY REVIEWS ----------
+// Завжди зберігаємо tg_id у відсортованому порядку, щоб (A,B) ↔ (B,A) дали один ключ.
+export function integrityPairKey(a: string, b: string): { first: string; second: string } {
+  return a < b ? { first: a, second: b } : { first: b, second: a };
+}
+
+export async function addIntegrityReview(
+  caseId: string,
+  tgIdA: string,
+  tgIdB: string,
+  action: 'penalized' | 'dismissed',
+  penalizedTgId?: string
+): Promise<void> {
+  const { first, second } = integrityPairKey(tgIdA || '', tgIdB || '');
+  const { error } = await db()
+    .from(T.integrityReviews)
+    .upsert(
+      {
+        case_id: caseId,
+        first_tg_id: first,
+        second_tg_id: second,
+        action,
+        penalized_tg_id: penalizedTgId || null,
+        at: new Date().toISOString(),
+      },
+      { onConflict: 'case_id,first_tg_id,second_tg_id' }
+    );
+  if (error) throw error;
+}
+
+export async function getAllIntegrityReviews(): Promise<
+  Array<{ caseId: string; firstTgId: string; secondTgId: string; action: string; penalizedTgId: string; at: string }>
+> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: any[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.integrityReviews)
+      .select('case_id, first_tg_id, second_tg_id, action, penalized_tg_id, at')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) {
+      out.push({
+        caseId: (r as any).case_id,
+        firstTgId: (r as any).first_tg_id || '',
+        secondTgId: (r as any).second_tg_id || '',
+        action: (r as any).action,
+        penalizedTgId: (r as any).penalized_tg_id || '',
+        at: (r as any).at,
       });
     }
     if (rows.length < pageSize) break;

@@ -3597,6 +3597,7 @@ type IntegrityField = {
   distance: number;
 };
 type IntegrityUser = { tgId: string; displayName: string; submittedAt: string };
+type IntegrityReview = { action: 'penalized' | 'dismissed'; penalizedTgId: string; at: string };
 type IntegrityDiff = {
   caseId: string;
   archive: string;
@@ -3605,6 +3606,7 @@ type IntegrityDiff = {
   first: IntegrityUser;
   second: IntegrityUser;
   fields: IntegrityField[];
+  review: IntegrityReview | null;
 };
 
 const PENALTY_POINTS = 100;
@@ -3615,14 +3617,17 @@ const IntegrityView: React.FC = () => {
   const [msg, setMsg] = useState('');
   const [threshold, setThreshold] = useState(5);
   const [filter, setFilter] = useState('');
+  const [includeResolved, setIncludeResolved] = useState(false);
   // Локальний стан по кнопках «Зняти бали»: tgId|caseId|idx → 'busy' | 'done' | 'err:<msg>'
   const [penaltyState, setPenaltyState] = useState<Record<string, string>>({});
+  // tg-стан по парах: caseId|first|second → 'busy' | 'err:..'
+  const [pairBusy, setPairBusy] = useState<Record<string, string>>({});
 
-  const refresh = async (t = threshold) => {
+  const refresh = async (t = threshold, resolved = includeResolved) => {
     setBusy(true);
     setMsg('');
     try {
-      const r = await tgApi.integrity(t);
+      const r = await tgApi.integrity(t, resolved);
       setDiffs(r.diffs || []);
     } catch (e: any) {
       setMsg('❌ ' + e.message);
@@ -3631,12 +3636,55 @@ const IntegrityView: React.FC = () => {
     }
   };
 
-  // Debounce авто-перезавантаження при зміні порогу.
+  // Debounce авто-перезавантаження при зміні порогу / тогла «вже опрацьовані».
   useEffect(() => {
-    const t = setTimeout(() => refresh(threshold), 400);
+    const t = setTimeout(() => refresh(threshold, includeResolved), 400);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threshold]);
+  }, [threshold, includeResolved]);
+
+  const pairKeyOf = (d: IntegrityDiff) => {
+    const a = d.first.tgId || '';
+    const b = d.second.tgId || '';
+    const [first, second] = a < b ? [a, b] : [b, a];
+    return `${d.caseId}|${first}|${second}`;
+  };
+
+  const removeFromList = (d: IntegrityDiff) => {
+    if (!diffs) return;
+    const key = pairKeyOf(d);
+    setDiffs(diffs.filter(x => pairKeyOf(x) !== key));
+  };
+
+  const dismissPair = async (d: IntegrityDiff) => {
+    if (!d.first.tgId || !d.second.tgId) return;
+    if (!window.confirm('Позначити цю пару як «вирішено без штрафу»? Вона зникне зі списку.')) return;
+    const key = pairKeyOf(d);
+    setPairBusy(s => ({ ...s, [key]: 'busy' }));
+    try {
+      await tgApi.integrityDismiss(d.caseId, d.first.tgId, d.second.tgId);
+      removeFromList(d);
+    } catch (e: any) {
+      setPairBusy(s => ({ ...s, [key]: `err:${e.message || 'помилка'}` }));
+    } finally {
+      setPairBusy(s => {
+        const next = { ...s };
+        if (next[key] === 'busy') delete next[key];
+        return next;
+      });
+    }
+  };
+
+  const reopenPair = async (d: IntegrityDiff) => {
+    if (!d.first.tgId || !d.second.tgId) return;
+    try {
+      await tgApi.integrityReopen(d.caseId, d.first.tgId, d.second.tgId);
+      // Перезавантажуємо список з сервера, бо ця пара мала б знов зʼявитися.
+      refresh(threshold, includeResolved);
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
+    }
+  };
 
   const userLabel = (u: IntegrityUser) =>
     `${u.displayName || '—'}${u.tgId ? ` (${u.tgId})` : ''}`;
@@ -3668,12 +3716,16 @@ const IntegrityView: React.FC = () => {
         fund: d.fund,
         opys: d.opys,
         fields,
+        pairTgIdA: d.first.tgId,
+        pairTgIdB: d.second.tgId,
       });
       const warn = (r as any)?.warning ? ` ⚠️ ${(r as any).warning}` : '';
       setPenaltyState(s => ({
         ...s,
         [key]: `done:Новий баланс ${(r as any)?.newTotal ?? '?'}${warn}`,
       }));
+      // Прибираємо пару зі списку — бек уже зафіксував її як 'penalized'.
+      setTimeout(() => removeFromList(d), 1500);
     } catch (e: any) {
       setPenaltyState(s => ({ ...s, [key]: `err:${e.message || 'помилка'}` }));
     }
@@ -3725,6 +3777,14 @@ const IntegrityView: React.FC = () => {
           placeholder="Пошук: текст, користувач, case_id"
           className="border rounded px-2 py-1 text-sm flex-1 min-w-[200px]"
         />
+        <label className="text-sm text-slate-600 inline-flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={includeResolved}
+            onChange={e => setIncludeResolved(e.target.checked)}
+          />
+          Показувати вже опрацьовані
+        </label>
         <div className="text-sm text-slate-600 ml-auto">
           Знайдено: <b>{filtered.length}</b>
         </div>
@@ -3739,12 +3799,48 @@ const IntegrityView: React.FC = () => {
       )}
 
       <div className="space-y-3">
-        {filtered.map((d, idx) => (
-          <div key={`${d.caseId}-${idx}`} className="border rounded p-3 bg-white shadow-sm">
+        {filtered.map((d, idx) => {
+          const pk = pairKeyOf(d);
+          const pBusy = pairBusy[pk];
+          return (
+          <div key={`${d.caseId}-${idx}`} className={`border rounded p-3 bg-white shadow-sm ${d.review ? 'opacity-75' : ''}`}>
             <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-2 text-sm">
               <div className="font-mono text-xs text-slate-500">{d.caseId}</div>
               <div className="text-slate-700">
                 {d.archive} {d.fund}-{d.opys}
+              </div>
+              {d.review && (
+                <span className={`text-xs px-2 py-0.5 rounded ${
+                  d.review.action === 'penalized'
+                    ? 'bg-rose-100 text-rose-700'
+                    : 'bg-slate-200 text-slate-700'
+                }`}>
+                  {d.review.action === 'penalized' ? '✓ Знято бали' : '✓ Пропущено'} • {d.review.at?.slice(0, 16).replace('T', ' ')}
+                </span>
+              )}
+              <div className="ml-auto flex items-center gap-2">
+                {!d.review && (
+                  <button
+                    onClick={() => dismissPair(d)}
+                    disabled={pBusy === 'busy' || !d.first.tgId || !d.second.tgId}
+                    className="px-2 py-0.5 text-xs rounded bg-slate-200 hover:bg-slate-300 disabled:opacity-50"
+                    title="Прибрати зі списку без штрафу"
+                  >
+                    {pBusy === 'busy' ? '…' : 'Пропустити'}
+                  </button>
+                )}
+                {d.review && (
+                  <button
+                    onClick={() => reopenPair(d)}
+                    className="px-2 py-0.5 text-xs rounded bg-slate-100 hover:bg-slate-200 text-slate-600"
+                    title="Повернути в список"
+                  >
+                    Повернути
+                  </button>
+                )}
+                {pBusy && pBusy.startsWith('err:') && (
+                  <span className="text-xs text-rose-700">{pBusy.slice(4)}</span>
+                )}
               </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm mb-2">
@@ -3806,7 +3902,8 @@ const IntegrityView: React.FC = () => {
               </tbody>
             </table>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

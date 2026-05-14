@@ -20,6 +20,21 @@ alter table bot_users add column if not exists pending_action text not null defa
 -- NULL означає «ще не показували» — наступна дія тригерить показ.
 alter table bot_users add column if not exists intro_shown_at timestamptz;
 
+-- Журнал рішень адміна по парах різночитань ("Перевірка доброчесності").
+-- Пара ідентифікується справою + двома tg_id у відсортованому порядку (щоб
+-- (A,B) і (B,A) трактувались як одна пара). action: penalized — комусь зняли бали;
+-- dismissed — адмін свідомо пропустив пару без штрафу.
+create table if not exists bot_integrity_reviews (
+  case_id          text        not null,
+  first_tg_id      text        not null,
+  second_tg_id     text        not null,
+  action           text        not null check (action in ('penalized','dismissed')),
+  penalized_tg_id  text,
+  at               timestamptz not null default now(),
+  primary key (case_id, first_tg_id, second_tg_id)
+);
+create index if not exists idx_integrity_reviews_case on bot_integrity_reviews(case_id);
+
 create table if not exists bot_cases (
   case_id            text primary key,
   tg_file_id         text        not null,
@@ -181,6 +196,7 @@ alter table bot_dispatch_log enable row level security;
 alter table bot_skipped      enable row level security;
 alter table bot_meta         enable row level security;
 alter table bot_case_confirmations enable row level security;
+alter table bot_integrity_reviews  enable row level security;
 
 -- Заборонити виконання RPC від імені anon/authenticated.
 -- (security definer функція без явного grant не виконається сторонніми ролями.)

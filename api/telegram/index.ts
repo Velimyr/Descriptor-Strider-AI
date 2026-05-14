@@ -549,6 +549,7 @@ function levenshtein(a: string, b: string): number {
 router.get('/admin/integrity', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const threshold = Math.max(0, parseInt((req.query.threshold as string) || '5', 10) || 5);
+  const includeResolved = String(req.query.includeResolved || '') === '1';
   try {
     const {
       getAllSubmissionsOrdered,
@@ -556,13 +557,21 @@ router.get('/admin/integrity', async (req, res) => {
       getAllConfirmationsWithAnswers,
       getAllCases,
       getDisplayNamesMap,
+      getAllIntegrityReviews,
+      integrityPairKey,
     } = await import('./storage.js');
-    const [subs, qRaw, confirms, cases] = await Promise.all([
+    const [subs, qRaw, confirms, cases, reviews] = await Promise.all([
       getAllSubmissionsOrdered(),
       getMeta('questions'),
       getAllConfirmationsWithAnswers(),
       getAllCases(),
+      getAllIntegrityReviews(),
     ]);
+    // Мапа resolved-пар: ключ "caseId|first|second" (відсортовані tg_id) → review.
+    const resolvedMap = new Map<string, any>();
+    for (const r of reviews) {
+      resolvedMap.set(`${r.caseId}|${r.firstTgId}|${r.secondTgId}`, r);
+    }
     let questions: any[] = [];
     try {
       questions = qRaw ? JSON.parse(qRaw) : [];
@@ -661,6 +670,10 @@ router.get('/admin/integrity', async (req, res) => {
             }
           }
           if (fieldDiffs.length === 0) continue;
+          const pair = integrityPairKey(a.tgId, b.tgId);
+          const key = `${caseId}|${pair.first}|${pair.second}`;
+          const review = resolvedMap.get(key);
+          if (review && !includeResolved) continue;
           diffs.push({
             caseId,
             archive: a.archive || b.archive || '',
@@ -669,6 +682,13 @@ router.get('/admin/integrity', async (req, res) => {
             first: { tgId: a.tgId, displayName: a.displayName, submittedAt: a.submittedAt },
             second: { tgId: b.tgId, displayName: b.displayName, submittedAt: b.submittedAt },
             fields: fieldDiffs,
+            review: review
+              ? {
+                  action: review.action,
+                  penalizedTgId: review.penalizedTgId || '',
+                  at: review.at,
+                }
+              : null,
           });
         }
       }
@@ -687,7 +707,7 @@ router.get('/admin/integrity', async (req, res) => {
 // Формулювання м'яке, без слова «штраф» — це навчальний меседж, не покарання.
 router.post('/admin/penalize', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { tgId, points, caseId, archive, fund, opys, fields } = req.body || {};
+  const { tgId, points, caseId, archive, fund, opys, fields, pairTgIdA, pairTgIdB } = req.body || {};
   if (!tgId || !Number.isFinite(points) || points <= 0) {
     return res.status(400).json({ error: 'tgId і додатній points обовʼязкові' });
   }
@@ -718,6 +738,16 @@ router.post('/admin/penalize', async (req, res) => {
       `Щоб усі могли довіряти результатам, ми скоригували ваш баланс на −${points} балів. Новий баланс: <b>${newTotal}</b>.\n\n` +
       `Будь ласка, переписуйте текст саме так, як він на зображенні — навіть з помилками і скороченнями. Дякуємо за розуміння 🙏`;
 
+    // Фіксуємо пару як вирішену, щоб вона зникла зі списку «Перевірка доброчесності».
+    if (caseId && pairTgIdA && pairTgIdB) {
+      try {
+        const { addIntegrityReview } = await import('./storage.js');
+        await addIntegrityReview(String(caseId), String(pairTgIdA), String(pairTgIdB), 'penalized', String(tgId));
+      } catch (e) {
+        console.error('addIntegrityReview (penalize) failed', e);
+      }
+    }
+
     try {
       const { sendMessage } = await import('./tg-api.js');
       await sendMessage(user.tgId, text);
@@ -726,6 +756,45 @@ router.post('/admin/penalize', async (req, res) => {
       return res.json({ ok: true, newTotal, warning: `Бали знято, але повідомлення не доставлено: ${e?.message || e}` });
     }
     res.json({ ok: true, newTotal });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Позначити пару як «не потребує штрафу» — більше не зʼявлятиметься у списку.
+router.post('/admin/integrity/dismiss', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { caseId, pairTgIdA, pairTgIdB } = req.body || {};
+  if (!caseId || !pairTgIdA || !pairTgIdB) {
+    return res.status(400).json({ error: 'caseId, pairTgIdA, pairTgIdB обовʼязкові' });
+  }
+  try {
+    const { addIntegrityReview } = await import('./storage.js');
+    await addIntegrityReview(String(caseId), String(pairTgIdA), String(pairTgIdB), 'dismissed');
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Відкотити рішення по парі (повертає її в список).
+router.post('/admin/integrity/reopen', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { caseId, pairTgIdA, pairTgIdB } = req.body || {};
+  if (!caseId || !pairTgIdA || !pairTgIdB) {
+    return res.status(400).json({ error: 'caseId, pairTgIdA, pairTgIdB обовʼязкові' });
+  }
+  try {
+    const { db, T, integrityPairKey } = await import('./storage.js');
+    const { first, second } = integrityPairKey(String(pairTgIdA), String(pairTgIdB));
+    const { error } = await db()
+      .from(T.integrityReviews)
+      .delete()
+      .eq('case_id', String(caseId))
+      .eq('first_tg_id', first)
+      .eq('second_tg_id', second);
+    if (error) throw error;
+    res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
