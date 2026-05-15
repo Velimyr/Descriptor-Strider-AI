@@ -2492,15 +2492,26 @@ const ResultsView: React.FC = () => {
     setDescFilter(descFilterInput);
   };
 
-  const refresh = async () => {
-    setBusy(true);
-    setMsg('');
+  // Завантаження списку описів — потрібно для випадного фільтра, легкий запит.
+  const loadOverview = async () => {
     try {
-      const [r, ov] = await Promise.all([tgApi.results(limit), tgApi.overview()]);
-      setData({ questions: r.questions || [], submissions: r.submissions || [] });
+      const ov = await tgApi.overview();
       setAllDescriptions(
         (ov.descriptions || []).map((d: any) => ({ key: d.key, name: d.name }))
       );
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
+    }
+  };
+
+  // Завантаження самих результатів — викликається лише за кнопкою.
+  const loadResults = async () => {
+    setBusy(true);
+    setMsg('');
+    try {
+      const r = await tgApi.results(limit);
+      setData({ questions: r.questions || [], submissions: r.submissions || [] });
+      setTableVisible(true);
     } catch (e: any) {
       setMsg('❌ ' + e.message);
     } finally {
@@ -2509,42 +2520,34 @@ const ResultsView: React.FC = () => {
   };
 
   useEffect(() => {
-    refresh();
+    loadOverview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Сьогоднішня дата у Києві (YYYY-MM-DD) — для статистики «сьогодні».
-  const todayKyiv = useMemo(() => {
-    const fmt = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Europe/Kyiv',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
-    return fmt.format(new Date());
-  }, []);
+  // Видимість таблиці результатів — за замовч. сховано, щоб не вантажити сторінку.
+  const [tableVisible, setTableVisible] = useState(false);
 
-  const todayStats = useMemo(() => {
-    if (!data) return { cases: 0, users: 0 };
-    const fmt = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Europe/Kyiv',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    });
-    const cases = new Set<string>();
-    const users = new Set<string>();
-    for (const s of data.submissions) {
-      const ts = s.submitted_at;
-      if (!ts) continue;
-      const d = new Date(ts);
-      if (isNaN(d.getTime())) continue;
-      if (fmt.format(d) !== todayKyiv) continue;
-      if (s.case_id) cases.add(String(s.case_id));
-      if (s.tg_id) users.add(String(s.tg_id));
+  // Статистика «сьогодні» — окремий запит до БД, не залежить від фільтрів/ліміту.
+  const [todayStats, setTodayStats] = useState<{ cases: number; users: number; timezone: string } | null>(null);
+  const [statsBusy, setStatsBusy] = useState(false);
+  const [statsErr, setStatsErr] = useState('');
+
+  const loadTodayStats = async () => {
+    setStatsBusy(true);
+    setStatsErr('');
+    try {
+      const r = await tgApi.todayStats();
+      setTodayStats(r);
+    } catch (e: any) {
+      setStatsErr(e?.message || 'помилка');
+    } finally {
+      setStatsBusy(false);
     }
-    return { cases: cases.size, users: users.size };
-  }, [data, todayKyiv]);
+  };
+
+  useEffect(() => {
+    loadTodayStats();
+  }, []);
 
   const descKeyOf = (s: any) => `${s.archive || ''}|${s.fund || ''}|${s.opys || ''}`;
   const descNameOf = (s: any) => `${s.archive || ''} ${s.fund || ''}-${s.opys || ''}`;
@@ -2659,14 +2662,46 @@ const ResultsView: React.FC = () => {
 
   return (
     <div className="space-y-3">
+      <div className="flex flex-wrap gap-3 text-sm">
+        <div className="border rounded px-3 py-1.5 bg-slate-50">
+          Сьогодні опрацьовано справ: <b>{statsBusy ? '…' : todayStats?.cases ?? '—'}</b>
+        </div>
+        <div className="border rounded px-3 py-1.5 bg-slate-50">
+          Сьогодні працювало користувачів: <b>{statsBusy ? '…' : todayStats?.users ?? '—'}</b>
+        </div>
+        <button
+          onClick={loadTodayStats}
+          disabled={statsBusy}
+          className="px-2 py-1 text-xs rounded bg-slate-200 hover:bg-slate-300 disabled:opacity-50 self-center"
+          title="Перерахувати статистику з БД"
+        >
+          <RefreshCw size={12} />
+        </button>
+        {statsErr && <span className="text-xs text-rose-700 self-center">{statsErr}</span>}
+        {todayStats && (
+          <span className="text-xs text-slate-500 self-center">
+            ({todayStats.timezone})
+          </span>
+        )}
+      </div>
+
       <div className="flex flex-wrap gap-2 items-center">
         <button
-          onClick={refresh}
+          onClick={loadResults}
           disabled={busy}
-          className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1"
+          className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm flex items-center gap-1"
         >
-          <RefreshCw size={14} /> {busy ? 'Завантаження…' : 'Оновити'}
+          <RefreshCw size={14} /> {busy ? 'Завантаження…' : tableVisible ? 'Оновити таблицю' : 'Показати результати'}
         </button>
+        {tableVisible && (
+          <button
+            onClick={() => setTableVisible(false)}
+            className="px-3 py-1.5 bg-slate-200 rounded text-sm"
+            title="Сховати таблицю"
+          >
+            Сховати
+          </button>
+        )}
         <label className="text-sm text-slate-600">Ліміт:</label>
         <select
           value={limit}
@@ -2716,23 +2751,9 @@ const ResultsView: React.FC = () => {
         </button>
       </div>
 
-      {data && (
-        <div className="flex flex-wrap gap-3 text-sm">
-          <div className="border rounded px-3 py-1.5 bg-slate-50">
-            Сьогодні опрацьовано справ: <b>{todayStats.cases}</b>
-          </div>
-          <div className="border rounded px-3 py-1.5 bg-slate-50">
-            Сьогодні працювало користувачів: <b>{todayStats.users}</b>
-          </div>
-          <div className="text-xs text-slate-500 self-center">
-            (за добу {todayKyiv} у межах поточного ліміту завантаження)
-          </div>
-        </div>
-      )}
-
       {msg && <div className="text-sm">{msg}</div>}
 
-      {data && (
+      {data && tableVisible && (
         <div className="border rounded overflow-auto max-h-[70vh]">
           <table className="w-full text-xs border-collapse">
             <thead className="bg-slate-100 sticky top-0">
@@ -4156,6 +4177,8 @@ const IntegrityView: React.FC = () => {
   const [threshold, setThreshold] = useState(5);
   const [filter, setFilter] = useState('');
   const [includeResolved, setIncludeResolved] = useState(false);
+  // Фільтр по даті події: значення в годинах, 0 = «весь час».
+  const [sinceHours, setSinceHours] = useState<number>(24);
   // Локальний стан по кнопках «Зняти бали»: tgId|caseId|idx → 'busy' | 'done' | 'err:<msg>'
   const [penaltyState, setPenaltyState] = useState<Record<string, string>>({});
   // tg-стан по парах: caseId|first|second → 'busy' | 'err:..'
@@ -4269,7 +4292,29 @@ const IntegrityView: React.FC = () => {
     }
   };
 
+  const pairEventTime = (d: IntegrityDiff): number => {
+    // "Час події пари" — найпізніша з двох відповідей. Для resolved пар враховуємо
+    // ще й момент рішення адміна (review.at), щоб свіжо-вирішені теж потрапляли.
+    const candidates: number[] = [];
+    if (d.first?.submittedAt) {
+      const t = Date.parse(d.first.submittedAt);
+      if (!isNaN(t)) candidates.push(t);
+    }
+    if (d.second?.submittedAt) {
+      const t = Date.parse(d.second.submittedAt);
+      if (!isNaN(t)) candidates.push(t);
+    }
+    if (d.review?.at) {
+      const t = Date.parse(d.review.at);
+      if (!isNaN(t)) candidates.push(t);
+    }
+    return candidates.length ? Math.max(...candidates) : 0;
+  };
+
+  const sinceCutoffMs = sinceHours > 0 ? Date.now() - sinceHours * 3600_000 : 0;
+
   const filtered = (diffs || []).filter(d => {
+    if (sinceCutoffMs > 0 && pairEventTime(d) < sinceCutoffMs) return false;
     if (!filter.trim()) return true;
     const q = filter.toLowerCase();
     return (
@@ -4308,6 +4353,19 @@ const IntegrityView: React.FC = () => {
           className="border rounded px-2 py-1 text-sm w-20"
           title="За замовчуванням 5. Сторінка перезавантажиться автоматично."
         />
+        <label className="text-sm text-slate-600">Період:</label>
+        <select
+          value={sinceHours}
+          onChange={e => setSinceHours(parseInt(e.target.value, 10))}
+          className="border rounded px-2 py-1 text-sm"
+          title="За якою свіжістю події фільтрувати пари"
+        >
+          <option value={24}>Останні 24 години</option>
+          <option value={72}>Останні 3 дні</option>
+          <option value={168}>Останні 7 днів</option>
+          <option value={720}>Останні 30 днів</option>
+          <option value={0}>Весь час</option>
+        </select>
         <input
           type="text"
           value={filter}

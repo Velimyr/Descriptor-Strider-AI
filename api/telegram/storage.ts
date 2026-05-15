@@ -427,6 +427,72 @@ export async function getSkippedForUser(tgId: string): Promise<string[]> {
   return (data || []).map((r: any) => r.case_id);
 }
 
+// Активність "сьогодні" у Europe/Kyiv: скільки унікальних справ опрацьовано
+// (через submissions АБО collab-події) і скільки унікальних користувачів брало
+// участь. Вибірка йде з БД незалежно від ліміту таблиці результатів.
+export async function getTodayActivity(timeZone: string): Promise<{ cases: number; users: number }> {
+  const now = new Date();
+  const dateStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+  const tzParts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    timeZoneName: 'longOffset',
+  }).formatToParts(now);
+  const tzName = tzParts.find(p => p.type === 'timeZoneName')?.value || 'GMT+00:00';
+  const m = tzName.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+  const sign = m?.[1] === '-' ? -1 : 1;
+  const hh = parseInt(m?.[2] || '0', 10);
+  const mm = parseInt(m?.[3] || '0', 10);
+  const offsetMin = sign * (hh * 60 + mm);
+  const startUtcMs = Date.parse(`${dateStr}T00:00:00.000Z`) - offsetMin * 60_000;
+  const startUtc = new Date(startUtcMs).toISOString();
+  const endUtc = new Date(startUtcMs + 24 * 60 * 60 * 1000).toISOString();
+
+  const caseIds = new Set<string>();
+  const userIds = new Set<string>();
+  const pageSize = 1000;
+
+  // 1) parallel: bot_submissions
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await db()
+      .from(T.submissions)
+      .select('case_id, tg_id')
+      .gte('submitted_at', startUtc)
+      .lt('submitted_at', endUtc)
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) {
+      if ((r as any).case_id) caseIds.add(String((r as any).case_id));
+      if ((r as any).tg_id) userIds.add(String((r as any).tg_id));
+    }
+    if (rows.length < pageSize) break;
+  }
+
+  // 2) collab: bot_case_confirmations (create/edit/confirm — будь-яка дія = участь)
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await db()
+      .from(T.caseConfirmations)
+      .select('case_id, tg_id')
+      .gte('at', startUtc)
+      .lt('at', endUtc)
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) {
+      if ((r as any).case_id) caseIds.add(String((r as any).case_id));
+      if ((r as any).tg_id) userIds.add(String((r as any).tg_id));
+    }
+    if (rows.length < pageSize) break;
+  }
+
+  return { cases: caseIds.size, users: userIds.size };
+}
+
 export async function getResultsTotals(): Promise<{ totalSubmissions: number }> {
   const { count, error } = await db()
     .from(T.submissions)

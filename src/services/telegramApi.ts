@@ -71,6 +71,7 @@ export const tgApi = {
     }),
   overview: () => call('/admin/overview'),
   results: (limit = 500) => call(`/admin/results?limit=${limit}`),
+  todayStats: () => call('/admin/today-stats') as Promise<{ cases: number; users: number; timezone: string }>,
   integrity: (threshold = 5, includeResolved = false) =>
     call(`/admin/integrity?threshold=${threshold}${includeResolved ? '&includeResolved=1' : ''}`),
   penalize: (payload: {
