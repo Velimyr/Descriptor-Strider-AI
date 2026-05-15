@@ -208,6 +208,8 @@ revoke all on function botdev_description_progress(int) from public, anon, authe
 
 -- Кандидати на dispatch: відкриті справи, не заблоковані іншим юзером,
 -- де користувач НЕ брав участі (не сабмітив, не пропустив, не торкався в collab).
+-- ORDER BY обов'язковий: PostgREST обрізає відповідь до db_max_rows (~1000),
+-- і без сортування старіші описи можуть випадати з вибірки → шедулер їх "не бачить".
 create or replace function botdev_candidate_cases(p_tg_id text)
 returns setof botdev_cases language sql security definer as $$
   select c.* from botdev_cases c
@@ -220,6 +222,7 @@ returns setof botdev_cases language sql security definer as $$
       or c.locked_until is null
       or c.locked_until < now()
       or c.locked_by_tg_id = p_tg_id
-    );
+    )
+  order by c.created_at, c.case_id;
 $$;
 revoke all on function botdev_candidate_cases(text) from public, anon, authenticated;

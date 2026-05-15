@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X, RefreshCw, Save, UploadCloud, Wand2, Trash2, Plus } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import { TableColumn } from '../../types';
@@ -2479,8 +2479,18 @@ const ResultsView: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [limit, setLimit] = useState(500);
+  // Введені значення фільтрів (керовані інпути).
+  const [filterInput, setFilterInput] = useState('');
+  const [descFilterInput, setDescFilterInput] = useState('');
+  // Застосовані фільтри — саме за ними рендериться таблиця. Оновлюються
+  // лише по кнопці «Застосувати» або при оновленні даних.
   const [filter, setFilter] = useState('');
-  const [descFilter, setDescFilter] = useState(''); // 'archive|fund|opys' або '' для всіх
+  const [descFilter, setDescFilter] = useState('');
+
+  const applyFilters = () => {
+    setFilter(filterInput);
+    setDescFilter(descFilterInput);
+  };
 
   const refresh = async () => {
     setBusy(true);
@@ -2502,6 +2512,39 @@ const ResultsView: React.FC = () => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Сьогоднішня дата у Києві (YYYY-MM-DD) — для статистики «сьогодні».
+  const todayKyiv = useMemo(() => {
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Kyiv',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    return fmt.format(new Date());
+  }, []);
+
+  const todayStats = useMemo(() => {
+    if (!data) return { cases: 0, users: 0 };
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Kyiv',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const cases = new Set<string>();
+    const users = new Set<string>();
+    for (const s of data.submissions) {
+      const ts = s.submitted_at;
+      if (!ts) continue;
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) continue;
+      if (fmt.format(d) !== todayKyiv) continue;
+      if (s.case_id) cases.add(String(s.case_id));
+      if (s.tg_id) users.add(String(s.tg_id));
+    }
+    return { cases: cases.size, users: users.size };
+  }, [data, todayKyiv]);
 
   const descKeyOf = (s: any) => `${s.archive || ''}|${s.fund || ''}|${s.opys || ''}`;
   const descNameOf = (s: any) => `${s.archive || ''} ${s.fund || ''}-${s.opys || ''}`;
@@ -2590,8 +2633,6 @@ const ResultsView: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const exportCsv = () => downloadCsv(filtered, '');
-
   // Експорт усіх записів вибраного опису (без обмеження поточним лімітом/фільтром).
   // Тягнемо ВСІ записи з БД через окремий ендпоінт із пагінацією, а не лише ті,
   // що потрапили у поточну вкладку «Результати» (обмежену limit-ом).
@@ -2638,8 +2679,8 @@ const ResultsView: React.FC = () => {
           <option value={5000}>5000</option>
         </select>
         <select
-          value={descFilter}
-          onChange={e => setDescFilter(e.target.value)}
+          value={descFilterInput}
+          onChange={e => setDescFilterInput(e.target.value)}
           className="border rounded px-2 py-1 text-sm"
         >
           <option value="">Усі описи</option>
@@ -2650,27 +2691,44 @@ const ResultsView: React.FC = () => {
           ))}
         </select>
         <input
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
+          value={filterInput}
+          onChange={e => setFilterInput(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') applyFilters();
+          }}
           placeholder="Фільтр (текст у будь-якій колонці)"
           className="border rounded px-2 py-1 text-sm flex-1 min-w-[200px]"
         />
         <button
-          onClick={exportCsv}
-          disabled={!data || filtered.length === 0}
+          onClick={applyFilters}
+          disabled={!data}
           className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm disabled:opacity-50"
         >
-          Експорт видимого ({filtered.length})
+          Застосувати
         </button>
         <button
           onClick={exportSelectedDescription}
           disabled={!data || !descFilter || busy}
-          title={descFilter ? `Тягне з БД ВСІ підтвердження опису "${selectedDescriptionName}" (без обмеження поточним лімітом)` : 'Спочатку оберіть опис'}
+          title={descFilter ? `Тягне з БД ВСІ підтвердження опису "${selectedDescriptionName}" (без обмеження поточним лімітом)` : 'Спочатку застосуйте фільтр з обраним описом'}
           className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm disabled:opacity-50"
         >
           Експорт усього опису (з БД)
         </button>
       </div>
+
+      {data && (
+        <div className="flex flex-wrap gap-3 text-sm">
+          <div className="border rounded px-3 py-1.5 bg-slate-50">
+            Сьогодні опрацьовано справ: <b>{todayStats.cases}</b>
+          </div>
+          <div className="border rounded px-3 py-1.5 bg-slate-50">
+            Сьогодні працювало користувачів: <b>{todayStats.users}</b>
+          </div>
+          <div className="text-xs text-slate-500 self-center">
+            (за добу {todayKyiv} у межах поточного ліміту завантаження)
+          </div>
+        </div>
+      )}
 
       {msg && <div className="text-sm">{msg}</div>}
 
@@ -2722,10 +2780,17 @@ const ResultsView: React.FC = () => {
 
 // ==================== OVERVIEW ====================
 
+type DescFilter = 'all' | 'done' | 'pending';
+const DESC_PAGE_SIZE = 50;
+const USERS_PAGE_SIZE = 100;
+
 const OverviewView: React.FC = () => {
   const [data, setData] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [descFilter, setDescFilter] = useState<DescFilter>('all');
+  const [descPage, setDescPage] = useState(1);
+  const [usersPage, setUsersPage] = useState(1);
 
   const refresh = async () => {
     setBusy(true);
@@ -2744,6 +2809,32 @@ const OverviewView: React.FC = () => {
     refresh();
   }, []);
 
+  useEffect(() => {
+    setDescPage(1);
+  }, [descFilter]);
+
+  const filteredDescriptions = useMemo(() => {
+    const list: any[] = Array.isArray(data?.descriptions) ? data.descriptions : [];
+    if (descFilter === 'done') return list.filter(d => d.doneCases >= d.totalCases && d.totalCases > 0);
+    if (descFilter === 'pending') return list.filter(d => d.doneCases < d.totalCases);
+    return list;
+  }, [data, descFilter]);
+
+  const descTotalPages = Math.max(1, Math.ceil(filteredDescriptions.length / DESC_PAGE_SIZE));
+  const descPageSafe = Math.min(descPage, descTotalPages);
+  const descPageRows = filteredDescriptions.slice(
+    (descPageSafe - 1) * DESC_PAGE_SIZE,
+    descPageSafe * DESC_PAGE_SIZE
+  );
+
+  const usersList: any[] = Array.isArray(data?.users) ? data.users : [];
+  const usersTotalPages = Math.max(1, Math.ceil(usersList.length / USERS_PAGE_SIZE));
+  const usersPageSafe = Math.min(usersPage, usersTotalPages);
+  const usersPageRows = usersList.slice(
+    (usersPageSafe - 1) * USERS_PAGE_SIZE,
+    usersPageSafe * USERS_PAGE_SIZE
+  );
+
   return (
     <div className="space-y-4 max-w-4xl">
       <button onClick={refresh} disabled={busy} className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1">
@@ -2759,7 +2850,33 @@ const OverviewView: React.FC = () => {
                 Повністю розпізнано описів: <b>{data.fullyDoneDescriptions ?? 0}</b> з{' '}
                 {(data.descriptions || []).length}. Усього справ: {data.cases}.
               </div>
-              {Array.isArray(data.descriptions) && data.descriptions.length > 0 && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-slate-600">Показати:</span>
+                {([
+                  ['all', 'Всі'],
+                  ['pending', 'Незавершені'],
+                  ['done', 'Завершені'],
+                ] as [DescFilter, string][]).map(([k, label]) => (
+                  <button
+                    key={k}
+                    onClick={() => setDescFilter(k)}
+                    className={`px-2 py-1 rounded border ${
+                      descFilter === k ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-slate-300'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+                <span className="ml-auto text-slate-500">
+                  {filteredDescriptions.length === 0
+                    ? 'нічого не знайдено'
+                    : `${(descPageSafe - 1) * DESC_PAGE_SIZE + 1}–${Math.min(
+                        descPageSafe * DESC_PAGE_SIZE,
+                        filteredDescriptions.length
+                      )} з ${filteredDescriptions.length}`}
+                </span>
+              </div>
+              {descPageRows.length > 0 && (
                 <table className="w-full text-xs border-collapse mt-1">
                   <thead>
                     <tr className="bg-slate-100">
@@ -2770,7 +2887,7 @@ const OverviewView: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.descriptions.map((d: any) => (
+                    {descPageRows.map((d: any) => (
                       <tr key={d.key} className="border-b">
                         <td className="p-1.5">{d.name}</td>
                         <td className="p-1.5 text-right">{d.doneCases}</td>
@@ -2781,10 +2898,41 @@ const OverviewView: React.FC = () => {
                   </tbody>
                 </table>
               )}
+              {descTotalPages > 1 && (
+                <div className="flex items-center justify-end gap-1 text-xs pt-1">
+                  <button
+                    onClick={() => setDescPage(p => Math.max(1, p - 1))}
+                    disabled={descPageSafe <= 1}
+                    className="px-2 py-1 rounded border bg-white disabled:opacity-40"
+                  >
+                    ← Назад
+                  </button>
+                  <span className="px-2">
+                    Стор. {descPageSafe} / {descTotalPages}
+                  </span>
+                  <button
+                    onClick={() => setDescPage(p => Math.min(descTotalPages, p + 1))}
+                    disabled={descPageSafe >= descTotalPages}
+                    className="px-2 py-1 rounded border bg-white disabled:opacity-40"
+                  >
+                    Далі →
+                  </button>
+                </div>
+              )}
             </div>
           </section>
           <section>
-            <h3 className="font-semibold mb-2">Користувачі (за балами)</h3>
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="font-semibold">Користувачі (за балами)</h3>
+              <span className="text-xs text-slate-500">
+                {usersList.length === 0
+                  ? 'нічого не знайдено'
+                  : `${(usersPageSafe - 1) * USERS_PAGE_SIZE + 1}–${Math.min(
+                      usersPageSafe * USERS_PAGE_SIZE,
+                      usersList.length
+                    )} з ${usersList.length}`}
+              </span>
+            </div>
             <table className="w-full text-sm border-collapse">
               <thead>
                 <tr className="bg-slate-100">
@@ -2797,9 +2945,9 @@ const OverviewView: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {data.users.map((u: any, i: number) => (
+                {usersPageRows.map((u: any, i: number) => (
                   <tr key={u.tgId} className="border-b">
-                    <td className="p-2">{i + 1}</td>
+                    <td className="p-2">{(usersPageSafe - 1) * USERS_PAGE_SIZE + i + 1}</td>
                     <td className="p-2">{u.displayName || '—'}</td>
                     <td className="p-2 font-mono text-xs">{u.tgId}</td>
                     <td className="p-2 text-right">{u.totalPoints}</td>
@@ -2809,6 +2957,27 @@ const OverviewView: React.FC = () => {
                 ))}
               </tbody>
             </table>
+            {usersTotalPages > 1 && (
+              <div className="flex items-center justify-end gap-1 text-xs pt-2">
+                <button
+                  onClick={() => setUsersPage(p => Math.max(1, p - 1))}
+                  disabled={usersPageSafe <= 1}
+                  className="px-2 py-1 rounded border bg-white disabled:opacity-40"
+                >
+                  ← Назад
+                </button>
+                <span className="px-2">
+                  Стор. {usersPageSafe} / {usersTotalPages}
+                </span>
+                <button
+                  onClick={() => setUsersPage(p => Math.min(usersTotalPages, p + 1))}
+                  disabled={usersPageSafe >= usersTotalPages}
+                  className="px-2 py-1 rounded border bg-white disabled:opacity-40"
+                >
+                  Далі →
+                </button>
+              </div>
+            )}
           </section>
         </>
       )}
@@ -3915,6 +4084,71 @@ type IntegrityDiff = {
 
 const PENALTY_POINTS = 100;
 
+type DiffSeg = { text: string; changed: boolean };
+
+// LCS-діф двох рядків посимвольно. Повертає сегменти для лівої («було») та правої
+// («стало») сторін: changed=true означає, що символи не входять у LCS.
+function diffChars(a: string, b: string): { left: DiffSeg[]; right: DiffSeg[] } {
+  const A = Array.from(a);
+  const B = Array.from(b);
+  const n = A.length;
+  const m = B.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      dp[i][j] = A[i - 1] === B[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  const leftRev: DiffSeg[] = [];
+  const rightRev: DiffSeg[] = [];
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    if (A[i - 1] === B[j - 1]) {
+      leftRev.push({ text: A[i - 1], changed: false });
+      rightRev.push({ text: B[j - 1], changed: false });
+      i--;
+      j--;
+    } else if (dp[i - 1][j] >= dp[i][j - 1]) {
+      leftRev.push({ text: A[i - 1], changed: true });
+      i--;
+    } else {
+      rightRev.push({ text: B[j - 1], changed: true });
+      j--;
+    }
+  }
+  while (i > 0) {
+    leftRev.push({ text: A[i - 1], changed: true });
+    i--;
+  }
+  while (j > 0) {
+    rightRev.push({ text: B[j - 1], changed: true });
+    j--;
+  }
+  const merge = (arr: DiffSeg[]): DiffSeg[] => {
+    const out: DiffSeg[] = [];
+    for (let k = arr.length - 1; k >= 0; k--) {
+      const s = arr[k];
+      const last = out[out.length - 1];
+      if (last && last.changed === s.changed) last.text += s.text;
+      else out.push({ text: s.text, changed: s.changed });
+    }
+    return out;
+  };
+  return { left: merge(leftRev), right: merge(rightRev) };
+}
+
+const renderDiffSegs = (segs: DiffSeg[]): React.ReactNode =>
+  segs.map((s, k) =>
+    s.changed ? (
+      <span key={k} className="bg-rose-300 text-rose-900 rounded px-0.5 font-semibold">
+        {s.text}
+      </span>
+    ) : (
+      <React.Fragment key={k}>{s.text}</React.Fragment>
+    )
+  );
+
 const IntegrityView: React.FC = () => {
   const [diffs, setDiffs] = useState<IntegrityDiff[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -4195,14 +4429,21 @@ const IntegrityView: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {d.fields.map(f => (
-                  <tr key={f.questionIndex} className="align-top">
-                    <td className="p-1.5 border font-medium">{f.questionLabel}</td>
-                    <td className="p-1.5 border bg-red-50 whitespace-pre-wrap break-words">{f.from || '—'}</td>
-                    <td className="p-1.5 border bg-green-50 whitespace-pre-wrap break-words">{f.to || '—'}</td>
-                    <td className="p-1.5 border text-center font-mono">{f.distance}</td>
-                  </tr>
-                ))}
+                {d.fields.map(f => {
+                  const { left, right } = diffChars(f.from || '', f.to || '');
+                  return (
+                    <tr key={f.questionIndex} className="align-top">
+                      <td className="p-1.5 border font-medium">{f.questionLabel}</td>
+                      <td className="p-1.5 border bg-red-50 whitespace-pre-wrap break-words">
+                        {f.from ? renderDiffSegs(left) : '—'}
+                      </td>
+                      <td className="p-1.5 border bg-green-50 whitespace-pre-wrap break-words">
+                        {f.to ? renderDiffSegs(right) : '—'}
+                      </td>
+                      <td className="p-1.5 border text-center font-mono">{f.distance}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
