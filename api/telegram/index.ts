@@ -10,6 +10,7 @@ import {
   setMeta,
   deleteSession,
   getTodayActivity,
+  getDailyActivity,
 } from './storage.js';
 import { handleUpdate, dispatchCaseToUser, sendScheduledGreeting } from './bot.js';
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
@@ -877,6 +878,14 @@ router.get('/admin/today-stats', async (req, res) => {
   const tz = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
   const stats = await getTodayActivity(tz);
   res.json({ ...stats, timezone: tz });
+});
+
+router.get('/admin/daily-activity', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const tz = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
+  const days = Math.max(1, Math.min(365, parseInt(String(req.query.days || '30'), 10) || 30));
+  const series = await getDailyActivity(tz, days);
+  res.json({ timezone: tz, days: series });
 });
 
 router.post('/admin/recompute-case', async (req, res) => {

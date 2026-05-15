@@ -12,7 +12,7 @@ interface Props {
   initialQuestions?: TableColumn[]; // зазвичай tableStructure активного проєкту
 }
 
-type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity';
+type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity' | 'chart';
 
 export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => {
   const [tab, setTab] = useState<TabKey>('setup');
@@ -51,6 +51,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['results', 'Результати'],
           ['process', 'Експортувати опис'],
           ['overview', 'Огляд'],
+          ['chart', 'Графік'],
           ['integrity', 'Перевірка доброчесності'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
@@ -72,6 +73,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         {tab === 'results' && <ResultsView />}
         {tab === 'process' && <ProcessDescriptionView geminiKey={geminiKey} />}
         {tab === 'overview' && <OverviewView />}
+        {tab === 'chart' && <ChartView />}
         {tab === 'integrity' && <IntegrityView />}
       </div>
     </div>
@@ -3006,6 +3008,219 @@ const OverviewView: React.FC = () => {
   );
 };
 
+// ==================== CHART ====================
+
+type ChartPoint = { date: string; cases: number; users: number };
+
+const ChartView: React.FC = () => {
+  const [days, setDays] = useState(30);
+  const [data, setData] = useState<ChartPoint[] | null>(null);
+  const [tz, setTz] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [hover, setHover] = useState<number | null>(null);
+
+  const load = async (d = days) => {
+    setBusy(true);
+    setErr('');
+    try {
+      const r = await tgApi.dailyActivity(d);
+      setData(r.days || []);
+      setTz(r.timezone || '');
+    } catch (e: any) {
+      setErr(e?.message || 'помилка');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    load(days);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days]);
+
+  // Геометрія SVG.
+  const width = 900;
+  const height = 320;
+  const padL = 50;
+  const padR = 50;
+  const padT = 20;
+  const padB = 50;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+
+  const points = data || [];
+  const n = points.length;
+  const maxCases = Math.max(1, ...points.map(p => p.cases));
+  const maxUsers = Math.max(1, ...points.map(p => p.users));
+
+  // Дві осі Y: ліва — справи, права — користувачі. Кожна шкала автоматична.
+  const xOf = (i: number) => padL + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  const yCases = (v: number) => padT + plotH - (v / maxCases) * plotH;
+  const yUsers = (v: number) => padT + plotH - (v / maxUsers) * plotH;
+
+  const pathFor = (yFn: (v: number) => number, key: 'cases' | 'users') =>
+    points.map((p, i) => `${i === 0 ? 'M' : 'L'}${xOf(i).toFixed(1)},${yFn(p[key]).toFixed(1)}`).join(' ');
+
+  // Сітка/тіки по 4 позначки.
+  const ticks = 4;
+  const casesTicks = Array.from({ length: ticks + 1 }, (_, i) => Math.round((maxCases * i) / ticks));
+  const usersTicks = Array.from({ length: ticks + 1 }, (_, i) => Math.round((maxUsers * i) / ticks));
+
+  // Скільки підписів дат показувати на осі X — щоб не наїжджали.
+  const labelStep = Math.max(1, Math.ceil(n / 10));
+
+  return (
+    <div className="space-y-3 max-w-5xl">
+      <div className="flex flex-wrap gap-2 items-center">
+        <label className="text-sm text-slate-600">Період:</label>
+        <select
+          value={days}
+          onChange={e => setDays(parseInt(e.target.value, 10))}
+          className="border rounded px-2 py-1 text-sm"
+        >
+          <option value={7}>7 днів</option>
+          <option value={14}>14 днів</option>
+          <option value={30}>30 днів</option>
+          <option value={60}>60 днів</option>
+          <option value={90}>90 днів</option>
+        </select>
+        <button
+          onClick={() => load(days)}
+          disabled={busy}
+          className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1"
+        >
+          <RefreshCw size={14} /> {busy ? 'Завантаження…' : 'Оновити'}
+        </button>
+        {tz && <span className="text-xs text-slate-500 self-center">({tz})</span>}
+        {err && <span className="text-xs text-rose-700 self-center">{err}</span>}
+      </div>
+
+      <div className="flex gap-4 text-sm">
+        <span className="inline-flex items-center gap-1">
+          <span className="inline-block w-4 h-0.5 bg-indigo-600"></span>
+          Розпізнаних справ
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="inline-block w-4 h-0.5 bg-emerald-600"></span>
+          Користувачів
+        </span>
+      </div>
+
+      <div className="border rounded bg-white p-2 overflow-x-auto">
+        {data && n > 0 ? (
+          <svg
+            viewBox={`0 0 ${width} ${height}`}
+            className="w-full h-auto"
+            onMouseLeave={() => setHover(null)}
+          >
+            {/* Сітка та ліві тіки (справи) */}
+            {casesTicks.map((v, i) => {
+              const y = yCases(v);
+              return (
+                <g key={`gc${i}`}>
+                  <line x1={padL} x2={width - padR} y1={y} y2={y} stroke="#e5e7eb" strokeWidth={1} />
+                  <text x={padL - 6} y={y + 3} textAnchor="end" fontSize="10" fill="#4f46e5">
+                    {v}
+                  </text>
+                </g>
+              );
+            })}
+            {/* Праві тіки (користувачі) */}
+            {usersTicks.map((v, i) => {
+              const y = yUsers(v);
+              return (
+                <text
+                  key={`gu${i}`}
+                  x={width - padR + 6}
+                  y={y + 3}
+                  textAnchor="start"
+                  fontSize="10"
+                  fill="#059669"
+                >
+                  {v}
+                </text>
+              );
+            })}
+            {/* Підписи осі X */}
+            {points.map((p, i) =>
+              i % labelStep === 0 || i === n - 1 ? (
+                <text
+                  key={`x${i}`}
+                  x={xOf(i)}
+                  y={height - padB + 14}
+                  textAnchor="middle"
+                  fontSize="10"
+                  fill="#64748b"
+                >
+                  {p.date.slice(5)}
+                </text>
+              ) : null
+            )}
+            {/* Лінія: справи */}
+            <path d={pathFor(yCases, 'cases')} fill="none" stroke="#4f46e5" strokeWidth={2} />
+            {/* Лінія: користувачі */}
+            <path d={pathFor(yUsers, 'users')} fill="none" stroke="#059669" strokeWidth={2} />
+            {/* Точки */}
+            {points.map((p, i) => (
+              <g key={`pt${i}`}>
+                <circle cx={xOf(i)} cy={yCases(p.cases)} r={hover === i ? 4 : 2.5} fill="#4f46e5" />
+                <circle cx={xOf(i)} cy={yUsers(p.users)} r={hover === i ? 4 : 2.5} fill="#059669" />
+                {/* Інвізабельна "товста" зона для hover */}
+                <rect
+                  x={xOf(i) - plotW / (n * 2) - 1}
+                  y={padT}
+                  width={plotW / Math.max(1, n) + 2}
+                  height={plotH}
+                  fill="transparent"
+                  onMouseEnter={() => setHover(i)}
+                />
+              </g>
+            ))}
+            {/* Tooltip */}
+            {hover !== null && points[hover] && (() => {
+              const p = points[hover];
+              const cx = xOf(hover);
+              const tipW = 150;
+              const tipH = 56;
+              const tx = Math.max(padL, Math.min(width - padR - tipW, cx - tipW / 2));
+              const ty = padT + 4;
+              return (
+                <g>
+                  <line x1={cx} x2={cx} y1={padT} y2={padT + plotH} stroke="#94a3b8" strokeDasharray="3 3" />
+                  <rect x={tx} y={ty} width={tipW} height={tipH} rx={4} fill="white" stroke="#cbd5e1" />
+                  <text x={tx + 8} y={ty + 16} fontSize="11" fill="#0f172a">
+                    {p.date}
+                  </text>
+                  <text x={tx + 8} y={ty + 32} fontSize="11" fill="#4f46e5">
+                    Справ: <tspan fontWeight="700">{p.cases}</tspan>
+                  </text>
+                  <text x={tx + 8} y={ty + 48} fontSize="11" fill="#059669">
+                    Користувачів: <tspan fontWeight="700">{p.users}</tspan>
+                  </text>
+                </g>
+              );
+            })()}
+            {/* Підпис осей */}
+            <text x={padL - 30} y={padT + plotH / 2} fontSize="10" fill="#4f46e5"
+                  transform={`rotate(-90 ${padL - 30} ${padT + plotH / 2})`} textAnchor="middle">
+              Справ
+            </text>
+            <text x={width - padR + 30} y={padT + plotH / 2} fontSize="10" fill="#059669"
+                  transform={`rotate(90 ${width - padR + 30} ${padT + plotH / 2})`} textAnchor="middle">
+              Користувачів
+            </text>
+          </svg>
+        ) : (
+          <div className="p-8 text-center text-sm text-slate-500">
+            {busy ? 'Завантаження…' : 'Немає даних за обраний період.'}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ==================== PROCESS DESCRIPTION ====================
 
 type ProcessStep = 'select' | 'step1' | 'step2';
@@ -4179,10 +4394,11 @@ const IntegrityView: React.FC = () => {
   const [includeResolved, setIncludeResolved] = useState(false);
   // Фільтр по даті події: значення в годинах, 0 = «весь час».
   const [sinceHours, setSinceHours] = useState<number>(24);
-  // Локальний стан по кнопках «Зняти бали»: tgId|caseId|idx → 'busy' | 'done' | 'err:<msg>'
+  // Чи вже хоч раз завантажували перевірку. До цього таблиця не рендериться,
+  // і автоперезавантаження по зміні параметрів не запускається.
+  const [loaded, setLoaded] = useState(false);
+  // Локальний стан по кнопках «Зняти бали»: tgId|caseId → 'busy' | 'done:<msg>' | 'err:<msg>'
   const [penaltyState, setPenaltyState] = useState<Record<string, string>>({});
-  // tg-стан по парах: caseId|first|second → 'busy' | 'err:..'
-  const [pairBusy, setPairBusy] = useState<Record<string, string>>({});
 
   const refresh = async (t = threshold, resolved = includeResolved) => {
     setBusy(true);
@@ -4190,6 +4406,7 @@ const IntegrityView: React.FC = () => {
     try {
       const r = await tgApi.integrity(t, resolved);
       setDiffs(r.diffs || []);
+      setLoaded(true);
     } catch (e: any) {
       setMsg('❌ ' + e.message);
     } finally {
@@ -4197,8 +4414,10 @@ const IntegrityView: React.FC = () => {
     }
   };
 
-  // Debounce авто-перезавантаження при зміні порогу / тогла «вже опрацьовані».
+  // Debounce авто-перезавантаження при зміні порогу / тогла «вже опрацьовані» —
+  // лише після першого ручного завантаження.
   useEffect(() => {
+    if (!loaded) return;
     const t = setTimeout(() => refresh(threshold, includeResolved), 400);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4211,86 +4430,8 @@ const IntegrityView: React.FC = () => {
     return `${d.caseId}|${first}|${second}`;
   };
 
-  const removeFromList = (d: IntegrityDiff) => {
-    if (!diffs) return;
-    const key = pairKeyOf(d);
-    setDiffs(diffs.filter(x => pairKeyOf(x) !== key));
-  };
-
-  const dismissPair = async (d: IntegrityDiff) => {
-    if (!d.first.tgId || !d.second.tgId) return;
-    if (!window.confirm('Позначити цю пару як «вирішено без штрафу»? Вона зникне зі списку.')) return;
-    const key = pairKeyOf(d);
-    setPairBusy(s => ({ ...s, [key]: 'busy' }));
-    try {
-      await tgApi.integrityDismiss(d.caseId, d.first.tgId, d.second.tgId);
-      removeFromList(d);
-    } catch (e: any) {
-      setPairBusy(s => ({ ...s, [key]: `err:${e.message || 'помилка'}` }));
-    } finally {
-      setPairBusy(s => {
-        const next = { ...s };
-        if (next[key] === 'busy') delete next[key];
-        return next;
-      });
-    }
-  };
-
-  const reopenPair = async (d: IntegrityDiff) => {
-    if (!d.first.tgId || !d.second.tgId) return;
-    try {
-      await tgApi.integrityReopen(d.caseId, d.first.tgId, d.second.tgId);
-      // Перезавантажуємо список з сервера, бо ця пара мала б знов зʼявитися.
-      refresh(threshold, includeResolved);
-    } catch (e: any) {
-      setMsg('❌ ' + e.message);
-    }
-  };
-
   const userLabel = (u: IntegrityUser) =>
     `${u.displayName || '—'}${u.tgId ? ` (${u.tgId})` : ''}`;
-
-  // Знімає бали з користувача + надсилає йому повідомлення з його ж введеним текстом.
-  const penalize = async (
-    d: IntegrityDiff,
-    side: 'first' | 'second',
-    diffIdx: number
-  ) => {
-    const u = side === 'first' ? d.first : d.second;
-    if (!u.tgId) return;
-    const fields = d.fields.map(f => ({
-      label: f.questionLabel,
-      text: side === 'first' ? f.from : f.to,
-    }));
-    const key = `${u.tgId}|${d.caseId}|${diffIdx}|${side}`;
-    const ok = window.confirm(
-      `Зняти ${PENALTY_POINTS} балів у користувача "${userLabel(u)}" і надіслати йому повідомлення з його відповіддю?`
-    );
-    if (!ok) return;
-    setPenaltyState(s => ({ ...s, [key]: 'busy' }));
-    try {
-      const r = await tgApi.penalize({
-        tgId: u.tgId,
-        points: PENALTY_POINTS,
-        caseId: d.caseId,
-        archive: d.archive,
-        fund: d.fund,
-        opys: d.opys,
-        fields,
-        pairTgIdA: d.first.tgId,
-        pairTgIdB: d.second.tgId,
-      });
-      const warn = (r as any)?.warning ? ` ⚠️ ${(r as any).warning}` : '';
-      setPenaltyState(s => ({
-        ...s,
-        [key]: `done:Новий баланс ${(r as any)?.newTotal ?? '?'}${warn}`,
-      }));
-      // Прибираємо пару зі списку — бек уже зафіксував її як 'penalized'.
-      setTimeout(() => removeFromList(d), 1500);
-    } catch (e: any) {
-      setPenaltyState(s => ({ ...s, [key]: `err:${e.message || 'помилка'}` }));
-    }
-  };
 
   const pairEventTime = (d: IntegrityDiff): number => {
     // "Час події пари" — найпізніша з двох відповідей. Для resolved пар враховуємо
@@ -4329,6 +4470,181 @@ const IntegrityView: React.FC = () => {
     );
   });
 
+  // Згортаємо попарні різниці в одну картку на справу.
+  type CaseGroup = {
+    caseId: string;
+    archive: string;
+    fund: string;
+    opys: string;
+    participants: { tgId: string; displayName: string; submittedAt: string }[];
+    questions: { questionIndex: number; questionLabel: string; perUser: Record<string, string> }[];
+    pairs: IntegrityDiff[];
+    eventTime: number;
+    reviewSummary: { open: number; penalized: number; dismissed: number };
+  };
+
+  const groups: CaseGroup[] = useMemo(() => {
+    const byCase = new Map<string, IntegrityDiff[]>();
+    for (const d of filtered) {
+      const arr = byCase.get(d.caseId);
+      if (arr) arr.push(d);
+      else byCase.set(d.caseId, [d]);
+    }
+    const out: CaseGroup[] = [];
+    for (const [caseId, pairs] of byCase) {
+      const meta = pairs[0];
+      const participantsMap = new Map<string, { tgId: string; displayName: string; submittedAt: string }>();
+      const qMap = new Map<number, { questionIndex: number; questionLabel: string; perUser: Record<string, string> }>();
+      for (const p of pairs) {
+        if (p.first.tgId) participantsMap.set(p.first.tgId, p.first);
+        if (p.second.tgId) participantsMap.set(p.second.tgId, p.second);
+        for (const f of p.fields) {
+          let q = qMap.get(f.questionIndex);
+          if (!q) {
+            q = { questionIndex: f.questionIndex, questionLabel: f.questionLabel, perUser: {} };
+            qMap.set(f.questionIndex, q);
+          }
+          if (p.first.tgId) q.perUser[p.first.tgId] = f.from;
+          if (p.second.tgId) q.perUser[p.second.tgId] = f.to;
+        }
+      }
+      const summary = { open: 0, penalized: 0, dismissed: 0 };
+      for (const p of pairs) {
+        if (!p.review) summary.open++;
+        else if (p.review.action === 'penalized') summary.penalized++;
+        else summary.dismissed++;
+      }
+      const participants = Array.from(participantsMap.values()).sort((a, b) =>
+        a.submittedAt.localeCompare(b.submittedAt)
+      );
+      const questions = Array.from(qMap.values()).sort((a, b) => a.questionIndex - b.questionIndex);
+      out.push({
+        caseId,
+        archive: meta.archive,
+        fund: meta.fund,
+        opys: meta.opys,
+        participants,
+        questions,
+        pairs,
+        eventTime: Math.max(...pairs.map(pairEventTime)),
+        reviewSummary: summary,
+      });
+    }
+    out.sort((a, b) => b.eventTime - a.eventTime);
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered]);
+
+  // Обираємо «еталонне» значення поля — найчастіше серед учасників.
+  // При нічиї бере перше за порядком; пусті рядки рахуються нарівні.
+  const pickReference = (perUser: Record<string, string>, order: string[]): string => {
+    const counts = new Map<string, number>();
+    for (const tg of order) {
+      const v = perUser[tg] ?? '';
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    let best = perUser[order[0]] ?? '';
+    let bestCount = -1;
+    for (const tg of order) {
+      const v = perUser[tg] ?? '';
+      const c = counts.get(v) || 0;
+      if (c > bestCount) {
+        best = v;
+        bestCount = c;
+      }
+    }
+    return best;
+  };
+
+  // Дії над усією карткою.
+  const dismissCase = async (g: CaseGroup) => {
+    const open = g.pairs.filter(p => !p.review && p.first.tgId && p.second.tgId);
+    if (open.length === 0) return;
+    if (!window.confirm(`Позначити справу як «вирішено без штрафу» (${open.length} пар)?`)) return;
+    setBusy(true);
+    try {
+      for (const p of open) {
+        await tgApi.integrityDismiss(p.caseId, p.first.tgId, p.second.tgId);
+      }
+      if (diffs) {
+        const ids = new Set(open.map(pairKeyOf));
+        setDiffs(diffs.filter(x => !ids.has(pairKeyOf(x))));
+      }
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reopenCase = async (g: CaseGroup) => {
+    const resolved = g.pairs.filter(p => p.review && p.first.tgId && p.second.tgId);
+    if (resolved.length === 0) return;
+    setBusy(true);
+    try {
+      for (const p of resolved) {
+        await tgApi.integrityReopen(p.caseId, p.first.tgId, p.second.tgId);
+      }
+      await refresh(threshold, includeResolved);
+    } catch (e: any) {
+      setMsg('❌ ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Штрафує користувача: знімає бали один раз (по першій його відкритій парі),
+  // а решту відкритих пар з його участю — закриває як «вирішено без штрафу».
+  const penalizeUser = async (g: CaseGroup, tgId: string) => {
+    const pairsWithUser = g.pairs.filter(p => p.first.tgId === tgId || p.second.tgId === tgId);
+    const openWithUser = pairsWithUser.filter(p => !p.review);
+    if (openWithUser.length === 0) return;
+    const u = openWithUser[0].first.tgId === tgId ? openWithUser[0].first : openWithUser[0].second;
+    const key = `${tgId}|${g.caseId}`;
+    if (!window.confirm(`Зняти ${PENALTY_POINTS} балів у "${userLabel(u)}" і повідомити його?`)) return;
+    setPenaltyState(s => ({ ...s, [key]: 'busy' }));
+    try {
+      const firstPair = openWithUser[0];
+      const side: 'first' | 'second' = firstPair.first.tgId === tgId ? 'first' : 'second';
+      const fields = firstPair.fields.map(f => ({
+        label: f.questionLabel,
+        text: side === 'first' ? f.from : f.to,
+      }));
+      const r = await tgApi.penalize({
+        tgId,
+        points: PENALTY_POINTS,
+        caseId: g.caseId,
+        archive: g.archive,
+        fund: g.fund,
+        opys: g.opys,
+        fields,
+        pairTgIdA: firstPair.first.tgId,
+        pairTgIdB: firstPair.second.tgId,
+      });
+      // Інші відкриті пари з цим юзером — закриваємо без додаткового штрафу.
+      for (const p of openWithUser.slice(1)) {
+        try {
+          await tgApi.integrityDismiss(p.caseId, p.first.tgId, p.second.tgId);
+        } catch {
+          /* мовчки — основна дія вже відбулася */
+        }
+      }
+      const warn = (r as any)?.warning ? ` ⚠️ ${(r as any).warning}` : '';
+      setPenaltyState(s => ({
+        ...s,
+        [key]: `done:Новий баланс ${(r as any)?.newTotal ?? '?'}${warn}`,
+      }));
+      // Локально прибираємо всі пари з цим юзером — справа для нього вирішена.
+      if (diffs) {
+        setDiffs(
+          diffs.filter(x => !(x.caseId === g.caseId && (x.first.tgId === tgId || x.second.tgId === tgId)))
+        );
+      }
+    } catch (e: any) {
+      setPenaltyState(s => ({ ...s, [key]: `err:${e.message || 'помилка'}` }));
+    }
+  };
+
   return (
     <div className="space-y-3">
       <div className="text-sm text-slate-600">
@@ -4340,9 +4656,9 @@ const IntegrityView: React.FC = () => {
         <button
           onClick={() => refresh()}
           disabled={busy}
-          className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1"
+          className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm flex items-center gap-1"
         >
-          <RefreshCw size={14} /> {busy ? 'Завантаження…' : 'Оновити'}
+          <RefreshCw size={14} /> {busy ? 'Завантаження…' : loaded ? 'Оновити' : 'Завантажити перевірку'}
         </button>
         <label className="text-sm text-slate-600">Поріг різниці (символів):</label>
         <input
@@ -4382,132 +4698,142 @@ const IntegrityView: React.FC = () => {
           Показувати вже опрацьовані
         </label>
         <div className="text-sm text-slate-600 ml-auto">
-          Знайдено: <b>{filtered.length}</b>
+          {loaded ? <>Справ зі суперечками: <b>{groups.length}</b></> : 'Натисніть «Завантажити перевірку»'}
         </div>
       </div>
 
       {msg && <div className="text-sm">{msg}</div>}
 
-      {filtered.length === 0 && !busy && (
+      {loaded && groups.length === 0 && !busy && (
         <div className="text-sm text-slate-500 border rounded p-4 bg-slate-50">
           Розбіжностей понад порогом не знайдено.
         </div>
       )}
 
-      <div className="space-y-3">
-        {filtered.map((d, idx) => {
-          const pk = pairKeyOf(d);
-          const pBusy = pairBusy[pk];
-          return (
-          <div key={`${d.caseId}-${idx}`} className={`border rounded p-3 bg-white shadow-sm ${d.review ? 'opacity-75' : ''}`}>
-            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-2 text-sm">
-              <div className="font-mono text-xs text-slate-500">{d.caseId}</div>
-              <div className="text-slate-700">
-                {d.archive} {d.fund}-{d.opys}
-              </div>
-              {d.review && (
-                <span className={`text-xs px-2 py-0.5 rounded ${
-                  d.review.action === 'penalized'
-                    ? 'bg-rose-100 text-rose-700'
-                    : 'bg-slate-200 text-slate-700'
-                }`}>
-                  {d.review.action === 'penalized' ? '✓ Знято бали' : '✓ Пропущено'} • {d.review.at?.slice(0, 16).replace('T', ' ')}
-                </span>
-              )}
-              <div className="ml-auto flex items-center gap-2">
-                {!d.review && (
-                  <button
-                    onClick={() => dismissPair(d)}
-                    disabled={pBusy === 'busy' || !d.first.tgId || !d.second.tgId}
-                    className="px-2 py-0.5 text-xs rounded bg-slate-200 hover:bg-slate-300 disabled:opacity-50"
-                    title="Прибрати зі списку без штрафу"
-                  >
-                    {pBusy === 'busy' ? '…' : 'Пропустити'}
-                  </button>
-                )}
-                {d.review && (
-                  <button
-                    onClick={() => reopenPair(d)}
-                    className="px-2 py-0.5 text-xs rounded bg-slate-100 hover:bg-slate-200 text-slate-600"
-                    title="Повернути в список"
-                  >
-                    Повернути
-                  </button>
-                )}
-                {pBusy && pBusy.startsWith('err:') && (
-                  <span className="text-xs text-rose-700">{pBusy.slice(4)}</span>
-                )}
-              </div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm mb-2">
-              {(['first', 'second'] as const).map(side => {
-                const u = side === 'first' ? d.first : d.second;
-                const label = side === 'first' ? 'Перша відповідь' : 'Друга відповідь';
-                const key = `${u.tgId}|${d.caseId}|${idx}|${side}`;
-                const st = penaltyState[key] || '';
-                const isBusy = st === 'busy';
-                const isDone = st.startsWith('done:');
-                const isErr = st.startsWith('err:');
-                return (
-                  <div key={side} className="border rounded p-2 bg-slate-50 flex flex-col gap-1">
-                    <div className="text-xs text-slate-500">{label}</div>
-                    <div className="font-medium">{userLabel(u)}</div>
-                    <div className="text-xs text-slate-500">{u.submittedAt}</div>
-                    <div className="flex items-center gap-2 mt-1">
-                      <button
-                        disabled={!u.tgId || isBusy || isDone}
-                        onClick={() => penalize(d, side, idx)}
-                        className={`px-2 py-1 text-xs rounded font-medium ${
-                          isDone
-                            ? 'bg-green-100 text-green-700 cursor-default'
-                            : 'bg-rose-100 text-rose-700 hover:bg-rose-200 disabled:opacity-50'
-                        }`}
-                        title="Зняти 100 балів і повідомити користувача"
-                      >
-                        {isBusy ? 'Надсилаю…' : isDone ? '✓ Знято −100' : `Зняти −${PENALTY_POINTS} балів`}
-                      </button>
-                      {isDone && (
-                        <span className="text-xs text-green-700">{st.slice(5)}</span>
-                      )}
-                      {isErr && (
-                        <span className="text-xs text-rose-700">{st.slice(4)}</span>
-                      )}
-                    </div>
+      {loaded && (
+        <div className="space-y-3">
+          {groups.map(g => {
+            const order = g.participants.map(p => p.tgId);
+            const allResolved = g.reviewSummary.open === 0 && (g.reviewSummary.penalized + g.reviewSummary.dismissed) > 0;
+            return (
+              <div key={g.caseId} className={`border rounded p-3 bg-white shadow-sm ${allResolved ? 'opacity-75' : ''}`}>
+                <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mb-2 text-sm">
+                  <div className="font-mono text-xs text-slate-500">{g.caseId}</div>
+                  <div className="text-slate-700">
+                    {g.archive} {g.fund}-{g.opys}
                   </div>
-                );
-              })}
-            </div>
-            <table className="w-full text-xs border-collapse">
-              <thead>
-                <tr className="bg-slate-100 text-left">
-                  <th className="p-1.5 border">Поле</th>
-                  <th className="p-1.5 border">Було</th>
-                  <th className="p-1.5 border">Стало</th>
-                  <th className="p-1.5 border w-16">Δ</th>
-                </tr>
-              </thead>
-              <tbody>
-                {d.fields.map(f => {
-                  const { left, right } = diffChars(f.from || '', f.to || '');
-                  return (
-                    <tr key={f.questionIndex} className="align-top">
-                      <td className="p-1.5 border font-medium">{f.questionLabel}</td>
-                      <td className="p-1.5 border bg-red-50 whitespace-pre-wrap break-words">
-                        {f.from ? renderDiffSegs(left) : '—'}
-                      </td>
-                      <td className="p-1.5 border bg-green-50 whitespace-pre-wrap break-words">
-                        {f.to ? renderDiffSegs(right) : '—'}
-                      </td>
-                      <td className="p-1.5 border text-center font-mono">{f.distance}</td>
+                  <div className="text-xs text-slate-500">
+                    {g.participants.length} уч. • {g.pairs.length} пар
+                    {g.reviewSummary.penalized > 0 && ` • ${g.reviewSummary.penalized} штраф.`}
+                    {g.reviewSummary.dismissed > 0 && ` • ${g.reviewSummary.dismissed} пропущ.`}
+                  </div>
+                  <div className="ml-auto flex items-center gap-2">
+                    {g.reviewSummary.open > 0 && (
+                      <button
+                        onClick={() => dismissCase(g)}
+                        disabled={busy}
+                        className="px-2 py-0.5 text-xs rounded bg-slate-200 hover:bg-slate-300 disabled:opacity-50"
+                        title="Закрити всі відкриті пари цієї справи без штрафу"
+                      >
+                        Пропустити справу
+                      </button>
+                    )}
+                    {allResolved && (
+                      <button
+                        onClick={() => reopenCase(g)}
+                        disabled={busy}
+                        className="px-2 py-0.5 text-xs rounded bg-slate-100 hover:bg-slate-200 text-slate-600"
+                        title="Повернути всі пари справи в список"
+                      >
+                        Повернути
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 text-sm mb-2">
+                  {g.participants.map(u => {
+                    const key = `${u.tgId}|${g.caseId}`;
+                    const st = penaltyState[key] || '';
+                    const isBusy = st === 'busy';
+                    const isDone = st.startsWith('done:');
+                    const isErr = st.startsWith('err:');
+                    return (
+                      <div key={u.tgId} className="border rounded p-2 bg-slate-50 flex flex-col gap-1">
+                        <div className="font-medium">{userLabel(u)}</div>
+                        <div className="text-xs text-slate-500">{u.submittedAt}</div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <button
+                            disabled={!u.tgId || isBusy || isDone}
+                            onClick={() => penalizeUser(g, u.tgId)}
+                            className={`px-2 py-1 text-xs rounded font-medium ${
+                              isDone
+                                ? 'bg-green-100 text-green-700 cursor-default'
+                                : 'bg-rose-100 text-rose-700 hover:bg-rose-200 disabled:opacity-50'
+                            }`}
+                            title="Зняти 100 балів і повідомити користувача"
+                          >
+                            {isBusy ? 'Надсилаю…' : isDone ? '✓ Знято −100' : `Зняти −${PENALTY_POINTS} балів`}
+                          </button>
+                        </div>
+                        {isDone && <span className="text-xs text-green-700">{st.slice(5)}</span>}
+                        {isErr && <span className="text-xs text-rose-700">{st.slice(4)}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-slate-100 text-left">
+                      <th className="p-1.5 border w-48">Поле</th>
+                      {g.participants.map(u => (
+                        <th key={u.tgId} className="p-1.5 border">
+                          {u.displayName || u.tgId}
+                        </th>
+                      ))}
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          );
-        })}
-      </div>
+                  </thead>
+                  <tbody>
+                    {g.questions.map(q => {
+                      const ref = pickReference(q.perUser, order);
+                      return (
+                        <tr key={q.questionIndex} className="align-top">
+                          <td className="p-1.5 border font-medium">{q.questionLabel}</td>
+                          {g.participants.map(u => {
+                            const text = q.perUser[u.tgId] ?? '';
+                            const matches = text === ref;
+                            if (!text) {
+                              return (
+                                <td key={u.tgId} className="p-1.5 border whitespace-pre-wrap break-words text-slate-400">
+                                  —
+                                </td>
+                              );
+                            }
+                            if (matches) {
+                              return (
+                                <td key={u.tgId} className="p-1.5 border whitespace-pre-wrap break-words bg-emerald-50">
+                                  {text}
+                                </td>
+                              );
+                            }
+                            const { right } = diffChars(ref, text);
+                            return (
+                              <td key={u.tgId} className="p-1.5 border whitespace-pre-wrap break-words bg-rose-50">
+                                {renderDiffSegs(right)}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

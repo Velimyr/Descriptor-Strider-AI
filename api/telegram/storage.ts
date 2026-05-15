@@ -493,6 +493,94 @@ export async function getTodayActivity(timeZone: string): Promise<{ cases: numbe
   return { cases: caseIds.size, users: userIds.size };
 }
 
+// Активність за останні N днів у переданій таймзоні.
+// Кожен день — кількість унікальних опрацьованих справ та унікальних користувачів,
+// що брали участь (parallel-сабміти + collab-події).
+export async function getDailyActivity(
+  timeZone: string,
+  days: number
+): Promise<Array<{ date: string; cases: number; users: number }>> {
+  if (days <= 0) return [];
+  const safeDays = Math.min(days, 365);
+  const now = new Date();
+  const fmtDay = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const tzParts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    timeZoneName: 'longOffset',
+  }).formatToParts(now);
+  const tzName = tzParts.find(p => p.type === 'timeZoneName')?.value || 'GMT+00:00';
+  const m = tzName.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+  const sign = m?.[1] === '-' ? -1 : 1;
+  const hh = parseInt(m?.[2] || '0', 10);
+  const mm = parseInt(m?.[3] || '0', 10);
+  const offsetMin = sign * (hh * 60 + mm);
+
+  const todayStr = fmtDay.format(now);
+  const todayMidnightUtcMs = Date.parse(`${todayStr}T00:00:00.000Z`) - offsetMin * 60_000;
+  const startUtcMs = todayMidnightUtcMs - (safeDays - 1) * 86_400_000;
+  const endUtcMs = todayMidnightUtcMs + 86_400_000;
+  const startUtc = new Date(startUtcMs).toISOString();
+  const endUtc = new Date(endUtcMs).toISOString();
+
+  const buckets = new Map<string, { cases: Set<string>; users: Set<string> }>();
+  for (let i = 0; i < safeDays; i++) {
+    const d = new Date(startUtcMs + i * 86_400_000 + 12 * 3600_000); // полудень дня — щоб TZ-форматування не плутало
+    const key = fmtDay.format(d);
+    buckets.set(key, { cases: new Set(), users: new Set() });
+  }
+
+  const ingest = async (
+    table: string,
+    timeCol: string,
+    extra: (r: any) => { caseId: string; tgId: string; ts: string }
+  ) => {
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await db()
+        .from(table)
+        .select(`case_id, tg_id, ${timeCol}`)
+        .gte(timeCol, startUtc)
+        .lt(timeCol, endUtc)
+        .range(from, from + pageSize - 1);
+      if (error) throw error;
+      const rows = data || [];
+      for (const r of rows) {
+        const { caseId, tgId, ts } = extra(r);
+        if (!ts) continue;
+        const day = fmtDay.format(new Date(ts));
+        const bucket = buckets.get(day);
+        if (!bucket) continue;
+        if (caseId) bucket.cases.add(caseId);
+        if (tgId) bucket.users.add(tgId);
+      }
+      if (rows.length < pageSize) break;
+    }
+  };
+
+  await ingest(T.submissions, 'submitted_at', (r: any) => ({
+    caseId: String(r.case_id || ''),
+    tgId: String(r.tg_id || ''),
+    ts: r.submitted_at,
+  }));
+  await ingest(T.caseConfirmations, 'at', (r: any) => ({
+    caseId: String(r.case_id || ''),
+    tgId: String(r.tg_id || ''),
+    ts: r.at,
+  }));
+
+  const out: Array<{ date: string; cases: number; users: number }> = [];
+  for (const [date, b] of buckets) {
+    out.push({ date, cases: b.cases.size, users: b.users.size });
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
+}
+
 export async function getResultsTotals(): Promise<{ totalSubmissions: number }> {
   const { count, error } = await db()
     .from(T.submissions)
