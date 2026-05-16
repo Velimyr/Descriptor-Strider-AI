@@ -94,6 +94,10 @@ function validateAnswer(role: ColumnRole | undefined, text: string): string | nu
   if (role === 'date_start' || role === 'date_end') {
     if (!/^(\d{1,2}\.\d{1,2}\.\d{4}|\d{4})$/.test(t)) return T.invalidDate;
   }
+  if (role === 'case_no' || role === 'order_no') {
+    // Дозволяємо лише цифри, літери (латиниця + кирилиця, регістр будь-який) і пробіли.
+    if (!/^[\p{L}\p{N} ]+$/u.test(t)) return T.invalidCaseNumber;
+  }
   return null;
 }
 

@@ -284,6 +284,7 @@ export const telegramBotConfig: TelegramBotConfig = {
     helpBackButton: '◀ До меню допомоги',
     invalidNumber: 'Введіть, будь ласка, число.',
     invalidDate: 'Введіть дату у форматі ДД.ММ.РРРР або просто рік.',
+    invalidCaseNumber: 'У номері справи допускаються лише цифри, літери (великі чи маленькі) та пробіли.',
     cancelled: 'Скасовано.',
     sessionAlreadyOpen: 'У вас уже є відкрита справа — продовжуємо її. Щоб скасувати, надішліть /cancel.',
     nothingToCancel: 'Немає активної справи.',
