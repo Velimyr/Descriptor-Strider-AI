@@ -3801,12 +3801,6 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     }
     setMsg('');
     const selected = groups.map(g => g.records[g.selectedIndex!]);
-    const bases = new Set<number>();
-    for (const s of selected) {
-      const ans = Array.isArray(s.answers) ? s.answers : [];
-      const info = parseNumberCell(String(ans[numberColIdx] ?? ''));
-      if (info.base != null) bases.add(info.base);
-    }
     // Архівні реквізити беремо з descKey (вони однакові для всього опису).
     const [descArchive = '', descFund = '', descOpys = ''] = (descKey || '').split('|');
     const rows: Step2Row[] = selected.map((s, idx) => {
@@ -3823,26 +3817,6 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         page: String(s.page ?? ''),
       };
     });
-    if (bases.size > 0) {
-      const min = Math.min(...bases);
-      const max = Math.max(...bases);
-      for (let n = min; n <= max; n++) {
-        if (!bases.has(n)) {
-          const ans = Array(questions.length).fill('');
-          if (numberColIdx >= 0) ans[numberColIdx] = String(n);
-          rows.push({
-            id: `e${n}`,
-            isEmpty: true,
-            answers: ans,
-            archive: descArchive,
-            fund: descFund,
-            opys: descOpys,
-            sourcePdf: '',
-            page: '',
-          });
-        }
-      }
-    }
     rows.sort((a, b) =>
       compareNumberInfo(
         parseNumberCell(a.answers[numberColIdx] || ''),
@@ -3850,7 +3824,75 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       )
     );
     setStep2Rows(rows);
+    setMissingNumbers(null);
     setStep('step2');
+  };
+
+  // Перевірка пропусків у номерах справ на Кроці 2. Запускається явно по кнопці.
+  // null  → ще не перевіряли; масив → результат останньої перевірки.
+  const [missingNumbers, setMissingNumbers] = useState<number[] | null>(null);
+
+  const checkMissingNumbers = () => {
+    if (numberColIdx < 0) {
+      setMissingNumbers([]);
+      return;
+    }
+    const bases = new Set<number>();
+    for (const r of step2Rows) {
+      if (r.isEmpty) continue;
+      const info = parseNumberCell(String(r.answers[numberColIdx] ?? ''));
+      if (info.base != null) bases.add(info.base);
+    }
+    if (bases.size === 0) {
+      setMissingNumbers([]);
+      return;
+    }
+    const min = Math.min(...bases);
+    const max = Math.max(...bases);
+    const missing: number[] = [];
+    for (let n = min; n <= max; n++) if (!bases.has(n)) missing.push(n);
+    setMissingNumbers(missing);
+  };
+
+  const addMissingNumbersAsEmpty = () => {
+    if (!missingNumbers || missingNumbers.length === 0) return;
+    const [descArchive = '', descFund = '', descOpys = ''] = (descKey || '').split('|');
+    const existingEmpty = new Set(
+      step2Rows
+        .filter(r => r.isEmpty)
+        .map(r => {
+          const info = parseNumberCell(String(r.answers[numberColIdx] ?? ''));
+          return info.base;
+        })
+        .filter((n): n is number => n != null)
+    );
+    const toAdd = missingNumbers.filter(n => !existingEmpty.has(n));
+    if (toAdd.length === 0) {
+      setMissingNumbers([]);
+      return;
+    }
+    const extra: Step2Row[] = toAdd.map(n => {
+      const ans = Array(questions.length).fill('');
+      if (numberColIdx >= 0) ans[numberColIdx] = String(n);
+      return {
+        id: `e${n}`,
+        isEmpty: true,
+        answers: ans,
+        archive: descArchive,
+        fund: descFund,
+        opys: descOpys,
+        sourcePdf: '',
+        page: '',
+      };
+    });
+    const merged = [...step2Rows, ...extra].sort((a, b) =>
+      compareNumberInfo(
+        parseNumberCell(a.answers[numberColIdx] || ''),
+        parseNumberCell(b.answers[numberColIdx] || '')
+      )
+    );
+    setStep2Rows(merged);
+    setMissingNumbers([]);
   };
 
   const updateCell = (rowIdx: number, qIdx: number, value: string) => {
@@ -4209,10 +4251,57 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
             >
               Експорт CSV
             </button>
+            <button
+              onClick={checkMissingNumbers}
+              disabled={numberColIdx < 0}
+              title={
+                numberColIdx < 0
+                  ? 'Спершу позначте колонку-«номер» у питаннях'
+                  : 'Пошукати номери справ, відсутні між мін. і макс. у поточній таблиці'
+              }
+              className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 rounded text-sm disabled:opacity-50"
+            >
+              Перевірити наявність незаповнених справ
+            </button>
             <div className="text-sm text-slate-500">
               Рядків: {step2Rows.length} (порожніх: {step2Rows.filter(r => r.isEmpty).length})
             </div>
           </div>
+
+          {missingNumbers !== null && (
+            missingNumbers.length === 0 ? (
+              <div className="border border-emerald-300 bg-emerald-50 rounded p-2 text-xs text-emerald-800">
+                ✓ Пропусків у нумерації не знайдено.
+              </div>
+            ) : (
+              <div className="border border-amber-300 bg-amber-50 rounded p-2 text-xs text-amber-900 space-y-1">
+                <div className="font-medium">
+                  ⚠ Знайдено {missingNumbers.length} відсутніх номерів між мін. і макс.:
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {missingNumbers.map(n => (
+                    <span key={n} className="px-1.5 py-0.5 bg-amber-100 border border-amber-300 rounded">
+                      {n}
+                    </span>
+                  ))}
+                </div>
+                <div className="pt-1">
+                  <button
+                    onClick={addMissingNumbersAsEmpty}
+                    className="px-3 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700"
+                  >
+                    Додати {missingNumbers.length} порожніх рядків
+                  </button>
+                  <button
+                    onClick={() => setMissingNumbers(null)}
+                    className="ml-2 px-3 py-1 bg-white border rounded text-xs hover:bg-slate-50"
+                  >
+                    Сховати
+                  </button>
+                </div>
+              </div>
+            )
+          )}
           {duplicateInfo.items.length > 0 && (
             <div className="border border-rose-300 bg-rose-50 rounded p-2 text-xs text-rose-800">
               <div className="font-medium mb-1">
