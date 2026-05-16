@@ -587,9 +587,26 @@ interface SessionFile {
   version: number;
   savedAt: string;
   pdfName: string;
-  pdfBase64: string; // вміст PDF
+  pdfBase64: string; // вміст PDF (legacy JSON-формат)
   pageBoxes: Record<number, Box[]>;
   // v2+: лінії з Lines-режиму (опціонально, лише якщо є на сторінці).
+  pageLines?: Record<number, LineSet>;
+  meta: { archive: string; fund: string; opys: string };
+}
+
+// Бінарний контейнер сесії — щоб не тримати весь PDF у вигляді base64-рядка
+// (для PDF на 100+ МБ JSON.stringify падав з RangeError / OOM при експорті).
+// Layout: 4 байти магік "DSDP", 1 байт версії, 4 байти LE — довжина JSON-метаданих,
+// далі JSON-метадані (UTF-8) і весь PDF як бінарні байти.
+const CONTAINER_MAGIC = [0x44, 0x53, 0x44, 0x50] as const; // "DSDP"
+const CONTAINER_VERSION = 1;
+const CONTAINER_HEADER_BYTES = 9; // 4 magic + 1 ver + 4 jsonLen
+interface SessionContainerMetadata {
+  version: number;
+  container: 'dsdp-1';
+  savedAt: string;
+  pdfName: string;
+  pageBoxes: Record<number, Box[]>;
   pageLines?: Record<number, LineSet>;
   meta: { archive: string; fund: string; opys: string };
 }
@@ -645,7 +662,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const [skipExisting, setSkipExisting] = useState(true);
   const importInputRef = useRef<HTMLInputElement>(null);
   // Кеш бінарного PDF для повторного відкриття після імпорту і експорту.
-  const [pdfBase64, setPdfBase64] = useState<string>('');
+  // Тримаємо як ArrayBuffer — base64 для експорту створюємо лише на вимогу,
+  // щоб уникнути дорогої конвертації (і можливих RangeError у btoa) при відкритті
+  // великих файлів. Для PDF на 100+ МБ base64-рядок виходив ~133+ МБ і падав на завантаженні.
+  const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(null);
   // Виділені зони (id) — для обʼєднання у крос-сторінкові групи.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   // Lines-режим: альтернативний інструмент введення зон через перетин ліній.
@@ -864,13 +884,20 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     setUploadDone(null);
     setPageBoxes({});
     setPageLines({});
-    const buf = await file.arrayBuffer();
-    setPdfBase64(arrayBufferToBase64(buf));
-    const doc = await pdfjs.getDocument({ data: buf }).promise;
-    setPdf(doc);
-    setPdfName(file.name);
-    setPage(1);
-    await renderPage(doc, 1);
+    try {
+      const buf = await file.arrayBuffer();
+      setPdfBuffer(buf);
+      const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+      setPdf(doc);
+      setPdfName(file.name);
+      setPage(1);
+      await renderPage(doc, 1);
+    } catch (e: any) {
+      setMsg(`❌ Не вдалося відкрити PDF: ${e?.message || e}`);
+      setPdfBuffer(null);
+      setPdf(null);
+      setPdfName('');
+    }
   };
 
   const renderPage = async (doc: any, pageNum: number) => {
@@ -1508,7 +1535,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
   // ---------- Експорт / імпорт сесії ----------
   const exportSession = () => {
-    if (!pdfBase64 || !pdfName) {
+    if (!pdfBuffer || !pdfName) {
       setMsg('Немає PDF для експорту.');
       return;
     }
@@ -1517,24 +1544,44 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     for (const [k, ls] of Object.entries(pageLines) as [string, LineSet][]) {
       if (ls.v.length > 0 || ls.h.length > 0) linesToSave[parseInt(k, 10)] = ls;
     }
-    const data: SessionFile = {
+    const metadata: SessionContainerMetadata = {
       version: SESSION_VERSION,
+      container: 'dsdp-1',
       savedAt: new Date().toISOString(),
       pdfName,
-      pdfBase64,
       pageBoxes,
       ...(Object.keys(linesToSave).length > 0 ? { pageLines: linesToSave } : {}),
       meta: { archive, fund, opys },
     };
-    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const baseName = pdfName.replace(/\.pdf$/i, '');
-    a.href = url;
-    a.download = `${baseName}__session-${ts}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    let jsonBytes: Uint8Array;
+    try {
+      jsonBytes = new TextEncoder().encode(JSON.stringify(metadata));
+    } catch (e: any) {
+      setMsg(`❌ Не вдалося серіалізувати метадані сесії: ${e?.message || e}`);
+      return;
+    }
+    const header = new Uint8Array(CONTAINER_HEADER_BYTES);
+    header[0] = CONTAINER_MAGIC[0];
+    header[1] = CONTAINER_MAGIC[1];
+    header[2] = CONTAINER_MAGIC[2];
+    header[3] = CONTAINER_MAGIC[3];
+    header[4] = CONTAINER_VERSION;
+    new DataView(header.buffer).setUint32(5, jsonBytes.length, true);
+    try {
+      // Blob склеює без додаткових копій великих рядків — на 100+ МБ працює без btoa.
+      const blob = new Blob([header, jsonBytes, pdfBuffer], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const baseName = pdfName.replace(/\.pdf$/i, '');
+      a.href = url;
+      a.download = `${baseName}__session-${ts}.dsds`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setMsg(`❌ Не вдалося зберегти файл сесії: ${e?.message || e}`);
+      return;
+    }
     const linesPages = Object.keys(linesToSave).length;
     setMsg(
       `✅ Сесія експортована (${totalBoxes} зон на ${pagesWithBoxes.length} стор.` +
@@ -1543,19 +1590,113 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     );
   };
 
+  // Спільне відновлення стану зі вже декодованих метаданих + сирого PDF-буферу.
+  // Викликається з обох гілок імпорту (новий бінарний контейнер і старий JSON).
+  const applyImportedSession = async (
+    data: {
+      pdfName: string;
+      pageBoxes: Record<number, Box[]>;
+      pageLines?: Record<number, LineSet>;
+      meta?: { archive: string; fund: string; opys: string };
+    },
+    pdfBuf: ArrayBuffer
+  ): Promise<{ totalRestored: number; linesPages: number; pagesWithBoxes: number }> => {
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(pdfBuf) }).promise;
+    setPdf(doc);
+    setPdfName(data.pdfName);
+    setPdfBuffer(pdfBuf);
+    const restored: Record<number, Box[]> = {};
+    Object.entries(data.pageBoxes || {}).forEach(([k, v]) => {
+      const arr = (v as any[]) || [];
+      restored[parseInt(k, 10)] = arr.map(b => {
+        const id = b.id || newId();
+        return { x: b.x, y: b.y, w: b.w, h: b.h, id, groupId: b.groupId || id };
+      });
+    });
+    setPageBoxes(restored);
+    const restoredLines: Record<number, LineSet> = {};
+    Object.entries(data.pageLines || {}).forEach(([k, v]) => {
+      const ls = v as any;
+      const vArr: number[] = Array.isArray(ls?.v) ? ls.v.filter((n: any) => typeof n === 'number') : [];
+      const hRaw: any[] = Array.isArray(ls?.h) ? ls.h : [];
+      const hArr: HLine[] = hRaw
+        .map(item =>
+          typeof item === 'number'
+            ? { x: 0.5, y: item }
+            : { x: Number(item?.x), y: Number(item?.y) }
+        )
+        .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (vArr.length > 0 || hArr.length > 0) {
+        restoredLines[parseInt(k, 10)] = { v: vArr, h: hArr };
+      }
+    });
+    setPageLines(restoredLines);
+    if (data.meta) {
+      if (data.meta.archive) setArchive(data.meta.archive);
+      if (data.meta.fund) setFund(data.meta.fund);
+      if (data.meta.opys) setOpys(data.meta.opys);
+    }
+    setPage(1);
+    await renderPage(doc, 1);
+    const totalRestored = Object.values(restored).reduce((s, b) => s + b.length, 0);
+    return {
+      totalRestored,
+      linesPages: Object.keys(restoredLines).length,
+      pagesWithBoxes: Object.keys(restored).filter(k => restored[+k].length > 0).length,
+    };
+  };
+
   const importSession = async (file: File) => {
     setMsg('');
     try {
+      // Перші байти — диспетчер формату. "DSDP" → новий бінарний контейнер; інакше — старий JSON.
+      const headBuf = await file.slice(0, CONTAINER_HEADER_BYTES).arrayBuffer();
+      const headBytes = new Uint8Array(headBuf);
+      const isContainer =
+        headBytes.length >= 4 &&
+        headBytes[0] === CONTAINER_MAGIC[0] &&
+        headBytes[1] === CONTAINER_MAGIC[1] &&
+        headBytes[2] === CONTAINER_MAGIC[2] &&
+        headBytes[3] === CONTAINER_MAGIC[3];
+      if (isContainer) {
+        const ver = headBytes[4];
+        if (ver !== CONTAINER_VERSION) {
+          throw new Error(`Невідома версія контейнера: ${ver}`);
+        }
+        const jsonLen = new DataView(headBytes.buffer, headBytes.byteOffset, headBytes.byteLength)
+          .getUint32(5, true);
+        // Метадані — окремо як невелика частина; PDF — як решта файлу.
+        const jsonBuf = await file.slice(CONTAINER_HEADER_BYTES, CONTAINER_HEADER_BYTES + jsonLen).arrayBuffer();
+        const metaParsed = JSON.parse(new TextDecoder().decode(jsonBuf));
+        if (!metaParsed?.pdfName) throw new Error('Контейнер пошкоджений: немає pdfName');
+        const pdfBlob = file.slice(CONTAINER_HEADER_BYTES + jsonLen);
+        const pdfBuf = await pdfBlob.arrayBuffer();
+        const r = await applyImportedSession(
+          {
+            pdfName: metaParsed.pdfName,
+            pageBoxes: metaParsed.pageBoxes || {},
+            pageLines: metaParsed.pageLines,
+            meta: metaParsed.meta,
+          },
+          pdfBuf
+        );
+        setMsg(
+          `✅ Сесія імпортована: ${r.totalRestored} зон на ${r.pagesWithBoxes} стор.` +
+            (r.linesPages ? `; лінії на ${r.linesPages} стор.` : '')
+        );
+        return;
+      }
+      // ---- Старий JSON-формат: повна сесія в одному рядку з PDF як base64. ----
       const text = await file.text();
       const data: SessionFile = JSON.parse(text);
       if (!data?.pdfBase64 || !data?.pdfName) {
         throw new Error('Файл сесії пошкоджений (немає PDF)');
       }
       const buf = base64ToArrayBuffer(data.pdfBase64);
-      const doc = await pdfjs.getDocument({ data: buf }).promise;
+      const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
       setPdf(doc);
       setPdfName(data.pdfName);
-      setPdfBase64(data.pdfBase64);
+      setPdfBuffer(buf);
       // Конвертуємо ключі обʼєкта (рядки) у числа.
       const restored: Record<number, Box[]> = {};
       Object.entries(data.pageBoxes || {}).forEach(([k, v]) => {
@@ -2011,7 +2152,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
             <input
               ref={importInputRef}
               type="file"
-              accept="application/json,.json"
+              accept="application/json,.json,.dsds"
               className="hidden"
               onChange={e => e.target.files?.[0] && importSession(e.target.files[0])}
             />
@@ -2098,7 +2239,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
             )}
             <button
               onClick={exportSession}
-              disabled={!pdfBase64}
+              disabled={!pdfBuffer}
               className="px-2.5 py-1.5 bg-slate-200 text-slate-700 text-xs rounded hover:bg-slate-300 disabled:opacity-50"
               title="Зберегти PDF + усі зони у файл .json для продовження пізніше"
             >
