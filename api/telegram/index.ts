@@ -16,6 +16,7 @@ import { handleUpdate, dispatchCaseToUser, sendScheduledGreeting } from './bot.j
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
 import { detectCaseBoxes } from './slicer.js';
 import {
+  computeFundEta,
   nowIsoUtc,
   progressByDescription,
   progressOfAllCases,
@@ -888,70 +889,12 @@ router.get('/admin/today-stats', async (req, res) => {
 // 5) Прогнозована дата = сьогодні + ceil(залишилось / швидкість).
 router.get('/admin/fund-eta', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const fund = telegramBotConfig.fund;
   const windowDays = Math.max(
     1,
     Math.min(60, parseInt(String(req.query.windowDays || '14'), 10) || 14)
   );
   const cases = await getAllCases();
-  const groups = new Map<string, { total: number; done: number; lastUpdated: string }>();
-  for (const c of cases) {
-    const key = `${c.archive}|${c.fund}|${c.opys}`;
-    const g = groups.get(key) || { total: 0, done: 0, lastUpdated: '' };
-    g.total++;
-    const target = telegramBotConfig.cases.targetSubmissions;
-    const progress =
-      c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
-    const done = c.status === 'done' || progress >= target;
-    if (done) g.done++;
-    const t = c.updatedAt || c.createdAt || '';
-    if (t > g.lastUpdated) g.lastUpdated = t;
-    groups.set(key, g);
-  }
-  let fullyDoneNow = 0;
-  const completions: number[] = []; // timestamps (ms) для повністю завершених описів
-  for (const [, g] of groups) {
-    if (g.total > 0 && g.done === g.total) {
-      fullyDoneNow++;
-      const ts = Date.parse(g.lastUpdated);
-      if (!isNaN(ts)) completions.push(ts);
-    }
-  }
-  const nowMs = Date.now();
-  const windowMs = windowDays * 86_400_000;
-  const recentDone = completions.filter(t => nowMs - t <= windowMs).length;
-  const rate = recentDone / windowDays; // описів на день
-  const totalDone = fullyDoneNow + fund.baselineDoneDescriptions;
-  const remaining = Math.max(0, fund.totalDescriptions - totalDone);
-  let etaDateIso: string | null = null;
-  let etaDateLocal: string | null = null;
-  if (remaining > 0 && rate > 0) {
-    const daysLeft = Math.ceil(remaining / rate);
-    const etaMs = nowMs + daysLeft * 86_400_000;
-    const d = new Date(etaMs);
-    etaDateIso = d.toISOString();
-    // Формат "дд.мм.рррр" у локалі Європа/Київ.
-    const fmt = new Intl.DateTimeFormat('uk-UA', {
-      timeZone: telegramBotConfig.dispatch.timezone || 'Europe/Kyiv',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    });
-    etaDateLocal = fmt.format(d);
-  }
-  res.json({
-    fundNumber: fund.number,
-    totalDescriptions: fund.totalDescriptions,
-    baselineDoneDescriptions: fund.baselineDoneDescriptions,
-    fullyDoneByBot: fullyDoneNow,
-    totalDone,
-    remaining,
-    windowDays,
-    completionsInWindow: recentDone,
-    ratePerDay: rate,
-    etaDateIso,
-    etaDateLocal,
-  });
+  res.json(computeFundEta(cases, windowDays));
 });
 
 router.get('/admin/daily-activity', async (req, res) => {

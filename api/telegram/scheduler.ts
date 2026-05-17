@@ -166,6 +166,82 @@ export interface DescriptionProgress {
   donePct: number;
 }
 
+export interface FundEta {
+  fundNumber: string;
+  totalDescriptions: number;
+  baselineDoneDescriptions: number;
+  fullyDoneByBot: number;
+  totalDone: number;
+  remaining: number;
+  windowDays: number;
+  completionsInWindow: number;
+  ratePerDay: number;
+  etaDateIso: string | null;
+  etaDateLocal: string | null;
+}
+
+// Спільна логіка прогнозу завершення фонду. Використовується і в адмін-ендпоінті,
+// і в /progress-команді бота, щоб користувачі бачили одну й ту саму цифру.
+export function computeFundEta(cases: BotCase[], windowDays = 14): FundEta {
+  const fund = cfg.fund;
+  const target = cfg.cases.targetSubmissions;
+  const groups = new Map<string, { total: number; done: number; lastUpdated: string }>();
+  for (const c of cases) {
+    const k = descriptionKey(c);
+    const g = groups.get(k) || { total: 0, done: 0, lastUpdated: '' };
+    g.total++;
+    const progress = c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
+    const done = c.status === 'done' || progress >= target;
+    if (done) g.done++;
+    const t = c.updatedAt || c.createdAt || '';
+    if (t > g.lastUpdated) g.lastUpdated = t;
+    groups.set(k, g);
+  }
+  let fullyDoneByBot = 0;
+  const completions: number[] = [];
+  for (const [, g] of groups) {
+    if (g.total > 0 && g.done === g.total) {
+      fullyDoneByBot++;
+      const ts = Date.parse(g.lastUpdated);
+      if (!isNaN(ts)) completions.push(ts);
+    }
+  }
+  const nowMs = Date.now();
+  const windowMs = windowDays * 86_400_000;
+  const completionsInWindow = completions.filter(t => nowMs - t <= windowMs).length;
+  const ratePerDay = completionsInWindow / windowDays;
+  const totalDone = fullyDoneByBot + fund.baselineDoneDescriptions;
+  const remaining = Math.max(0, fund.totalDescriptions - totalDone);
+  let etaDateIso: string | null = null;
+  let etaDateLocal: string | null = null;
+  if (remaining > 0 && ratePerDay > 0) {
+    const daysLeft = Math.ceil(remaining / ratePerDay);
+    const etaMs = nowMs + daysLeft * 86_400_000;
+    const d = new Date(etaMs);
+    etaDateIso = d.toISOString();
+    const fmtD = new Intl.DateTimeFormat('uk-UA', {
+      timeZone: cfg.dispatch.timezone || 'Europe/Kyiv',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+    etaDateLocal = fmtD.format(d);
+  }
+  return {
+    fundNumber: fund.number,
+    totalDescriptions: fund.totalDescriptions,
+    baselineDoneDescriptions: fund.baselineDoneDescriptions,
+    fullyDoneByBot,
+    totalDone,
+    remaining,
+    windowDays,
+    completionsInWindow,
+    ratePerDay,
+    etaDateIso,
+    etaDateLocal,
+  };
+}
+
 // Групуємо справи по описах і рахуємо прогрес для кожного.
 // Сортуємо за датою створення (найстаріший — першим).
 export function progressByDescription(cases: BotCase[]): DescriptionProgress[] {

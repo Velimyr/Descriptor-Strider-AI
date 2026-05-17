@@ -3162,8 +3162,7 @@ const ResultsView: React.FC = () => {
                 <span className="text-xs text-slate-500">
                   {' '}
                   · темп: {fundEta.ratePerDay.toFixed(2)} опис./день за останні {fundEta.windowDays} дн.; готово{' '}
-                  {fundEta.totalDone}/{fundEta.totalDescriptions} (з них baseline{' '}
-                  {fundEta.baselineDoneDescriptions})
+                  {fundEta.totalDone}/{fundEta.totalDescriptions}
                 </span>
               )}
             </div>

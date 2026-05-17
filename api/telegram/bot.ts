@@ -37,6 +37,7 @@ import {
   sendPhotoByFileId,
 } from './tg-api.js';
 import {
+  computeFundEta,
   computePointsForToday,
   kyivDateString,
   leaderboardSorted,
@@ -934,7 +935,33 @@ async function cmdProgress(chatId: number, user: BotUser) {
       totalCases: d.totalCases,
     })
   );
-  const body = [header, ...blocks].join('\n\n') || header;
+  // Прогноз завершення фонду — окремим блоком у кінці. Тягне getAllCases (важче,
+  // ніж SQL-агрегація), тому ловимо помилки локально, щоб не зламати /progress.
+  let etaBlock = '';
+  try {
+    const cases = await getAllCases();
+    const eta = computeFundEta(cases);
+    if (eta.remaining === 0) {
+      etaBlock = fmt(T.fundEtaDone, { fundNumber: eta.fundNumber });
+    } else if (eta.etaDateLocal) {
+      etaBlock = fmt(T.fundEtaLine, {
+        fundNumber: eta.fundNumber,
+        remaining: eta.remaining,
+        etaDate: eta.etaDateLocal,
+      });
+    } else {
+      etaBlock = fmt(T.fundEtaUnknown, {
+        fundNumber: eta.fundNumber,
+        remaining: eta.remaining,
+        windowDays: eta.windowDays,
+      });
+    }
+  } catch (e) {
+    console.error('[cmdProgress] computeFundEta failed', e);
+  }
+  const parts = [header, ...blocks];
+  if (etaBlock) parts.push(etaBlock);
+  const body = parts.join('\n\n') || header;
   await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
 }
 
