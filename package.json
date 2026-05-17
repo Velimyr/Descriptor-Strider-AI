@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build": "vite build && vite build --config vite.config.widget.ts",
     "build:widget": "vite build --config vite.config.widget.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",

@@ -11,6 +11,10 @@
       "destination": "/api/index.ts"
     },
     {
+      "source": "/widget.js",
+      "destination": "/widget/widget.js"
+    },
+    {
       "source": "/((?!.*\\.).*)",
       "destination": "/index.html"
     }
