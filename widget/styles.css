@@ -86,10 +86,19 @@
   color: var(--blkch-text);
 }
 .blkch-close {
-  float: right; background: transparent; border: none; cursor: pointer;
-  font-size: 22px; line-height: 1; color: var(--blkch-text-muted); padding: 0;
+  background: var(--blkch-bg-secondary); border: 1px solid var(--blkch-border);
+  cursor: pointer; padding: 0;
+  width: 32px; height: 32px; border-radius: 50%;
+  font-size: 20px; line-height: 1; font-weight: 700;
+  color: var(--blkch-text);
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s ease, transform .15s ease;
 }
-.blkch-close:hover { color: var(--blkch-text); }
+.blkch-close:hover {
+  background: var(--blkch-danger); color: #fff;
+  border-color: var(--blkch-danger);
+  transform: scale(1.05);
+}
 
 /* ---------- Generic ---------- */
 .blkch-h1 { font-size: 18px; font-weight: 700; margin: 0 0 12px; color: var(--blkch-text); }

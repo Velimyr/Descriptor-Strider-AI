@@ -396,6 +396,9 @@ const QuestionInput: React.FC<{
       onChange={(e) => onChange(e.target.value)}
       autoFocus
     />
+    <p className="blkch-question-hint" style={{ marginTop: -4, marginBottom: 8 }}>
+      ⓘ Вводимо текст саме так, як на зображенні.
+    </p>
   </div>
 );
 
