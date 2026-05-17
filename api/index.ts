@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
 import telegramRouter from "./telegram/index.js";
+import publicRouter from "./public/index.js";
 
 dotenv.config({
   path: [
@@ -23,6 +24,10 @@ app.use(express.json({ limit: '50mb' }));
 
 // Telegram-бот: усі маршрути під /api/telegram. Існуючий функціонал не змінюється.
 app.use('/api/telegram', telegramRouter);
+
+// Public widget API для партнерських сайтів. Усі ендпоінти під /api/public/v1.
+// Авторизація через X-Partner-Key + (для більшості) Authorization: Bearer <session>.
+app.use('/api/public/v1', publicRouter);
 
 // Proxy for PDF files to avoid CORS
 app.get("/api/proxy-pdf", async (req, res) => {
