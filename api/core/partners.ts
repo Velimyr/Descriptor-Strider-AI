@@ -52,7 +52,7 @@ export async function createPartner(input: {
       name: input.name,
       nickname_prefix: input.nicknamePrefix,
       api_key_hash: apiKeyHash,
-      allowed_origins: input.allowedOrigins,
+      allowed_origins: input.allowedOrigins.map(normalizeOrigin).filter(Boolean),
       active: true,
     })
     .select()
@@ -100,7 +100,9 @@ export async function updatePartner(
   const row: Record<string, unknown> = {};
   if (patch.name !== undefined) row.name = patch.name;
   if (patch.nicknamePrefix !== undefined) row.nickname_prefix = patch.nicknamePrefix;
-  if (patch.allowedOrigins !== undefined) row.allowed_origins = patch.allowedOrigins;
+  if (patch.allowedOrigins !== undefined) {
+    row.allowed_origins = patch.allowedOrigins.map(normalizeOrigin).filter(Boolean);
+  }
   if (patch.active !== undefined) row.active = patch.active;
   if (Object.keys(row).length === 0) return;
   const { error } = await db().from(T.partners).update(row).eq('partner_id', partnerId);
@@ -112,9 +114,15 @@ export async function deletePartner(partnerId: string): Promise<void> {
   if (error) throw error;
 }
 
-// Точна перевірка origin. allowedOrigins — масив рядків типу "https://archium.org".
-// Без wildcard на MVP — якщо знадобиться, додаємо тут.
+// Нормалізація origin для уникнення поширених UX-помилок:
+// прибираємо trailing slash, lowercase. Браузер шле точний рядок без слешу.
+export function normalizeOrigin(s: string): string {
+  return s.trim().toLowerCase().replace(/\/+$/, '');
+}
+
+// Точна перевірка origin після нормалізації обох сторін.
 export function isOriginAllowed(partner: Partner, origin: string | undefined): boolean {
   if (!origin) return false;
-  return partner.allowedOrigins.includes(origin);
+  const incoming = normalizeOrigin(origin);
+  return partner.allowedOrigins.map(normalizeOrigin).includes(incoming);
 }
