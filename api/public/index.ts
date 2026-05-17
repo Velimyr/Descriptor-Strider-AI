@@ -46,8 +46,9 @@ router.get('/partner-config', requirePartner, async (req, res) => {
     name: p.name,
     nickname_prefix: p.nicknamePrefix,
     customization: p.customization,
-    // Допоміжні тексти, спільні з TG-ботом — щоб не дублювати в коді віджета.
-    // HTML-розмітка (<b>) лишається — віджет рендерить через innerHTML.
+    // Username бота для віджета — для всіх посилань (LinkedView).
+    // Той самий ENV що для генерації deep-link, щоб віджет не мав хардкоду.
+    tg_bot_username: TG_BOT_USERNAME,
     help: {
       descStruct: t.helpDescStruct,
       about: t.helpAbout,

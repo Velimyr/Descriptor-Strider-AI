@@ -58,6 +58,7 @@ export interface PartnerConfig {
     verticalOffset?: number;
   };
   help: HelpTexts;
+  tgBotUsername: string;
 }
 
 export type FloaterPosition =
@@ -115,6 +116,7 @@ export class ApiClient {
       nicknamePrefix: r.nickname_prefix,
       customization: r.customization || {},
       help: r.help || { descStruct: '', about: '', howToAnswer: '', points: '', faq: '', introAck: '✅ Ознайомився' },
+      tgBotUsername: r.tg_bot_username || 'descriptorstriderbot',
     };
   }
 

@@ -77,6 +77,7 @@ async function init() {
   const help = config?.help || null;
   const position = config?.customization.position || 'bottom-right';
   const verticalOffset = config?.customization.verticalOffset || 0;
+  const tgBotUsername = config?.tgBotUsername || 'descriptorstriderbot';
 
   const root = createRoot(mountPoint);
   root.render(
@@ -87,6 +88,7 @@ async function init() {
       help={help}
       position={position}
       verticalOffset={verticalOffset}
+      tgBotUsername={tgBotUsername}
     />
   );
 }

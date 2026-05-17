@@ -28,9 +28,10 @@ export interface AppProps {
   help: HelpTexts | null;
   position: FloaterPosition;
   verticalOffset: number;
+  tgBotUsername: string;
 }
 
-export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, position, verticalOffset }) => {
+export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, position, verticalOffset, tgBotUsername }) => {
   const [stage, setStage] = useState<Stage>({ kind: 'floater' });
   const [stats, setStats] = useState<UserStats | null>(null);
   const heartbeatRef = useRef<number | null>(null);
@@ -257,7 +258,7 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, posi
           />
         )}
         {stage.kind === 'linking' && <LinkingView code={stage.code} deepLink={stage.deepLink} onCancel={close} />}
-        {stage.kind === 'linked' && <LinkedView onClose={close} />}
+        {stage.kind === 'linked' && <LinkedView onClose={close} tgBotUsername={tgBotUsername} />}
         {stage.kind === 'error' && (
           <>
             <h2 className="blkch-h1">Помилка</h2>
@@ -566,7 +567,7 @@ const LinkingView: React.FC<{ code: string; deepLink: string; onCancel: () => vo
   );
 };
 
-const LinkedView: React.FC<{ onClose: () => void }> = ({ onClose }) => (
+const LinkedView: React.FC<{ onClose: () => void; tgBotUsername: string }> = ({ onClose, tgBotUsername }) => (
   <>
     <div className="blkch-success">
       ✅ Готово! Ваші бали тепер у Telegram-боті.
@@ -577,7 +578,7 @@ const LinkedView: React.FC<{ onClose: () => void }> = ({ onClose }) => (
     </p>
     <div className="blkch-btn-row">
       <a
-        href="https://t.me/descriptorstriderbot"
+        href={`https://t.me/${tgBotUsername}`}
         target="_blank"
         rel="noreferrer noopener"
         className="blkch-btn blkch-btn-primary"
