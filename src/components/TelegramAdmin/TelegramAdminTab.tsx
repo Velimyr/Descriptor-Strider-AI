@@ -666,6 +666,17 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   // щоб уникнути дорогої конвертації (і можливих RangeError у btoa) при відкритті
   // великих файлів. Для PDF на 100+ МБ base64-рядок виходив ~133+ МБ і падав на завантаженні.
   const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(null);
+  // Рятувальний режим: у користувача .dsds з порожньою PDF-секцією (наслідок
+  // старого бага експорту). Метадані з .dsds лишилися цілими — чекаємо, поки
+  // користувач прикріпить оригінальний PDF, і склеюємо їх докупи.
+  type PendingRecovery = {
+    pdfName: string;
+    pageBoxes: Record<number, Box[]>;
+    pageLines?: Record<number, LineSet>;
+    meta?: { archive: string; fund: string; opys: string };
+  };
+  const [pendingRecovery, setPendingRecovery] = useState<PendingRecovery | null>(null);
+  const recoveryPdfInputRef = useRef<HTMLInputElement>(null);
   // Виділені зони (id) — для обʼєднання у крос-сторінкові групи.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   // Lines-режим: альтернативний інструмент введення зон через перетин ліній.
@@ -875,6 +886,51 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     });
   };
 
+  // Рятівне склеювання: береться pending-метадані з пошкодженого .dsds і
+  // окремий PDF-файл, який користувач щойно прикріпив. На виході — повноцінна
+  // сесія в state, готова до експорту й роботи.
+  const recoverSessionWithPdf = async (pdfFile: File) => {
+    if (!pendingRecovery) return;
+    setMsg('');
+    try {
+      // Зчитаємо перші 5 байт — переконатися, що це насправді PDF.
+      const head = new Uint8Array(await pdfFile.slice(0, 5).arrayBuffer());
+      const isPdf =
+        head.length >= 5 &&
+        head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46 && head[4] === 0x2d;
+      if (!isPdf) {
+        setMsg('❌ Прикріплений файл не схожий на PDF.');
+        return;
+      }
+      const pdfBuf = await pdfFile.arrayBuffer();
+      // pdfName у відновленій сесії беремо з .dsds (бо саме так він буде
+      // називатися при наступному експорті); попередження, якщо імена не збігаються.
+      if (pdfFile.name !== pendingRecovery.pdfName) {
+        const ok = window.confirm(
+          `Імена не збігаються:\n  у сесії: ${pendingRecovery.pdfName}\n  у файлі: ${pdfFile.name}\n\nВсе одно склеїти?`
+        );
+        if (!ok) return;
+      }
+      const r = await applyImportedSession(
+        {
+          pdfName: pendingRecovery.pdfName,
+          pageBoxes: pendingRecovery.pageBoxes,
+          pageLines: pendingRecovery.pageLines,
+          meta: pendingRecovery.meta,
+        },
+        pdfBuf
+      );
+      setPendingRecovery(null);
+      setMsg(
+        `✅ Сесію відновлено: ${r.totalRestored} зон на ${r.pagesWithBoxes} стор.` +
+          (r.linesPages ? `; лінії на ${r.linesPages} стор.` : '') +
+          ' Тепер можна одразу натиснути «💾 Експорт», щоб отримати валідний .dsds.'
+      );
+    } catch (e: any) {
+      setMsg(`❌ Не вдалося відновити сесію: ${e?.message || e}`);
+    }
+  };
+
   // Універсальний обробник: розпізнає тип за магіком всередині файлу, а не за
   // розширенням чи MIME (це важливо, коли файл прийшов через Telegram / пошту
   // і втратив правильне розширення).
@@ -902,6 +958,11 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         return;
       }
       if (isPdf) {
+        // Якщо чекаємо на PDF для відновлення сесії — підставляємо саме його.
+        if (pendingRecovery) {
+          await recoverSessionWithPdf(file);
+          return;
+        }
         await loadPdf(file);
         return;
       }
@@ -939,8 +1000,14 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     setPageLines({});
     try {
       const buf = await file.arrayBuffer();
+      // ВАЖЛИВО: передаємо pdf.js НЕЗАЛЕЖНУ копію байтів. Інакше воркер pdf.js
+      // може «відірвати» (detach) наш ArrayBuffer, і pdfBuffer перетвориться
+      // на 0-байтовий — експорт сесії запише в .dsds порожній PDF, який потім
+      // не можна імпортувати.
+      const forPdfjs = new Uint8Array(buf.byteLength);
+      forPdfjs.set(new Uint8Array(buf));
       setPdfBuffer(buf);
-      const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+      const doc = await pdfjs.getDocument({ data: forPdfjs }).promise;
       setPdf(doc);
       setPdfName(file.name);
       setPage(1);
@@ -1654,7 +1721,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     },
     pdfBuf: ArrayBuffer
   ): Promise<{ totalRestored: number; linesPages: number; pagesWithBoxes: number }> => {
-    const doc = await pdfjs.getDocument({ data: new Uint8Array(pdfBuf) }).promise;
+    // Передаємо pdf.js окрему копію — щоб наш pdfBuf лишився цілим (для майбутнього експорту).
+    const forPdfjs = new Uint8Array(pdfBuf.byteLength);
+    forPdfjs.set(new Uint8Array(pdfBuf));
+    const doc = await pdfjs.getDocument({ data: forPdfjs }).promise;
     setPdf(doc);
     setPdfName(data.pdfName);
     setPdfBuffer(pdfBuf);
@@ -1724,6 +1794,20 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         if (!metaParsed?.pdfName) throw new Error('Контейнер пошкоджений: немає pdfName');
         const pdfBlob = file.slice(CONTAINER_HEADER_BYTES + jsonLen);
         const pdfBuf = await pdfBlob.arrayBuffer();
+        if (pdfBuf.byteLength === 0) {
+          // PDF-секція порожня (наслідок старого бага експорту). Метадані цілі —
+          // переходимо в режим відновлення: пропонуємо прикріпити оригінальний PDF.
+          setPendingRecovery({
+            pdfName: metaParsed.pdfName,
+            pageBoxes: metaParsed.pageBoxes || {},
+            pageLines: metaParsed.pageLines,
+            meta: metaParsed.meta,
+          });
+          setMsg(
+            `ℹ️ PDF всередині .dsds порожній (наслідок старого бага). Прикріпіть оригінальний PDF "${metaParsed.pdfName}" — і всі зони / реквізити відновляться.`
+          );
+          return;
+        }
         const r = await applyImportedSession(
           {
             pdfName: metaParsed.pdfName,
@@ -1746,7 +1830,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         throw new Error('Файл сесії пошкоджений (немає PDF)');
       }
       const buf = base64ToArrayBuffer(data.pdfBase64);
-      const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+      const forPdfjs = new Uint8Array(buf.byteLength);
+      forPdfjs.set(new Uint8Array(buf));
+      const doc = await pdfjs.getDocument({ data: forPdfjs }).promise;
       setPdf(doc);
       setPdfName(data.pdfName);
       setPdfBuffer(buf);
@@ -2163,6 +2249,47 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           </div>
         </div>
       </section>
+      )}
+
+      {/* Банер відновлення сесії з пошкодженого .dsds */}
+      {!pdf && pendingRecovery && (
+        <div className="border border-amber-300 bg-amber-50 rounded p-3 text-sm space-y-2">
+          <div className="font-medium text-amber-900">
+            🛟 Чекаємо на оригінальний PDF для відновлення сесії
+          </div>
+          <div className="text-xs text-amber-900/90">
+            У файлі .dsds, який ви відкрили, PDF-секція виявилась порожньою
+            (стара помилка експорту). Метадані цілі —{' '}
+            <b>{(Object.values(pendingRecovery.pageBoxes || {}) as Box[][]).reduce((s, a) => s + a.length, 0)}</b>{' '}
+            зон на{' '}
+            {Object.keys(pendingRecovery.pageBoxes || {}).filter(k => ((pendingRecovery.pageBoxes as Record<number, Box[]>)[+k]?.length || 0) > 0).length}{' '}
+            стор. Прикріпіть оригінальний PDF <b>{pendingRecovery.pdfName}</b>, і вся робота повернеться.
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => recoveryPdfInputRef.current?.click()}
+              className="px-3 py-1.5 bg-amber-600 text-white text-sm rounded hover:bg-amber-700"
+            >
+              📎 Прикріпити оригінальний PDF
+            </button>
+            <input
+              ref={recoveryPdfInputRef}
+              type="file"
+              accept="application/pdf,.pdf"
+              className="hidden"
+              onChange={e => e.target.files?.[0] && recoverSessionWithPdf(e.target.files[0])}
+            />
+            <button
+              onClick={() => {
+                setPendingRecovery(null);
+                setMsg('');
+              }}
+              className="px-3 py-1 text-xs text-amber-900 hover:underline"
+            >
+              скасувати
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Дропзона */}
