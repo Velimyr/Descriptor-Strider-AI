@@ -204,7 +204,7 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, posi
           <img src={logoUrl} alt={buttonText} className="blkch-floater-logo" />
         ) : (
           <>
-            <span className="blkch-floater-avatar">Б</span>
+            <img src={logoUrl} alt="" className="blkch-floater-avatar-img" />
             {buttonText}
           </>
         )}
@@ -569,6 +569,7 @@ const LinkingView: React.FC<{ code: string; deepLink: string; onCancel: () => vo
           marginBottom: 8,
           color: 'var(--blkch-text)',
           letterSpacing: 1,
+          wordBreak: 'break-all',
         }}
       >
         /link {code}
