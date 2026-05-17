@@ -134,3 +134,12 @@
 }
 
 .blkch-stats { color: var(--blkch-text-muted); font-size: 13px; margin-bottom: 12px; }
+
+/* Контейнер для текстів допомоги, які приходять як HTML (з <b>) і переносами рядків */
+.blkch-help-html {
+  white-space: pre-wrap;
+  color: var(--blkch-text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.blkch-help-html b, .blkch-help-html strong { font-weight: 700; }

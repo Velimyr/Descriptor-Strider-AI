@@ -74,9 +74,10 @@ async function init() {
 
   const buttonText = config?.customization.buttonText || DEFAULT_BUTTON_TEXT;
   const partnerId = config?.partnerId || partnerIdHint;
+  const help = config?.help || null;
 
   const root = createRoot(mountPoint);
-  root.render(<App api={api} partnerId={partnerId} buttonText={buttonText} />);
+  root.render(<App api={api} partnerId={partnerId} buttonText={buttonText} help={help} />);
 }
 
 if (document.readyState === 'loading') {

@@ -35,15 +35,27 @@ const router = express.Router();
 router.use(widgetCors);
 
 // ---------- PARTNER CONFIG ----------
-// Публічна (без сесії) конфігурація для віджета: тема, колір, текст кнопки, префікс ніку.
-// Викликається віджетом одразу після завантаження бандла — до того як юзер щось натиснув.
+// Публічна (без сесії) конфігурація для віджета: тема, колір, текст кнопки,
+// префікс ніку, допоміжні тексти. Викликається віджетом на ініціалізації.
 router.get('/partner-config', requirePartner, async (req, res) => {
   const p = req.partner!;
+  const { telegramBotConfig } = await import('../../src/telegram-bot/config.js');
+  const t = telegramBotConfig.texts;
   res.json({
     partner_id: p.partnerId,
     name: p.name,
     nickname_prefix: p.nicknamePrefix,
     customization: p.customization,
+    // Допоміжні тексти, спільні з TG-ботом — щоб не дублювати в коді віджета.
+    // HTML-розмітка (<b>) лишається — віджет рендерить через innerHTML.
+    help: {
+      descStruct: t.helpDescStruct,
+      about: t.helpAbout,
+      howToAnswer: t.helpHowToAnswer,
+      points: t.helpPoints,
+      faq: t.helpFaq,
+      introAck: t.introAckButton,
+    },
   });
 });
 

@@ -29,3 +29,13 @@ export function clearSession(partnerId: string): void {
     localStorage.removeItem(KEY(partnerId));
   } catch {}
 }
+
+// Прапорець «юзер уже бачив онбординг-підказку про структуру опису».
+// Зберігаємо в localStorage щоб показувати тільки раз на браузер.
+const INTRO_KEY = (partnerId: string) => `blkch:intro_shown:${partnerId}`;
+export function wasIntroShown(partnerId: string): boolean {
+  try { return localStorage.getItem(INTRO_KEY(partnerId)) === '1'; } catch { return false; }
+}
+export function markIntroShown(partnerId: string): void {
+  try { localStorage.setItem(INTRO_KEY(partnerId), '1'); } catch {}
+}

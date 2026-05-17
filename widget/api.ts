@@ -37,6 +37,15 @@ export interface SubmitResult {
   actionTaken: string;
 }
 
+export interface HelpTexts {
+  descStruct: string;
+  about: string;
+  howToAnswer: string;
+  points: string;
+  faq: string;
+  introAck: string;
+}
+
 export interface PartnerConfig {
   partnerId: string;
   name: string;
@@ -46,6 +55,7 @@ export interface PartnerConfig {
     buttonColor?: string;
     buttonText?: string;
   };
+  help: HelpTexts;
 }
 
 export interface UserStats {
@@ -94,6 +104,7 @@ export class ApiClient {
       name: r.name,
       nicknamePrefix: r.nickname_prefix,
       customization: r.customization || {},
+      help: r.help || { descStruct: '', about: '', howToAnswer: '', points: '', faq: '', introAck: '✅ Ознайомився' },
     };
   }
 

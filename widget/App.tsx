@@ -1,12 +1,15 @@
 // Головний компонент віджета. Стейт-машина: floater → invite → case → submitted.
 // Один файл щоб тримати MVP-бандл невеликим — рефакторити коли UX усталиться.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiClient, CasePayload, QuestionDef, SubmitResult, UserStats } from './api';
-import { clearSession, loadSession, saveSession } from './storage';
+import { ApiClient, CasePayload, HelpTexts, QuestionDef, SubmitResult, UserStats } from './api';
+import { clearSession, loadSession, markIntroShown, saveSession, wasIntroShown } from './storage';
 
+type HelpSection = 'menu' | 'about' | 'descStruct' | 'howToAnswer' | 'points' | 'faq';
 type Stage =
   | { kind: 'floater' }
   | { kind: 'invite' }
+  | { kind: 'intro' }                            // онбординг перед першою справою
+  | { kind: 'help'; section: HelpSection; returnTo: Stage } // допомога (повертає до returnTo)
   | { kind: 'loading' }
   | { kind: 'case'; data: CasePayload; mode: 'recognize' | 'review'; answers: string[]; qIndex: number }
   | { kind: 'no-cases' }
@@ -21,9 +24,10 @@ export interface AppProps {
   api: ApiClient;
   partnerId: string;
   buttonText: string;
+  help: HelpTexts | null;
 }
 
-export const App: React.FC<AppProps> = ({ api, partnerId, buttonText }) => {
+export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help }) => {
   const [stage, setStage] = useState<Stage>({ kind: 'floater' });
   const [stats, setStats] = useState<UserStats | null>(null);
   const heartbeatRef = useRef<number | null>(null);
@@ -79,8 +83,17 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText }) => {
     }
   }
 
-  // ----- Перехід «Хочу допомогти» → завантажуємо справу -----
+  // ----- Перехід «Хочу допомогти» → онбординг (один раз) → справа -----
   async function takeCase() {
+    // Якщо це перший раз і у нас є help-тексти — показуємо онбординг перед справою.
+    if (!wasIntroShown(partnerId) && help?.descStruct) {
+      setStage({ kind: 'intro' });
+      return;
+    }
+    await loadCase();
+  }
+
+  async function loadCase() {
     setStage({ kind: 'loading' });
     const ok = await ensureSession();
     if (!ok) return;
@@ -182,8 +195,34 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText }) => {
   return (
     <div className="blkch-backdrop" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
       <div className="blkch-modal">
-        <button className="blkch-close" onClick={close} aria-label="Закрити">×</button>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 4, marginBottom: 4 }}>
+          {help && stage.kind !== 'help' && stage.kind !== 'intro' && (
+            <button
+              className="blkch-btn blkch-btn-ghost"
+              style={{ padding: '4px 8px', fontSize: 13 }}
+              onClick={() => setStage({ kind: 'help', section: 'menu', returnTo: stage })}
+              aria-label="Допомога"
+              title="Допомога"
+            >❓ Допомога</button>
+          )}
+          <button className="blkch-close" onClick={close} aria-label="Закрити">×</button>
+        </div>
         {stage.kind === 'invite' && <Invite onAccept={takeCase} onDecline={close} />}
+        {stage.kind === 'intro' && help && (
+          <IntroView
+            descStructHtml={help.descStruct}
+            ackButtonText={help.introAck}
+            onAck={() => { markIntroShown(partnerId); loadCase(); }}
+          />
+        )}
+        {stage.kind === 'help' && help && (
+          <HelpView
+            help={help}
+            section={stage.section}
+            onNavigate={(s) => setStage({ kind: 'help', section: s, returnTo: stage.returnTo })}
+            onBack={() => setStage(stage.returnTo)}
+          />
+        )}
         {stage.kind === 'loading' && <p className="blkch-text">Завантажую справу…</p>}
         {stage.kind === 'no-cases' && (
           <>
@@ -396,6 +435,74 @@ const Submitted: React.FC<{
     </div>
   </>
 );
+
+// ===== Intro (онбординг перед першою справою) =====
+const IntroView: React.FC<{
+  descStructHtml: string;
+  ackButtonText: string;
+  onAck: () => void;
+}> = ({ descStructHtml, ackButtonText, onAck }) => (
+  <>
+    <div className="blkch-help-html" dangerouslySetInnerHTML={{ __html: descStructHtml }} />
+    <div className="blkch-btn-row" style={{ marginTop: 12 }}>
+      <button className="blkch-btn blkch-btn-primary" onClick={onAck}>{ackButtonText}</button>
+    </div>
+  </>
+);
+
+// ===== Help (меню допомоги + розділи) =====
+const HelpView: React.FC<{
+  help: HelpTexts;
+  section: HelpSection;
+  onNavigate: (s: HelpSection) => void;
+  onBack: () => void;
+}> = ({ help, section, onNavigate, onBack }) => {
+  if (section === 'menu') {
+    const items: Array<[HelpSection, string]> = [
+      ['about', 'ℹ Про що цей бот'],
+      ['descStruct', '📑 З чого складається опис'],
+      ['howToAnswer', '📝 Як відповідати на справу'],
+      ['points', '🏆 Бали і рейтинг'],
+      ['faq', '💡 Поширені питання'],
+    ];
+    return (
+      <>
+        <h2 className="blkch-h1">❓ Допомога</h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {items.map(([key, label]) => (
+            <button
+              key={key}
+              className="blkch-btn blkch-btn-secondary"
+              style={{ textAlign: 'left' }}
+              onClick={() => onNavigate(key)}
+            >{label}</button>
+          ))}
+        </div>
+        <div className="blkch-btn-row" style={{ marginTop: 12 }}>
+          <button className="blkch-btn blkch-btn-ghost" onClick={onBack}>⬅ Назад</button>
+        </div>
+      </>
+    );
+  }
+
+  const sectionHtml: Record<Exclude<HelpSection, 'menu'>, string> = {
+    about: help.about,
+    descStruct: help.descStruct,
+    howToAnswer: help.howToAnswer,
+    points: help.points,
+    faq: help.faq,
+  };
+
+  return (
+    <>
+      <div className="blkch-help-html" dangerouslySetInnerHTML={{ __html: sectionHtml[section] }} />
+      <div className="blkch-btn-row" style={{ marginTop: 12 }}>
+        <button className="blkch-btn blkch-btn-ghost" onClick={() => onNavigate('menu')}>◀ До меню допомоги</button>
+        <button className="blkch-btn blkch-btn-secondary" onClick={onBack}>Закрити допомогу</button>
+      </div>
+    </>
+  );
+};
 
 // ===== Linking flow =====
 const LinkingView: React.FC<{ deepLink: string; onCancel: () => void }> = ({ deepLink, onCancel }) => (
