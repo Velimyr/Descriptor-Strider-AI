@@ -426,6 +426,9 @@ export interface SubmissionInput {
   sprava: string;
   sourcePdf: string;
   page: string;
+  // Атрибуція до партнера (для web-юзерів). NULL для TG. Денормалізовано
+  // щоб атрибуція не губилась після /link і не залежала від bot_users.
+  partnerId?: string | null;
 }
 
 export async function appendSubmission(s: SubmissionInput) {
@@ -441,6 +444,7 @@ export async function appendSubmission(s: SubmissionInput) {
     sprava: s.sprava,
     source_pdf: s.sourcePdf,
     page: s.page,
+    partner_id: s.partnerId || null,
   });
   if (error) throw error;
 }
@@ -726,7 +730,8 @@ export async function recordCaseEvent(
   caseId: string,
   tgId: string,
   kind: 'create' | 'edit' | 'confirm',
-  answers: string[] = []
+  answers: string[] = [],
+  partnerId?: string | null
 ): Promise<void> {
   const { error } = await db()
     .from(T.caseConfirmations)
@@ -737,6 +742,7 @@ export async function recordCaseEvent(
         kind,
         at: new Date().toISOString(),
         answers,
+        partner_id: partnerId || null,
       },
       { onConflict: 'case_id,tg_id' }
     );
