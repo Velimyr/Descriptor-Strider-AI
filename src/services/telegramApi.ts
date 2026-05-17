@@ -106,4 +106,22 @@ export const tgApi = {
       `/admin/submissions-by-description?archive=${encodeURIComponent(archive)}` +
         `&fund=${encodeURIComponent(fund)}&opys=${encodeURIComponent(opys)}`
     ),
+  // Партнери віджета
+  listPartners: () => call('/admin/partners'),
+  createPartner: (data: {
+    partnerId: string;
+    name: string;
+    nicknamePrefix: string;
+    allowedOrigins: string[];
+  }) => call('/admin/partners', { method: 'POST', body: JSON.stringify(data) }),
+  updatePartner: (
+    partnerId: string,
+    patch: Partial<{ name: string; nicknamePrefix: string; allowedOrigins: string[]; active: boolean }>
+  ) =>
+    call(`/admin/partners/${encodeURIComponent(partnerId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  deletePartner: (partnerId: string) =>
+    call(`/admin/partners/${encodeURIComponent(partnerId)}`, { method: 'DELETE' }),
 };

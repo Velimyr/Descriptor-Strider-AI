@@ -895,4 +895,65 @@ router.post('/admin/recompute-case', async (req, res) => {
   res.json({ ok: true, count });
 });
 
+// ===================== WIDGET PARTNERS CRUD =====================
+// Реєстрація партнерських сайтів, які встановлюють віджет blukach. Ключ
+// показується ОДИН РАЗ на створення — далі тільки sha256 у БД.
+router.get('/admin/partners', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { listPartners } = await import('../core/partners.js');
+    res.json({ partners: await listPartners() });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/partners', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { partnerId, name, nicknamePrefix, allowedOrigins } = req.body || {};
+  if (!partnerId || !name || !nicknamePrefix) {
+    return res.status(400).json({ error: 'partnerId, name, nicknamePrefix required' });
+  }
+  if (!/^[a-z0-9-]{2,40}$/.test(partnerId)) {
+    return res.status(400).json({ error: 'partnerId: lowercase letters, digits, hyphens, 2-40 chars' });
+  }
+  const origins = Array.isArray(allowedOrigins) ? allowedOrigins.map(String).filter(Boolean) : [];
+  try {
+    const { createPartner } = await import('../core/partners.js');
+    const result = await createPartner({ partnerId, name, nicknamePrefix, allowedOrigins: origins });
+    // apiKey показуємо тут і більше ніколи — клієнт має його скопіювати.
+    res.json({ partner: result.partner, apiKey: result.apiKey });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.patch('/admin/partners/:id', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { name, nicknamePrefix, allowedOrigins, active } = req.body || {};
+  try {
+    const { updatePartner } = await import('../core/partners.js');
+    await updatePartner(req.params.id, {
+      name,
+      nicknamePrefix,
+      allowedOrigins,
+      active,
+    });
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.delete('/admin/partners/:id', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { deletePartner } = await import('../core/partners.js');
+    await deletePartner(req.params.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
 export default router;

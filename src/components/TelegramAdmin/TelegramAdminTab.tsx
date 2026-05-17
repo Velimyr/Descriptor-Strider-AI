@@ -12,7 +12,7 @@ interface Props {
   initialQuestions?: TableColumn[]; // зазвичай tableStructure активного проєкту
 }
 
-type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity' | 'chart';
+type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity' | 'chart' | 'partners';
 
 export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => {
   const [tab, setTab] = useState<TabKey>('setup');
@@ -53,6 +53,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['overview', 'Огляд'],
           ['chart', 'Графік'],
           ['integrity', 'Перевірка доброчесності'],
+          ['partners', 'Партнери віджета'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
             key={k}
@@ -75,6 +76,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         {tab === 'overview' && <OverviewView />}
         {tab === 'chart' && <ChartView />}
         {tab === 'integrity' && <IntegrityView />}
+        {tab === 'partners' && <PartnersView />}
       </div>
     </div>
   );
@@ -5245,5 +5247,225 @@ const IntegrityView: React.FC = () => {
         </div>
       )}
     </div>
+  );
+};
+
+// ==================== PARTNERS VIEW ====================
+// CRUD сайтів-партнерів, що встановлюють віджет blukach. API-ключ показується
+// один раз при створенні і більше ніколи — далі лише sha256 у БД.
+interface Partner {
+  partnerId: string;
+  name: string;
+  nicknamePrefix: string;
+  allowedOrigins: string[];
+  active: boolean;
+  createdAt: string;
+}
+
+const PartnersView: React.FC = () => {
+  const [partners, setPartners] = useState<Partner[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [newKeyForId, setNewKeyForId] = useState<{ id: string; key: string } | null>(null);
+
+  const load = async () => {
+    setBusy(true); setErr('');
+    try {
+      const r = await tgApi.listPartners();
+      setPartners(r.partners || []);
+    } catch (e: any) { setErr(e?.message || 'Помилка'); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const onDelete = async (partnerId: string) => {
+    if (!confirm(`Видалити партнера «${partnerId}»? Юзери, створені через нього, лишаться у БД, але без partner_id.`)) return;
+    try { await tgApi.deletePartner(partnerId); load(); }
+    catch (e: any) { setErr(e?.message || 'Помилка'); }
+  };
+
+  const onToggleActive = async (p: Partner) => {
+    try { await tgApi.updatePartner(p.partnerId, { active: !p.active }); load(); }
+    catch (e: any) { setErr(e?.message || 'Помилка'); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-bold">Партнери віджета</h2>
+        <div className="flex gap-2">
+          <button onClick={load} className="px-3 py-1 text-sm border rounded hover:bg-slate-50">
+            <RefreshCw size={14} className="inline mr-1" /> Оновити
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-3 py-1 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700"
+          >
+            <Plus size={14} className="inline mr-1" /> Додати партнера
+          </button>
+        </div>
+      </div>
+
+      {err && <div className="text-sm text-red-600">{err}</div>}
+
+      {newKeyForId && (
+        <div className="border-2 border-amber-400 bg-amber-50 rounded p-3 space-y-2">
+          <p className="text-sm font-semibold">⚠ API-ключ для «{newKeyForId.id}» — показуємо один раз, скопіюйте зараз:</p>
+          <code className="block bg-white p-2 rounded border border-amber-300 break-all text-xs font-mono">
+            {newKeyForId.key}
+          </code>
+          <button
+            onClick={() => { navigator.clipboard.writeText(newKeyForId.key); }}
+            className="px-2 py-1 text-xs bg-amber-600 text-white rounded"
+          >
+            Скопіювати
+          </button>
+          <button
+            onClick={() => setNewKeyForId(null)}
+            className="px-2 py-1 text-xs border border-amber-600 text-amber-700 rounded ml-2"
+          >
+            Я зберіг(ла) — приховати
+          </button>
+        </div>
+      )}
+
+      {showCreate && (
+        <CreatePartnerForm
+          onCreated={(p, key) => { setShowCreate(false); setNewKeyForId({ id: p.partnerId, key }); load(); }}
+          onCancel={() => setShowCreate(false)}
+        />
+      )}
+
+      {busy ? <p className="text-sm text-slate-500">Завантажую…</p> : (
+        <table className="w-full text-sm">
+          <thead className="text-left bg-slate-50 border-y">
+            <tr>
+              <th className="px-2 py-1">ID</th>
+              <th className="px-2 py-1">Назва</th>
+              <th className="px-2 py-1">Префікс</th>
+              <th className="px-2 py-1">Origins</th>
+              <th className="px-2 py-1">Статус</th>
+              <th className="px-2 py-1">Створено</th>
+              <th className="px-2 py-1"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {partners.length === 0 && (
+              <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-500">Партнерів ще немає</td></tr>
+            )}
+            {partners.map(p => (
+              <tr key={p.partnerId} className="border-b">
+                <td className="px-2 py-2 font-mono text-xs">{p.partnerId}</td>
+                <td className="px-2 py-2">{p.name}</td>
+                <td className="px-2 py-2">{p.nicknamePrefix}</td>
+                <td className="px-2 py-2 text-xs">
+                  {p.allowedOrigins.map(o => <div key={o}>{o}</div>)}
+                </td>
+                <td className="px-2 py-2">
+                  <button
+                    onClick={() => onToggleActive(p)}
+                    className={`px-2 py-0.5 text-xs rounded ${p.active ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-600'}`}
+                  >
+                    {p.active ? 'active' : 'inactive'}
+                  </button>
+                </td>
+                <td className="px-2 py-2 text-xs text-slate-500">{p.createdAt?.slice(0, 10)}</td>
+                <td className="px-2 py-2">
+                  <button onClick={() => onDelete(p.partnerId)} className="text-red-600 hover:bg-red-50 p-1 rounded">
+                    <Trash2 size={14} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
+const CreatePartnerForm: React.FC<{
+  onCreated: (p: Partner, apiKey: string) => void;
+  onCancel: () => void;
+}> = ({ onCreated, onCancel }) => {
+  const [partnerId, setPartnerId] = useState('');
+  const [name, setName] = useState('');
+  const [nicknamePrefix, setNicknamePrefix] = useState('');
+  const [origins, setOrigins] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setErr('');
+    try {
+      const r = await tgApi.createPartner({
+        partnerId: partnerId.trim(),
+        name: name.trim(),
+        nicknamePrefix: nicknamePrefix.trim(),
+        allowedOrigins: origins.split('\n').map(s => s.trim()).filter(Boolean),
+      });
+      onCreated(r.partner, r.apiKey);
+    } catch (e: any) {
+      setErr(e?.message || 'Помилка');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <form onSubmit={onSubmit} className="border rounded p-4 bg-slate-50 space-y-3">
+      <h3 className="font-semibold">Новий партнер</h3>
+      <div>
+        <label className="block text-xs font-medium mb-1">ID (slug, латинські букви/цифри/дефіси)</label>
+        <input
+          value={partnerId}
+          onChange={e => setPartnerId(e.target.value)}
+          className="w-full px-2 py-1 border rounded text-sm"
+          placeholder="archium"
+          required
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium mb-1">Назва (для адмінки)</label>
+        <input
+          value={name}
+          onChange={e => setName(e.target.value)}
+          className="w-full px-2 py-1 border rounded text-sm"
+          placeholder="Архіум"
+          required
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium mb-1">
+          Префікс анонімного nickname (буде «{nicknamePrefix || 'Префікс'}-XXXX»)
+        </label>
+        <input
+          value={nicknamePrefix}
+          onChange={e => setNicknamePrefix(e.target.value)}
+          className="w-full px-2 py-1 border rounded text-sm"
+          placeholder="Архіум"
+          required
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium mb-1">Allowed origins (по одному на рядок, точний рядок)</label>
+        <textarea
+          value={origins}
+          onChange={e => setOrigins(e.target.value)}
+          className="w-full px-2 py-1 border rounded text-sm font-mono text-xs"
+          rows={3}
+          placeholder="https://archium.org&#10;https://www.archium.org"
+        />
+      </div>
+      {err && <div className="text-sm text-red-600">{err}</div>}
+      <div className="flex gap-2">
+        <button type="submit" disabled={busy} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm disabled:opacity-50">
+          {busy ? 'Створюю…' : 'Створити'}
+        </button>
+        <button type="button" onClick={onCancel} className="px-3 py-1 border rounded text-sm">
+          Скасувати
+        </button>
+      </div>
+    </form>
   );
 };
