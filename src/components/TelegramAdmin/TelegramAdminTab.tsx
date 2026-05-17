@@ -5267,6 +5267,7 @@ const PartnersView: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [newKeyForId, setNewKeyForId] = useState<{ id: string; key: string } | null>(null);
 
   const load = async () => {
@@ -5355,28 +5356,47 @@ const PartnersView: React.FC = () => {
               <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-500">Партнерів ще немає</td></tr>
             )}
             {partners.map(p => (
-              <tr key={p.partnerId} className="border-b">
-                <td className="px-2 py-2 font-mono text-xs">{p.partnerId}</td>
-                <td className="px-2 py-2">{p.name}</td>
-                <td className="px-2 py-2">{p.nicknamePrefix}</td>
-                <td className="px-2 py-2 text-xs">
-                  {p.allowedOrigins.map(o => <div key={o}>{o}</div>)}
-                </td>
-                <td className="px-2 py-2">
-                  <button
-                    onClick={() => onToggleActive(p)}
-                    className={`px-2 py-0.5 text-xs rounded ${p.active ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-600'}`}
-                  >
-                    {p.active ? 'active' : 'inactive'}
-                  </button>
-                </td>
-                <td className="px-2 py-2 text-xs text-slate-500">{p.createdAt?.slice(0, 10)}</td>
-                <td className="px-2 py-2">
-                  <button onClick={() => onDelete(p.partnerId)} className="text-red-600 hover:bg-red-50 p-1 rounded">
-                    <Trash2 size={14} />
-                  </button>
-                </td>
-              </tr>
+              <React.Fragment key={p.partnerId}>
+                <tr className="border-b">
+                  <td className="px-2 py-2 font-mono text-xs">{p.partnerId}</td>
+                  <td className="px-2 py-2">{p.name}</td>
+                  <td className="px-2 py-2">{p.nicknamePrefix}</td>
+                  <td className="px-2 py-2 text-xs">
+                    {p.allowedOrigins.map(o => <div key={o}>{o}</div>)}
+                  </td>
+                  <td className="px-2 py-2">
+                    <button
+                      onClick={() => onToggleActive(p)}
+                      className={`px-2 py-0.5 text-xs rounded ${p.active ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-600'}`}
+                    >
+                      {p.active ? 'active' : 'inactive'}
+                    </button>
+                  </td>
+                  <td className="px-2 py-2 text-xs text-slate-500">{p.createdAt?.slice(0, 10)}</td>
+                  <td className="px-2 py-2 whitespace-nowrap">
+                    <button
+                      onClick={() => setEditingId(editingId === p.partnerId ? null : p.partnerId)}
+                      className="text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded text-xs"
+                    >
+                      {editingId === p.partnerId ? 'Закрити' : 'Редагувати'}
+                    </button>
+                    <button onClick={() => onDelete(p.partnerId)} className="text-red-600 hover:bg-red-50 p-1 rounded ml-1">
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
+                </tr>
+                {editingId === p.partnerId && (
+                  <tr className="bg-slate-50 border-b">
+                    <td colSpan={7} className="px-4 py-4">
+                      <EditPartnerForm
+                        partner={p}
+                        onSaved={() => { setEditingId(null); load(); }}
+                        onCancel={() => setEditingId(null)}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
@@ -5461,6 +5481,86 @@ const CreatePartnerForm: React.FC<{
       <div className="flex gap-2">
         <button type="submit" disabled={busy} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm disabled:opacity-50">
           {busy ? 'Створюю…' : 'Створити'}
+        </button>
+        <button type="button" onClick={onCancel} className="px-3 py-1 border rounded text-sm">
+          Скасувати
+        </button>
+      </div>
+    </form>
+  );
+};
+
+// Редагування існуючого партнера. partnerId не міняємо — це PK.
+const EditPartnerForm: React.FC<{
+  partner: Partner;
+  onSaved: () => void;
+  onCancel: () => void;
+}> = ({ partner, onSaved, onCancel }) => {
+  const [name, setName] = useState(partner.name);
+  const [nicknamePrefix, setNicknamePrefix] = useState(partner.nicknamePrefix);
+  const [origins, setOrigins] = useState(partner.allowedOrigins.join('\n'));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true); setErr('');
+    try {
+      await tgApi.updatePartner(partner.partnerId, {
+        name: name.trim(),
+        nicknamePrefix: nicknamePrefix.trim(),
+        allowedOrigins: origins.split('\n').map(s => s.trim()).filter(Boolean),
+      });
+      onSaved();
+    } catch (e: any) {
+      setErr(e?.message || 'Помилка');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-3">
+      <h3 className="font-semibold text-sm">Редагування «{partner.partnerId}»</h3>
+      <div className="text-xs text-slate-500">ID партнера не редагується. Щоб змінити — створіть нового і видаліть цей.</div>
+      <div>
+        <label className="block text-xs font-medium mb-1">Назва</label>
+        <input
+          value={name}
+          onChange={e => setName(e.target.value)}
+          className="w-full px-2 py-1 border rounded text-sm bg-white"
+          required
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium mb-1">
+          Префікс анонімного nickname (буде «{nicknamePrefix || 'Префікс'}-XXXX»)
+        </label>
+        <input
+          value={nicknamePrefix}
+          onChange={e => setNicknamePrefix(e.target.value)}
+          className="w-full px-2 py-1 border rounded text-sm bg-white"
+          required
+        />
+        <p className="text-xs text-slate-500 mt-1">
+          Зміна вплине тільки на нових юзерів. Існуючі нікнейми залишаться як були.
+        </p>
+      </div>
+      <div>
+        <label className="block text-xs font-medium mb-1">Allowed origins (по одному на рядок, точний рядок)</label>
+        <textarea
+          value={origins}
+          onChange={e => setOrigins(e.target.value)}
+          className="w-full px-2 py-1 border rounded text-sm font-mono text-xs bg-white"
+          rows={4}
+          placeholder="https://archium.org&#10;https://www.archium.org"
+        />
+        <p className="text-xs text-slate-500 mt-1">
+          Без trailing slash. Кожна піддомен/протокол — окремий рядок.
+        </p>
+      </div>
+      {err && <div className="text-sm text-red-600">{err}</div>}
+      <div className="flex gap-2">
+        <button type="submit" disabled={busy} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm disabled:opacity-50">
+          {busy ? 'Зберігаю…' : 'Зберегти'}
         </button>
         <button type="button" onClick={onCancel} className="px-3 py-1 border rounded text-sm">
           Скасувати
