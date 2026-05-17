@@ -21,7 +21,12 @@ import { getNextCaseForUser, heartbeatCase, releaseCase } from '../core/cases.js
 import { SubmitError, submitAnswers } from '../core/submit.js';
 import { skipCase } from '../core/skip.js';
 import { getLeaderboard, getStatsForUser } from '../core/stats.js';
+import { createLinkCode, getLinkCode } from '../core/linking.js';
 import { proxyCaseImage } from './image.js';
+
+// Telegram-username бота (без @), куди йде deep-link для лінкінгу.
+// Можна перевизначити env-ом TELEGRAM_BOT_USERNAME.
+const TG_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || 'descriptorstriderbot';
 
 const router = express.Router();
 
@@ -146,6 +151,38 @@ router.get('/leaderboard', requirePartner, requireSession, async (req, res) => {
     res.json(await getLeaderboard(req.sessionUser!));
   } catch (e: any) {
     console.error('/leaderboard failed', e?.message || e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// ---------- LINKING (web → TG) ----------
+router.post('/link/start', requirePartner, requireSession, async (req, res) => {
+  try {
+    const lc = await createLinkCode(req.sessionUser!.tgId);
+    res.json({
+      code: lc.code,
+      deep_link: `https://t.me/${TG_BOT_USERNAME}?start=link_${lc.code}`,
+      expires_at: lc.expiresAt,
+    });
+  } catch (e: any) {
+    console.error('/link/start failed', e?.message || e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Опитуємо статус коду. Якщо used_at != null → лінкінг відбувся.
+// Не вимагає sessionUser щоб працював навіть після того як web-юзер видалений (мердж).
+router.get('/link/status', requirePartner, async (req, res) => {
+  const code = String(req.query.code || '');
+  if (!code) return res.status(400).json({ error: 'code required' });
+  try {
+    const lc = await getLinkCode(code);
+    if (!lc) return res.json({ status: 'unknown' });
+    if (lc.usedAt) return res.json({ status: 'completed', telegram_tg_id: lc.telegramTgId });
+    if (new Date(lc.expiresAt).getTime() < Date.now()) return res.json({ status: 'expired' });
+    return res.json({ status: 'pending' });
+  } catch (e: any) {
+    console.error('/link/status failed', e?.message || e);
     res.status(500).json({ error: 'internal' });
   }
 });

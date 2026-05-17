@@ -11,6 +11,8 @@ type Stage =
   | { kind: 'case'; data: CasePayload; mode: 'recognize' | 'review'; answers: string[]; qIndex: number }
   | { kind: 'no-cases' }
   | { kind: 'submitted'; result: SubmitResult }
+  | { kind: 'linking'; code: string; deepLink: string }
+  | { kind: 'linked' }
   | { kind: 'error'; message: string };
 
 const HEARTBEAT_MS = 30_000;
@@ -130,6 +132,41 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText }) => {
     takeCase();
   }
 
+  // ----- Linking з Telegram -----
+  async function startLinking() {
+    try {
+      const r = await api.linkStart();
+      // Відкриваємо deep link у новій вкладці. Юзер у TG натискає /start і повертається.
+      window.open(r.deep_link, '_blank', 'noopener,noreferrer');
+      setStage({ kind: 'linking', code: r.code, deepLink: r.deep_link });
+    } catch (e: any) {
+      setStage({ kind: 'error', message: e?.message || 'Не вдалось почати привʼязку' });
+    }
+  }
+
+  // Polling статусу лінкінгу.
+  useEffect(() => {
+    if (stage.kind !== 'linking') return;
+    let stopped = false;
+    const code = stage.code;
+    const tick = async () => {
+      try {
+        const r = await api.linkStatus(code);
+        if (stopped) return;
+        if (r.status === 'completed') {
+          // Web-юзер видалений на сервері → чистимо локальну сесію.
+          clearSession(partnerId);
+          api.setSession(null);
+          setStage({ kind: 'linked' });
+        } else if (r.status === 'expired' || r.status === 'unknown') {
+          setStage({ kind: 'error', message: 'Код прострочений. Спробуйте ще раз.' });
+        }
+      } catch {/* network — пропускаємо, повторимо */}
+    };
+    const interval = window.setInterval(tick, 3000);
+    return () => { stopped = true; window.clearInterval(interval); };
+  }, [stage, api, partnerId]);
+
   const close = useCallback(() => setStage({ kind: 'floater' }), []);
 
   // ===== RENDER =====
@@ -165,8 +202,16 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText }) => {
           />
         )}
         {stage.kind === 'submitted' && (
-          <Submitted result={stage.result} stats={stats} onNext={takeCase} onClose={close} />
+          <Submitted
+            result={stage.result}
+            stats={stats}
+            onNext={takeCase}
+            onClose={close}
+            onLink={startLinking}
+          />
         )}
+        {stage.kind === 'linking' && <LinkingView deepLink={stage.deepLink} onCancel={close} />}
+        {stage.kind === 'linked' && <LinkedView onClose={close} />}
         {stage.kind === 'error' && (
           <>
             <h2 className="blkch-h1">Помилка</h2>
@@ -317,7 +362,8 @@ const Submitted: React.FC<{
   stats: UserStats | null;
   onNext: () => void;
   onClose: () => void;
-}> = ({ result, stats, onNext, onClose }) => (
+  onLink: () => void;
+}> = ({ result, stats, onNext, onClose, onLink }) => (
   <>
     <div className="blkch-success">
       ✅ Дякую! Ви отримали +{result.pointsEarned} балів.
@@ -345,6 +391,49 @@ const Submitted: React.FC<{
     </ul>
     <div className="blkch-btn-row">
       <button className="blkch-btn blkch-btn-primary" onClick={onNext}>Наступна справа</button>
+      <button className="blkch-btn blkch-btn-ghost" onClick={onLink}>🔗 Привʼязати Telegram</button>
+      <button className="blkch-btn blkch-btn-secondary" onClick={onClose}>Закрити</button>
+    </div>
+  </>
+);
+
+// ===== Linking flow =====
+const LinkingView: React.FC<{ deepLink: string; onCancel: () => void }> = ({ deepLink, onCancel }) => (
+  <>
+    <h2 className="blkch-h1">Привʼязка до Telegram</h2>
+    <p className="blkch-text">
+      Якщо ваш браузер не відкрив Telegram автоматично — натисніть кнопку нижче.
+      У TG-боті натисніть «Старт». Ваші бали тут будуть додані до балів у боті.
+    </p>
+    <p className="blkch-text">
+      <a href={deepLink} target="_blank" rel="noreferrer noopener" className="blkch-btn blkch-btn-primary" style={{ display: 'inline-block', textDecoration: 'none' }}>
+        Відкрити Telegram
+      </a>
+    </p>
+    <p className="blkch-stats">Чекаю підтвердження з Telegram…</p>
+    <button className="blkch-btn blkch-btn-secondary" onClick={onCancel}>Скасувати</button>
+  </>
+);
+
+const LinkedView: React.FC<{ onClose: () => void }> = ({ onClose }) => (
+  <>
+    <div className="blkch-success">
+      ✅ Готово! Ваші бали тепер у Telegram-боті.
+    </div>
+    <p className="blkch-text">
+      Продовжуйте розпізнавати справи у боті — там більше функцій (розклад, рейтинги, прогрес описів).
+      Тут ви теж можете брати справи, але це буде новий анонімний акаунт.
+    </p>
+    <div className="blkch-btn-row">
+      <a
+        href="https://t.me/descriptorstriderbot"
+        target="_blank"
+        rel="noreferrer noopener"
+        className="blkch-btn blkch-btn-primary"
+        style={{ textDecoration: 'none' }}
+      >
+        Відкрити TG-бот
+      </a>
       <button className="blkch-btn blkch-btn-secondary" onClick={onClose}>Закрити</button>
     </div>
   </>

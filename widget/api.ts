@@ -158,4 +158,15 @@ export class ApiClient {
   stats(): Promise<UserStats> {
     return this.req('/me/stats', { method: 'GET', headers: this.headers() });
   }
+
+  linkStart(): Promise<{ code: string; deep_link: string; expires_at: string }> {
+    return this.req('/link/start', { method: 'POST', headers: this.headers() });
+  }
+
+  linkStatus(code: string): Promise<{ status: 'pending' | 'completed' | 'expired' | 'unknown'; telegram_tg_id?: string }> {
+    return this.req(`/link/status?code=${encodeURIComponent(code)}`, {
+      method: 'GET',
+      headers: this.headers(),
+    });
+  }
 }

@@ -18,6 +18,7 @@ export const T = {
   caseConfirmations: `${PREFIX}case_confirmations`,
   integrityReviews:  `${PREFIX}integrity_reviews`,
   partners:          `${PREFIX}partners`,
+  linkCodes:         `${PREFIX}link_codes`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;

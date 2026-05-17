@@ -48,3 +48,16 @@ create index if not exists idx_users_source_partner on bot_users(source, partner
 -- jsonb-обʼєкт. Ключі: theme ('light'|'dark'), buttonColor (один із пресетів),
 -- buttonText (рядок). Дефолти живуть у віджеті.
 alter table bot_partners add column if not exists customization jsonb not null default '{}'::jsonb;
+
+-- ========== bot_link_codes ==========
+-- Одноразові коди для прив'язки web-юзера до TG-акаунту.
+create table if not exists bot_link_codes (
+  code             text primary key,
+  web_tg_id        text        not null,
+  created_at       timestamptz not null default now(),
+  expires_at       timestamptz not null,
+  used_at          timestamptz,
+  telegram_tg_id   text
+);
+create index if not exists idx_link_codes_web on bot_link_codes(web_tg_id);
+alter table bot_link_codes enable row level security;

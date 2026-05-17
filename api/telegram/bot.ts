@@ -346,7 +346,14 @@ async function handleMessage(msg: any) {
   const [user, session] = await Promise.all([getUser(tgId), getSession(tgId)]);
 
   if (text.startsWith('/start')) {
-    if (!user) {
+    // /start link_XXXX — дип-лінк лінкінгу web-юзера до цього TG-юзера.
+    // payload приходить як другий "токен" у тексті (Telegram передає його тут же).
+    const startPayload = rawText.replace(/^\/start(@\S+)?\s*/, '').trim();
+    const linkCode = startPayload.startsWith('link_') ? startPayload.slice(5) : null;
+
+    // Завжди гарантуємо існування TG-юзера до мерджу.
+    let currentUser = user;
+    if (!currentUser) {
       const newUser: Omit<BotUser, 'rowIndex'> = {
         tgId,
         displayName: '',
@@ -361,12 +368,45 @@ async function handleMessage(msg: any) {
         source: 'tg',
         partnerId: null,
       };
-      await Promise.all([
-        upsertUser(newUser),
-        sendMessage(chatId, T.welcome, { reply_markup: mainMenuKeyboard(newUser as any) }),
-      ]);
+      await upsertUser(newUser);
+      currentUser = { ...newUser, rowIndex: 0 } as BotUser;
+    }
+
+    if (linkCode) {
+      try {
+        const { consumeLinkCode } = await import('../core/linking.js');
+        const r = await consumeLinkCode(linkCode, tgId);
+        if (r.ok) {
+          const updated = await getUser(tgId);
+          const msg = updated && r.transferredPoints
+            ? `✅ Готово! До твого акаунту додано ${r.transferredPoints} балів з веб-сесії «${r.webNickname}».\n\nЗагалом тепер: ${updated.totalPoints} балів.`
+            : '✅ Готово! Веб-акаунт прив\'язаний.';
+          await sendMessage(chatId, msg, { reply_markup: mainMenuKeyboard(updated || currentUser) });
+        } else {
+          const errMap: Record<string, string> = {
+            unknown_code: 'Код невідомий. Спробуйте згенерувати новий у віджеті.',
+            used: 'Цей код уже використано.',
+            expired: 'Код прострочений (10 хв). Згенеруйте новий у віджеті.',
+            web_user_missing: 'Веб-сесію вже видалено.',
+            self_link: 'Не можна привʼязати TG до самого себе.',
+          };
+          await sendMessage(chatId, `⚠ ${errMap[r.reason!] || 'Не вдалось прив\'язати акаунт.'}`, {
+            reply_markup: mainMenuKeyboard(currentUser),
+          });
+        }
+      } catch (e: any) {
+        console.error('link consume failed', e?.message || e);
+        await sendMessage(chatId, '⚠ Помилка прив\'язки. Спробуйте пізніше.', {
+          reply_markup: mainMenuKeyboard(currentUser),
+        });
+      }
+      return;
+    }
+
+    // Звичайний /start без link-payload.
+    if (!user) {
+      await sendMessage(chatId, T.welcome, { reply_markup: mainMenuKeyboard(currentUser) });
     } else {
-      // Існуючий користувач натиснув /start — коротке привітання + меню.
       await sendMessage(chatId, `З поверненням, ${user.displayName}! 👋`, {
         reply_markup: mainMenuKeyboard(user),
       });
