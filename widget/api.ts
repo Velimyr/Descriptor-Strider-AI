@@ -42,7 +42,7 @@ export interface PartnerConfig {
   name: string;
   nicknamePrefix: string;
   customization: {
-    theme?: 'light' | 'dark';
+    theme?: 'light' | 'dark' | 'auto';
     buttonColor?: string;
     buttonText?: string;
   };

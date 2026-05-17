@@ -20,8 +20,12 @@ export const BUTTON_COLOR_PRESETS = [
 ] as const;
 export type ButtonColor = typeof BUTTON_COLOR_PRESETS[number];
 
+// 'auto' — віджет читає prefers-color-scheme браузера й рендериться відповідно
+// (плюс реагує на зміну системної теми наживо).
+export type PartnerTheme = 'light' | 'dark' | 'auto';
+
 export interface PartnerCustomization {
-  theme?: 'light' | 'dark';
+  theme?: PartnerTheme;
   buttonColor?: ButtonColor;
   buttonText?: string;
 }
@@ -40,7 +44,7 @@ export interface Partner {
 function sanitizeCustomization(raw: any): PartnerCustomization {
   if (!raw || typeof raw !== 'object') return {};
   const out: PartnerCustomization = {};
-  if (raw.theme === 'light' || raw.theme === 'dark') out.theme = raw.theme;
+  if (raw.theme === 'light' || raw.theme === 'dark' || raw.theme === 'auto') out.theme = raw.theme;
   if (typeof raw.buttonColor === 'string' && (BUTTON_COLOR_PRESETS as readonly string[]).includes(raw.buttonColor)) {
     out.buttonColor = raw.buttonColor as ButtonColor;
   }

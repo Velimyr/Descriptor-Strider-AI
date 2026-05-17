@@ -5253,8 +5253,9 @@ const IntegrityView: React.FC = () => {
 // ==================== PARTNERS VIEW ====================
 // CRUD сайтів-партнерів, що встановлюють віджет blukach. API-ключ показується
 // один раз при створенні і більше ніколи — далі лише sha256 у БД.
+type PartnerTheme = 'light' | 'dark' | 'auto';
 interface PartnerCustomization {
-  theme?: 'light' | 'dark';
+  theme?: PartnerTheme;
   buttonColor?: string;
   buttonText?: string;
 }
@@ -5281,8 +5282,8 @@ const BUTTON_COLOR_OPTIONS = [
 
 // Спільний UI-блок «Кастомізація віджета» — використовується і в Create, і в Edit формах.
 const CustomizationFields: React.FC<{
-  theme: 'light' | 'dark';
-  setTheme: (v: 'light' | 'dark') => void;
+  theme: PartnerTheme;
+  setTheme: (v: PartnerTheme) => void;
   buttonColor: string;
   setButtonColor: (v: string) => void;
   buttonText: string;
@@ -5292,7 +5293,11 @@ const CustomizationFields: React.FC<{
     <div>
       <label className="block text-xs font-medium mb-1">Тема</label>
       <div className="flex gap-2">
-        {(['light', 'dark'] as const).map(t => (
+        {([
+          ['light', 'Світла'],
+          ['dark', 'Темна'],
+          ['auto', 'Адаптивна (за системою)'],
+        ] as [PartnerTheme, string][]).map(([t, label]) => (
           <button
             type="button"
             key={t}
@@ -5301,10 +5306,13 @@ const CustomizationFields: React.FC<{
               theme === t ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600'
             }`}
           >
-            {t === 'light' ? 'Світла' : 'Темна'}
+            {label}
           </button>
         ))}
       </div>
+      <p className="text-xs text-slate-500 mt-1">
+        «Адаптивна» — реагує на системну тему користувача (light/dark prefers-color-scheme), у тому числі коли вона змінюється під час сесії.
+      </p>
     </div>
     <div>
       <label className="block text-xs font-medium mb-1">Колір кнопки</label>
@@ -5490,7 +5498,7 @@ const CreatePartnerForm: React.FC<{
   const [name, setName] = useState('');
   const [nicknamePrefix, setNicknamePrefix] = useState('');
   const [origins, setOrigins] = useState('');
-  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [theme, setTheme] = useState<PartnerTheme>('light');
   const [buttonColor, setButtonColor] = useState('purple');
   const [buttonText, setButtonText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -5594,7 +5602,7 @@ const EditPartnerForm: React.FC<{
   const [name, setName] = useState(partner.name);
   const [nicknamePrefix, setNicknamePrefix] = useState(partner.nicknamePrefix);
   const [origins, setOrigins] = useState(partner.allowedOrigins.join('\n'));
-  const [theme, setTheme] = useState<'light' | 'dark'>(partner.customization?.theme || 'light');
+  const [theme, setTheme] = useState<PartnerTheme>((partner.customization?.theme as PartnerTheme) || 'light');
   const [buttonColor, setButtonColor] = useState(partner.customization?.buttonColor || 'purple');
   const [buttonText, setButtonText] = useState(partner.customization?.buttonText || '');
   const [busy, setBusy] = useState(false);

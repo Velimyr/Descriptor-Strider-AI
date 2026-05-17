@@ -185,7 +185,7 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText }) => {
 // ===== Invite =====
 const Invite: React.FC<{ onAccept: () => void; onDecline: () => void }> = ({ onAccept, onDecline }) => (
   <>
-    <h2 className="blkch-h1">Привіт! Я Блукач 🧭</h2>
+    <h2 className="blkch-h1">Привіт! Я Описовий Блукач 🧭</h2>
     <p className="blkch-text">
       Допоможи розпізнати кілька архівних справ — це займе хвилину.
       Ти побачиш фото фрагмента опису й відповіси на кілька питань.
@@ -325,13 +325,24 @@ const Submitted: React.FC<{
     </div>
     {stats && (
       <p className="blkch-stats">
-        Сьогодні: {stats.todayCount} справ · Всього: {stats.total} балів · Місце {stats.rank}/{stats.totalUsers}
+        Сьогодні розпізнано: {stats.todayCount} справ · Всього отримано: {stats.total} балів · Місце {stats.rank}/{stats.totalUsers}
       </p>
     )}
     <p className="blkch-text">
-      Дізнайтеся більше про проєкт Блукач та повноцінного TG-бота:{' '}
-      <a href="https://t.me/blukach_bot" target="_blank" rel="noreferrer noopener">@blukach_bot</a>
+      Якщо тобі сподобалося — приєднуйся до Описового Блукача:
     </p>
+    <ul style={{ margin: '0 0 12px 18px', padding: 0 }}>
+      <li>
+        <a href="https://t.me/descriptorstriderbot" target="_blank" rel="noreferrer noopener">
+          Телеграм-бот
+        </a>
+      </li>
+      <li>
+        <a href="https://t.me/+qINjoMGESNwyMGYy" target="_blank" rel="noreferrer noopener">
+          Спільнота Блукача
+        </a>
+      </li>
+    </ul>
     <div className="blkch-btn-row">
       <button className="blkch-btn blkch-btn-primary" onClick={onNext}>Наступна справа</button>
       <button className="blkch-btn blkch-btn-secondary" onClick={onClose}>Закрити</button>
