@@ -108,6 +108,8 @@ export const tgApi = {
     ),
   // Партнери віджета
   listPartners: () => call('/admin/partners'),
+  partnerStats: (fromIso: string, toIso: string) =>
+    call(`/admin/partners/stats?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`),
   createPartner: (data: {
     partnerId: string;
     name: string;

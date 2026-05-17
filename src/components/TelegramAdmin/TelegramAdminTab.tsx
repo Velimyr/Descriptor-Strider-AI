@@ -53,7 +53,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['overview', 'Огляд'],
           ['chart', 'Графік'],
           ['integrity', 'Перевірка доброчесності'],
-          ['partners', 'Партнери віджета'],
+          ['partners', 'Партнери'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
             key={k}
@@ -5414,14 +5414,14 @@ const CustomizationFields: React.FC<{
         value={buttonText}
         onChange={e => setButtonText(e.target.value)}
         className="w-full px-2 py-1 border rounded text-sm bg-white"
-        placeholder="Допомогти архіву"
+        placeholder="Описовий Блукач"
         maxLength={60}
         disabled={buttonDisplayMode === 'image'}
       />
       <p className="text-xs text-slate-500 mt-1">
         {buttonDisplayMode === 'image'
           ? 'Не використовується в режимі «Тільки логотип» (буде у tooltip/aria-label).'
-          : 'Залиш порожнім, щоб використати дефолт «Допомогти архіву».'}
+          : 'Залиш порожнім, щоб використати дефолт «Описовий Блукач».'}
       </p>
     </div>
     <div>
@@ -5456,13 +5456,25 @@ const CustomizationFields: React.FC<{
   </>
 );
 
+// За замовчуванням — останні 30 днів. Дати у форматі YYYY-MM-DD (для input type=date).
+function defaultDateRange(): { from: string; to: string } {
+  const now = new Date();
+  const fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const fmt = (d: Date) => d.toISOString().slice(0, 10);
+  return { from: fmt(fromDate), to: fmt(now) };
+}
+interface StatsRow { partnerId: string; submissions: number; confirmations: number; }
+
 const PartnersView: React.FC = () => {
   const [partners, setPartners] = useState<Partner[]>([]);
+  const [stats, setStats] = useState<Record<string, StatsRow>>({});
   const [busy, setBusy] = useState(false);
+  const [statsBusy, setStatsBusy] = useState(false);
   const [err, setErr] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newKeyForId, setNewKeyForId] = useState<{ id: string; key: string } | null>(null);
+  const [{ from, to }, setRange] = useState(defaultDateRange());
 
   const load = async () => {
     setBusy(true); setErr('');
@@ -5472,7 +5484,21 @@ const PartnersView: React.FC = () => {
     } catch (e: any) { setErr(e?.message || 'Помилка'); }
     finally { setBusy(false); }
   };
+  const loadStats = async () => {
+    setStatsBusy(true);
+    try {
+      // Кінцеву дату беремо як кінець дня (день+1 у 00:00 UTC), щоб включити весь to.
+      const fromIso = new Date(from + 'T00:00:00Z').toISOString();
+      const toIso = new Date(new Date(to + 'T00:00:00Z').getTime() + 24 * 60 * 60 * 1000).toISOString();
+      const r = await tgApi.partnerStats(fromIso, toIso);
+      const map: Record<string, StatsRow> = {};
+      for (const row of r.stats || []) map[row.partnerId] = row;
+      setStats(map);
+    } catch (e: any) { setErr(e?.message || 'Помилка стат'); }
+    finally { setStatsBusy(false); }
+  };
   useEffect(() => { load(); }, []);
+  useEffect(() => { loadStats(); }, [from, to]);
 
   const onDelete = async (partnerId: string) => {
     if (!confirm(`Видалити партнера «${partnerId}»? Юзери, створені через нього, лишаться у БД, але без partner_id.`)) return;
@@ -5487,10 +5513,21 @@ const PartnersView: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold">Партнери віджета</h2>
-        <div className="flex gap-2">
-          <button onClick={load} className="px-3 py-1 text-sm border rounded hover:bg-slate-50">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h2 className="text-xl font-bold">Партнери</h2>
+        <div className="flex gap-2 flex-wrap items-center">
+          <label className="text-xs text-slate-600">З:
+            <input type="date" value={from} onChange={e => setRange(r => ({ ...r, from: e.target.value }))} className="ml-1 px-2 py-1 border rounded text-sm" />
+          </label>
+          <label className="text-xs text-slate-600">До:
+            <input type="date" value={to} onChange={e => setRange(r => ({ ...r, to: e.target.value }))} className="ml-1 px-2 py-1 border rounded text-sm" />
+          </label>
+          <button
+            onClick={() => setRange(defaultDateRange())}
+            className="px-2 py-1 text-xs border rounded text-slate-600 hover:bg-slate-50"
+            title="Останні 30 днів"
+          >За місяць</button>
+          <button onClick={() => { load(); loadStats(); }} className="px-3 py-1 text-sm border rounded hover:bg-slate-50">
             <RefreshCw size={14} className="inline mr-1" /> Оновити
           </button>
           <button
@@ -5540,6 +5577,9 @@ const PartnersView: React.FC = () => {
               <th className="px-2 py-1">Назва</th>
               <th className="px-2 py-1">Префікс</th>
               <th className="px-2 py-1">Origins</th>
+              <th className="px-2 py-1" title="Сума submissions (parallel) + case_confirmations (collab) за обраний період">
+                Справ у періоді
+              </th>
               <th className="px-2 py-1">Статус</th>
               <th className="px-2 py-1">Створено</th>
               <th className="px-2 py-1"></th>
@@ -5547,7 +5587,7 @@ const PartnersView: React.FC = () => {
           </thead>
           <tbody>
             {partners.length === 0 && (
-              <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-500">Партнерів ще немає</td></tr>
+              <tr><td colSpan={8} className="px-2 py-4 text-center text-slate-500">Партнерів ще немає</td></tr>
             )}
             {partners.map(p => (
               <React.Fragment key={p.partnerId}>
@@ -5557,6 +5597,17 @@ const PartnersView: React.FC = () => {
                   <td className="px-2 py-2">{p.nicknamePrefix}</td>
                   <td className="px-2 py-2 text-xs">
                     {p.allowedOrigins.map(o => <div key={o}>{o}</div>)}
+                  </td>
+                  <td className="px-2 py-2 text-sm font-mono">
+                    {statsBusy ? (
+                      <span className="text-slate-400">…</span>
+                    ) : stats[p.partnerId] ? (
+                      <span title={`розпізнавання: ${stats[p.partnerId].submissions}, collab-події: ${stats[p.partnerId].confirmations}`}>
+                        {stats[p.partnerId].submissions + stats[p.partnerId].confirmations}
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">0</span>
+                    )}
                   </td>
                   <td className="px-2 py-2">
                     <button
@@ -5581,7 +5632,7 @@ const PartnersView: React.FC = () => {
                 </tr>
                 {editingId === p.partnerId && (
                   <tr className="bg-slate-50 border-b">
-                    <td colSpan={7} className="px-4 py-4">
+                    <td colSpan={8} className="px-4 py-4">
                       <EditPartnerForm
                         partner={p}
                         onSaved={() => { setEditingId(null); load(); }}

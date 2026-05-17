@@ -18,7 +18,7 @@ import { App } from './App';
 import { applyCustomization } from './theme';
 import widgetCss from './styles.css?inline';
 
-const DEFAULT_BUTTON_TEXT = 'Допомогти архіву';
+const DEFAULT_BUTTON_TEXT = 'Описовий Блукач';
 
 function findOwnScript(): HTMLScriptElement | null {
   const all = Array.from(document.scripts) as HTMLScriptElement[];

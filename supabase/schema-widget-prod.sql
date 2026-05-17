@@ -114,3 +114,35 @@ begin
   delete from bot_users where tg_id = p_old_tg_id;
 end $$;
 revoke all on function bot_merge_users(text, text) from public, anon, authenticated;
+
+-- ========== bot_partner_stats(from, to) ==========
+-- Скільки справ юзери кожного партнера обробили за період [p_from, p_to).
+create or replace function bot_partner_stats(p_from timestamptz, p_to timestamptz)
+returns table(partner_id text, submissions bigint, confirmations bigint)
+language sql security definer as $$
+  with web_users as (
+    select tg_id, partner_id from bot_users where source = 'web' and partner_id is not null
+  ),
+  subs as (
+    select wu.partner_id, count(*)::bigint as c
+    from bot_submissions s
+    join web_users wu on wu.tg_id = s.tg_id
+    where s.submitted_at >= p_from and s.submitted_at < p_to
+    group by wu.partner_id
+  ),
+  cons as (
+    select wu.partner_id, count(*)::bigint as c
+    from bot_case_confirmations cc
+    join web_users wu on wu.tg_id = cc.tg_id
+    where cc.at >= p_from and cc.at < p_to
+    group by wu.partner_id
+  )
+  select p.partner_id,
+         coalesce(subs.c, 0)::bigint as submissions,
+         coalesce(cons.c, 0)::bigint as confirmations
+  from bot_partners p
+  left join subs on subs.partner_id = p.partner_id
+  left join cons on cons.partner_id = p.partner_id
+  order by (coalesce(subs.c, 0) + coalesce(cons.c, 0)) desc;
+$$;
+revoke all on function bot_partner_stats(timestamptz, timestamptz) from public, anon, authenticated;

@@ -201,6 +201,25 @@ export function normalizeOrigin(s: string): string {
   return s.trim().toLowerCase().replace(/\/+$/, '');
 }
 
+// Статистика по партнерах за період [from, to). submissions — parallel-режим,
+// confirmations — collab-події (create/edit/confirm). Один рядок на партнера.
+export interface PartnerStatsRow {
+  partnerId: string;
+  submissions: number;
+  confirmations: number;
+}
+const PREFIX_FOR_RPC = process.env.TABLE_PREFIX ?? 'bot_';
+const RPC_PARTNER_STATS = `${PREFIX_FOR_RPC}partner_stats`;
+export async function getPartnerStats(fromIso: string, toIso: string): Promise<PartnerStatsRow[]> {
+  const { data, error } = await db().rpc(RPC_PARTNER_STATS, { p_from: fromIso, p_to: toIso });
+  if (error) throw error;
+  return (data || []).map((r: any) => ({
+    partnerId: r.partner_id,
+    submissions: Number(r.submissions || 0),
+    confirmations: Number(r.confirmations || 0),
+  }));
+}
+
 // Точна перевірка origin після нормалізації обох сторін.
 export function isOriginAllowed(partner: Partner, origin: string | undefined): boolean {
   if (!origin) return false;

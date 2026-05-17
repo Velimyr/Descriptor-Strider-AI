@@ -908,6 +908,21 @@ router.get('/admin/partners', async (req, res) => {
   }
 });
 
+// Статистика партнерів за період [from, to). За замовчуванням — останні 30 днів.
+router.get('/admin/partners/stats', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const now = new Date();
+  const defaultFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const from = String(req.query.from || defaultFrom.toISOString());
+  const to = String(req.query.to || now.toISOString());
+  try {
+    const { getPartnerStats } = await import('../core/partners.js');
+    res.json({ stats: await getPartnerStats(from, to), from, to });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
 router.post('/admin/partners', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const { partnerId, name, nicknamePrefix, allowedOrigins, customization } = req.body || {};
