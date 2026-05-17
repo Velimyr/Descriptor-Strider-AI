@@ -84,8 +84,8 @@ begin
     on conflict (tg_id, case_id) do nothing;
   delete from bot_skipped where tg_id = p_old_tg_id;
 
-  insert into bot_case_confirmations (case_id, tg_id, kind, at, answers)
-    select case_id, p_new_tg_id, kind, at, answers
+  insert into bot_case_confirmations (case_id, tg_id, kind, at, answers, partner_id)
+    select case_id, p_new_tg_id, kind, at, answers, partner_id
       from bot_case_confirmations where tg_id = p_old_tg_id
     on conflict (case_id, tg_id) do nothing;
   delete from bot_case_confirmations where tg_id = p_old_tg_id;
@@ -115,27 +115,48 @@ begin
 end $$;
 revoke all on function bot_merge_users(text, text) from public, anon, authenticated;
 
+-- ========== Denormalized partner_id у submissions / case_confirmations ==========
+-- Зберігає атрибуцію партнера навіть після того, як юзер злив web-акаунт з TG.
+alter table bot_submissions        add column if not exists partner_id text;
+alter table bot_case_confirmations add column if not exists partner_id text;
+create index if not exists idx_submissions_partner        on bot_submissions(partner_id) where partner_id is not null;
+create index if not exists idx_case_confirmations_partner on bot_case_confirmations(partner_id) where partner_id is not null;
+
+-- Backfill для існуючих рядків (виконається один раз; повторні запуски — no-op).
+update bot_submissions s
+   set partner_id = u.partner_id
+  from bot_users u
+ where s.tg_id = u.tg_id
+   and u.source = 'web'
+   and u.partner_id is not null
+   and s.partner_id is null;
+
+update bot_case_confirmations c
+   set partner_id = u.partner_id
+  from bot_users u
+ where c.tg_id = u.tg_id
+   and u.source = 'web'
+   and u.partner_id is not null
+   and c.partner_id is null;
+
 -- ========== bot_partner_stats(from, to) ==========
 -- Скільки справ юзери кожного партнера обробили за період [p_from, p_to).
 create or replace function bot_partner_stats(p_from timestamptz, p_to timestamptz)
 returns table(partner_id text, submissions bigint, confirmations bigint)
 language sql security definer as $$
-  with web_users as (
-    select tg_id, partner_id from bot_users where source = 'web' and partner_id is not null
-  ),
-  subs as (
-    select wu.partner_id, count(*)::bigint as c
+  with subs as (
+    select s.partner_id, count(*)::bigint as c
     from bot_submissions s
-    join web_users wu on wu.tg_id = s.tg_id
-    where s.submitted_at >= p_from and s.submitted_at < p_to
-    group by wu.partner_id
+    where s.partner_id is not null
+      and s.submitted_at >= p_from and s.submitted_at < p_to
+    group by s.partner_id
   ),
   cons as (
-    select wu.partner_id, count(*)::bigint as c
-    from bot_case_confirmations cc
-    join web_users wu on wu.tg_id = cc.tg_id
-    where cc.at >= p_from and cc.at < p_to
-    group by wu.partner_id
+    select c.partner_id, count(*)::bigint as c
+    from bot_case_confirmations c
+    where c.partner_id is not null
+      and c.at >= p_from and c.at < p_to
+    group by c.partner_id
   )
   select p.partner_id,
          coalesce(subs.c, 0)::bigint as submissions,

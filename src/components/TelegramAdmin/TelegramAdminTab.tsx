@@ -5333,7 +5333,7 @@ const CustomizationFields: React.FC<{
         ))}
       </div>
       <p className="text-xs text-slate-500 mt-1">
-        «Адаптивна» — реагує на системну тему користувача (light/dark prefers-color-scheme), у тому числі коли вона змінюється під час сесії.
+        «Адаптивна» — підлаштовується під тему сайту-носія (читає background body, реагує на зміну класів/data-theme). Якщо сайт не задає кольору — використовує системну тему.
       </p>
     </div>
     <div>

@@ -118,6 +118,7 @@ async function submitParallel(user: BotUser, cse: BotCase, answers: string[]): P
     sprava: cse.sprava,
     sourcePdf: cse.sourcePdf,
     page: cse.page,
+    partnerId: user.partnerId, // денормалізована атрибуція до партнера
   });
   const [, todayCount] = await Promise.all([
     recomputeCaseSubmissionCount(cse.caseId),
@@ -139,7 +140,7 @@ async function submitParallel(user: BotUser, cse: BotCase, answers: string[]): P
 async function submitCollabCreate(user: BotUser, cse: BotCase, answers: string[]): Promise<SubmitResult> {
   await Promise.all([
     setCaseCreated(cse.caseId, user.tgId, answers),
-    recordCaseEvent(cse.caseId, user.tgId, 'create', answers),
+    recordCaseEvent(cse.caseId, user.tgId, 'create', answers, user.partnerId),
   ]);
   return deliverCollabPoints(user, false, 3, 'collab-create');
 }
@@ -148,7 +149,7 @@ async function submitCollabCreate(user: BotUser, cse: BotCase, answers: string[]
 async function submitCollabEdit(user: BotUser, cse: BotCase, answers: string[]): Promise<SubmitResult> {
   await Promise.all([
     setCaseEdited(cse.caseId, user.tgId, answers),
-    recordCaseEvent(cse.caseId, user.tgId, 'edit', answers),
+    recordCaseEvent(cse.caseId, user.tgId, 'edit', answers, user.partnerId),
   ]);
   return deliverCollabPoints(user, false, 1, 'collab-edit');
 }
@@ -156,7 +157,7 @@ async function submitCollabEdit(user: BotUser, cse: BotCase, answers: string[]):
 // ---- Collab: confirm ----
 async function submitCollabConfirm(user: BotUser, cse: BotCase): Promise<SubmitResult> {
   const min = await getMinConfirmations();
-  await recordCaseEvent(cse.caseId, user.tgId, 'confirm', cse.currentAnswers || []);
+  await recordCaseEvent(cse.caseId, user.tgId, 'confirm', cse.currentAnswers || [], user.partnerId);
   const { closed } = await confirmCase(cse.caseId, min);
   return deliverCollabPoints(user, closed, 1, 'collab-confirm');
 }
