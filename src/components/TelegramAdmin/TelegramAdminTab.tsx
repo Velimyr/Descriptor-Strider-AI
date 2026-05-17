@@ -2846,6 +2846,7 @@ const ResultsView: React.FC = () => {
 
   useEffect(() => {
     loadOverview();
+    loadFundEta();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2856,6 +2857,20 @@ const ResultsView: React.FC = () => {
   const [todayStats, setTodayStats] = useState<{ cases: number; users: number; timezone: string } | null>(null);
   const [statsBusy, setStatsBusy] = useState(false);
   const [statsErr, setStatsErr] = useState('');
+
+  // Прогноз завершення фонду.
+  type FundEta = Awaited<ReturnType<typeof tgApi.fundEta>>;
+  const [fundEta, setFundEta] = useState<FundEta | null>(null);
+  const [etaErr, setEtaErr] = useState('');
+  const loadFundEta = async () => {
+    setEtaErr('');
+    try {
+      const r = await tgApi.fundEta();
+      setFundEta(r);
+    } catch (e: any) {
+      setEtaErr(e?.message || 'помилка');
+    }
+  };
 
   const loadTodayStats = async () => {
     setStatsBusy(true);
@@ -3120,6 +3135,42 @@ const ResultsView: React.FC = () => {
           </table>
         </div>
       )}
+
+      {/* Прогноз завершення фонду — завжди останнім рядком. */}
+      <div className="text-sm border-t pt-3 mt-2">
+        {etaErr && <div className="text-rose-700">Не вдалося порахувати прогноз: {etaErr}</div>}
+        {!etaErr && fundEta && (
+          <>
+            <div>
+              До завершення розпізнавання фонду №<b>{fundEta.fundNumber}</b> залишилося розпізнати{' '}
+              <b>{fundEta.remaining}</b>{' '}
+              {fundEta.remaining === 1 ? 'опис' : fundEta.remaining < 5 && fundEta.remaining > 0 ? 'описи' : 'описів'}
+              .
+            </div>
+            <div className="text-slate-700">
+              Прогнозована дата завершення розпізнавання, виходячи з поточної швидкості розпізнавання:{' '}
+              {fundEta.etaDateLocal ? (
+                <b>{fundEta.etaDateLocal}</b>
+              ) : fundEta.remaining === 0 ? (
+                <b>фонд уже повністю розпізнано 🎉</b>
+              ) : (
+                <span className="text-slate-500">
+                  невідомо (за останні {fundEta.windowDays} дн. не завершився жоден опис)
+                </span>
+              )}
+              {fundEta.etaDateLocal && (
+                <span className="text-xs text-slate-500">
+                  {' '}
+                  · темп: {fundEta.ratePerDay.toFixed(2)} опис./день за останні {fundEta.windowDays} дн.; готово{' '}
+                  {fundEta.totalDone}/{fundEta.totalDescriptions} (з них baseline{' '}
+                  {fundEta.baselineDoneDescriptions})
+                </span>
+              )}
+            </div>
+          </>
+        )}
+        {!fundEta && !etaErr && <span className="text-slate-500">Прогноз завантажується…</span>}
+      </div>
     </div>
   );
 };

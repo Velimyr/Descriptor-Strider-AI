@@ -77,6 +77,20 @@ export const tgApi = {
       timezone: string;
       days: Array<{ date: string; cases: number; users: number }>;
     }>,
+  fundEta: (windowDays = 14) =>
+    call(`/admin/fund-eta?windowDays=${windowDays}`) as Promise<{
+      fundNumber: string;
+      totalDescriptions: number;
+      baselineDoneDescriptions: number;
+      fullyDoneByBot: number;
+      totalDone: number;
+      remaining: number;
+      windowDays: number;
+      completionsInWindow: number;
+      ratePerDay: number;
+      etaDateIso: string | null;
+      etaDateLocal: string | null;
+    }>,
   integrity: (threshold = 5, includeResolved = false) =>
     call(`/admin/integrity?threshold=${threshold}${includeResolved ? '&includeResolved=1' : ''}`),
   penalize: (payload: {

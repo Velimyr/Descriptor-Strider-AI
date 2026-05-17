@@ -30,6 +30,13 @@ export interface TelegramBotConfig {
     allowExtraAfterTarget: boolean;
   };
 
+  // Загальна мета — для відображення прогнозу завершення фонду на сторінці «Результати».
+  fund: {
+    number: string;              // номер фонду (для тексту), напр. '442'
+    totalDescriptions: number;   // скільки описів у фонді разом
+    baselineDoneDescriptions: number; // вже розпізнано до початку роботи бота
+  };
+
   points: {
     base: number;
     tier1: { thresholdInclusive: number; multiplier: number };
@@ -113,6 +120,12 @@ export const telegramBotConfig: TelegramBotConfig = {
   cases: {
     targetSubmissions: 3,
     allowExtraAfterTarget: true,
+  },
+
+  fund: {
+    number: '442',
+    totalDescriptions: 654,
+    baselineDoneDescriptions: 41,
   },
 
   points: {
