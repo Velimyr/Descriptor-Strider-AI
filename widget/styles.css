@@ -61,6 +61,11 @@
   background: #fff; color: var(--blkch-accent); display: flex;
   align-items: center; justify-content: center; font-weight: 700;
 }
+.blkch-floater-avatar-img {
+  width: 28px; height: 28px; border-radius: 50%;
+  object-fit: cover; display: block;
+  background: #fff;
+}
 /* Image-mode floater: круглий, без тексту, тільки логотип всередині */
 .blkch-floater.blkch-floater-image {
   width: 64px; height: 64px; padding: 0; border-radius: 50%;
