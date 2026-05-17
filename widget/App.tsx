@@ -256,7 +256,7 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, posi
             onLink={startLinking}
           />
         )}
-        {stage.kind === 'linking' && <LinkingView deepLink={stage.deepLink} onCancel={close} />}
+        {stage.kind === 'linking' && <LinkingView code={stage.code} deepLink={stage.deepLink} onCancel={close} />}
         {stage.kind === 'linked' && <LinkedView onClose={close} />}
         {stage.kind === 'error' && (
           <>
@@ -512,22 +512,59 @@ const HelpView: React.FC<{
 };
 
 // ===== Linking flow =====
-const LinkingView: React.FC<{ deepLink: string; onCancel: () => void }> = ({ deepLink, onCancel }) => (
-  <>
-    <h2 className="blkch-h1">Привʼязка до Telegram</h2>
-    <p className="blkch-text">
-      Якщо ваш браузер не відкрив Telegram автоматично — натисніть кнопку нижче.
-      У TG-боті натисніть «Старт». Ваші бали тут будуть додані до балів у боті.
-    </p>
-    <p className="blkch-text">
-      <a href={deepLink} target="_blank" rel="noreferrer noopener" className="blkch-btn blkch-btn-primary" style={{ display: 'inline-block', textDecoration: 'none' }}>
-        Відкрити Telegram
-      </a>
-    </p>
-    <p className="blkch-stats">Чекаю підтвердження з Telegram…</p>
-    <button className="blkch-btn blkch-btn-secondary" onClick={onCancel}>Скасувати</button>
-  </>
-);
+const LinkingView: React.FC<{ code: string; deepLink: string; onCancel: () => void }> = ({ code, deepLink, onCancel }) => {
+  const [copied, setCopied] = React.useState(false);
+  const copyCmd = () => {
+    try {
+      navigator.clipboard.writeText(`/link ${code}`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
+  };
+  return (
+    <>
+      <h2 className="blkch-h1">Привʼязка до Telegram</h2>
+      <p className="blkch-text">
+        <b>Спосіб 1:</b> натисніть кнопку — Telegram відкриється і автоматично прив'яже сесію.
+      </p>
+      <p className="blkch-text">
+        <a
+          href={deepLink}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="blkch-btn blkch-btn-primary"
+          style={{ display: 'inline-block', textDecoration: 'none' }}
+        >
+          Відкрити Telegram
+        </a>
+      </p>
+      <p className="blkch-text" style={{ marginTop: 16 }}>
+        <b>Спосіб 2 (якщо перший не спрацював):</b> у чаті з ботом надішліть команду:
+      </p>
+      <div
+        style={{
+          background: 'var(--blkch-bg-secondary)',
+          padding: '10px 12px',
+          borderRadius: 6,
+          fontFamily: 'monospace',
+          fontSize: 16,
+          fontWeight: 700,
+          textAlign: 'center',
+          marginBottom: 8,
+          color: 'var(--blkch-text)',
+          letterSpacing: 1,
+        }}
+      >
+        /link {code}
+      </div>
+      <button className="blkch-btn blkch-btn-secondary" onClick={copyCmd}>
+        {copied ? '✅ Скопійовано' : '📋 Скопіювати команду'}
+      </button>
+      <p className="blkch-stats" style={{ marginTop: 16 }}>Чекаю підтвердження з Telegram…</p>
+      <button className="blkch-btn blkch-btn-ghost" onClick={onCancel}>Скасувати</button>
+    </>
+  );
+};
 
 const LinkedView: React.FC<{ onClose: () => void }> = ({ onClose }) => (
   <>

@@ -419,6 +419,48 @@ async function handleMessage(msg: any) {
     return;
   }
 
+  // /link <CODE> — fallback для випадку, коли Telegram втратив payload при
+  // переході з deep-link (часто буває для юзерів, у яких чат з ботом уже існує).
+  if (text.startsWith('/link')) {
+    const code = rawText.replace(/^\/link(@\S+)?\s*/i, '').trim().toUpperCase();
+    if (!code) {
+      await sendMessage(
+        chatId,
+        'Використання: <code>/link CODE</code>\nКод покаже віджет, коли ви натиснете «Привʼязати Telegram».',
+        { reply_markup: mainMenuKeyboard(user) }
+      );
+      return;
+    }
+    try {
+      const { consumeLinkCode } = await import('../core/linking.js');
+      const r = await consumeLinkCode(code, tgId);
+      if (r.ok) {
+        const updated = await getUser(tgId);
+        const msg = updated && r.transferredPoints
+          ? `✅ Готово! До твого акаунту додано ${r.transferredPoints} балів з веб-сесії «${r.webNickname}».\n\nЗагалом тепер: ${updated.totalPoints} балів.`
+          : '✅ Готово! Веб-акаунт прив\'язаний.';
+        await sendMessage(chatId, msg, { reply_markup: mainMenuKeyboard(updated || user) });
+      } else {
+        const errMap: Record<string, string> = {
+          unknown_code: 'Код невідомий. Перевірте у віджеті.',
+          used: 'Цей код уже використано.',
+          expired: 'Код прострочений (10 хв). Згенеруйте новий у віджеті.',
+          web_user_missing: 'Веб-сесію вже видалено.',
+          self_link: 'Не можна привʼязати TG до самого себе.',
+        };
+        await sendMessage(chatId, `⚠ ${errMap[r.reason!] || 'Не вдалось привʼязати акаунт.'}`, {
+          reply_markup: mainMenuKeyboard(user),
+        });
+      }
+    } catch (e: any) {
+      console.error('/link consume failed', e?.message || e);
+      await sendMessage(chatId, '⚠ Помилка привʼязки. Спробуйте пізніше.', {
+        reply_markup: mainMenuKeyboard(user),
+      });
+    }
+    return;
+  }
+
   // ім'я ще не задано
   if (!user.displayName) {
     const name = rawText.trim().slice(0, 32);
