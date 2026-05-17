@@ -163,5 +163,51 @@
   color: var(--blkch-text);
   font-size: 14px;
   line-height: 1.5;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .blkch-help-html b, .blkch-help-html strong { font-weight: 700; }
+
+/* ---------- Mobile (≤640px) ---------- */
+@media (max-width: 640px) {
+  /* Backdrop без власних відступів — модалка займає весь екран по ширині. */
+  .blkch-backdrop { padding: 0; align-items: flex-end; }
+  .blkch-modal {
+    max-width: 100%; width: 100%;
+    max-height: 95vh;
+    border-radius: 14px 14px 0 0;
+    padding: 16px;
+  }
+  /* Floater компактніший: менший шрифт, менший padding, обмежена ширина з ellipsis. */
+  .blkch-floater {
+    font-size: 13px;
+    padding: 10px 14px;
+    max-width: calc(100vw - 32px);
+  }
+  .blkch-floater:not(.blkch-floater-image) {
+    /* Текст обрізається ... якщо дуже довгий — щоб не виходив за екран. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: inline-flex;
+  }
+  .blkch-floater-image { width: 56px; height: 56px; }
+  .blkch-floater-logo  { width: 42px; height: 42px; }
+
+  /* Summary: лейбл вище значення (вертикальне стекання), щоб довгі value не різалися. */
+  .blkch-summary-row { flex-direction: column; gap: 2px; }
+  .blkch-summary-label { min-width: 0; font-size: 12px; }
+  .blkch-summary-value { font-size: 14px; }
+
+  /* Заголовки трохи менші. */
+  .blkch-h1 { font-size: 16px; }
+
+  /* Stats-рядок дозволяємо переноситись по словах. */
+  .blkch-stats { word-break: break-word; }
+
+  /* Кнопки в рядах: повна ширина якщо мало місця. */
+  .blkch-btn { font-size: 13px; padding: 9px 12px; }
+
+  /* Image у modal не безмежна — обмежуємо висоту щоб діалог не розтягувався. */
+  .blkch-image { max-height: 40vh; object-fit: contain; background: var(--blkch-bg-secondary); }
+}

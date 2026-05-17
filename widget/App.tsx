@@ -569,6 +569,7 @@ const LinkingView: React.FC<{ code: string; deepLink: string; onCancel: () => vo
           marginBottom: 8,
           color: 'var(--blkch-text)',
           letterSpacing: 1,
+          wordBreak: 'break-all',
         }}
       >
         /link {code}
