@@ -52,3 +52,71 @@ create table if not exists botdev_link_codes (
 );
 create index if not exists idx_botdev_link_codes_web on botdev_link_codes(web_tg_id);
 alter table botdev_link_codes enable row level security;
+
+-- ========== botdev_merge_users(old, new) ==========
+-- Атомарний мерж усього стану юзера p_old_tg_id у p_new_tg_id з правильним
+-- розв'язанням PK-конфліктів (skipped, case_confirmations, daily_scores).
+-- Submissions/dispatch_log оновлюємо напряму (немає PK на tg_id).
+-- bot_cases.locked_by/current_author — оновлюємо. integrity_reviews — теж.
+-- Бали додаються, потім старий юзер видаляється (bot_sessions cascades).
+create or replace function botdev_merge_users(p_old_tg_id text, p_new_tg_id text)
+returns void language plpgsql security definer as $$
+declare
+  old_points numeric;
+begin
+  if p_old_tg_id = p_new_tg_id then return; end if;
+
+  -- Submissions: tg_id не PK, простий апдейт. Також підтягуємо новий display_name
+  -- щоб не показувати в експортах старий nickname.
+  update botdev_submissions s
+     set tg_id = p_new_tg_id,
+         display_name = coalesce((select display_name from botdev_users where tg_id = p_new_tg_id), s.display_name)
+   where s.tg_id = p_old_tg_id;
+
+  -- Skipped: PK (tg_id, case_id). Мердж через INSERT...ON CONFLICT DO NOTHING.
+  insert into botdev_skipped (tg_id, case_id, skipped_at)
+    select p_new_tg_id, case_id, skipped_at
+      from botdev_skipped where tg_id = p_old_tg_id
+    on conflict (tg_id, case_id) do nothing;
+  delete from botdev_skipped where tg_id = p_old_tg_id;
+
+  -- Case confirmations: PK (case_id, tg_id). Якщо TG-юзер вже торкався тієї ж
+  -- справи — лишаємо TG-запис (старший за статусом, скоріш за все).
+  insert into botdev_case_confirmations (case_id, tg_id, kind, at, answers)
+    select case_id, p_new_tg_id, kind, at, answers
+      from botdev_case_confirmations where tg_id = p_old_tg_id
+    on conflict (case_id, tg_id) do nothing;
+  delete from botdev_case_confirmations where tg_id = p_old_tg_id;
+
+  -- Daily scores: PK (tg_id, date_kyiv). На конфлікт — додаємо лічильники.
+  insert into botdev_daily_scores (tg_id, date_kyiv, count)
+    select p_new_tg_id, date_kyiv, count
+      from botdev_daily_scores where tg_id = p_old_tg_id
+    on conflict (tg_id, date_kyiv) do update
+      set count = botdev_daily_scores.count + EXCLUDED.count;
+  delete from botdev_daily_scores where tg_id = p_old_tg_id;
+
+  -- Dispatch log: tg_id не PK.
+  update botdev_dispatch_log set tg_id = p_new_tg_id where tg_id = p_old_tg_id;
+
+  -- Cases: посилання на tg_id у lock/author полях.
+  update botdev_cases set locked_by_tg_id      = p_new_tg_id where locked_by_tg_id      = p_old_tg_id;
+  update botdev_cases set current_author_tg_id = p_new_tg_id where current_author_tg_id = p_old_tg_id;
+
+  -- Integrity reviews: оновлюємо посилання. PK (case_id, first, second) — рідко
+  -- конфліктує (треба щоб TG-юзер вже мав review-пару з тим самим іншим юзером
+  -- по тій самій справі). На MVP ігноруємо потенційний дублікат — простий update.
+  update botdev_integrity_reviews set first_tg_id     = p_new_tg_id where first_tg_id     = p_old_tg_id;
+  update botdev_integrity_reviews set second_tg_id    = p_new_tg_id where second_tg_id    = p_old_tg_id;
+  update botdev_integrity_reviews set penalized_tg_id = p_new_tg_id where penalized_tg_id = p_old_tg_id;
+
+  -- Бали: переносимо в TG-юзера.
+  select total_points into old_points from botdev_users where tg_id = p_old_tg_id;
+  if old_points is not null and old_points <> 0 then
+    update botdev_users set total_points = total_points + old_points where tg_id = p_new_tg_id;
+  end if;
+
+  -- Видаляємо старого юзера. bot_sessions має ON DELETE CASCADE → автоматично.
+  delete from botdev_users where tg_id = p_old_tg_id;
+end $$;
+revoke all on function botdev_merge_users(text, text) from public, anon, authenticated;

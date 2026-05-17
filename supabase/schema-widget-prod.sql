@@ -61,3 +61,56 @@ create table if not exists bot_link_codes (
 );
 create index if not exists idx_link_codes_web on bot_link_codes(web_tg_id);
 alter table bot_link_codes enable row level security;
+
+-- ========== bot_merge_users(old, new) ==========
+-- Атомарний мерж усього стану юзера в одну транзакцію.
+-- Конфлікти по PK розв'язуються INSERT...ON CONFLICT (skipped, case_confirmations,
+-- daily_scores). Бали додаються, старий юзер видаляється.
+create or replace function bot_merge_users(p_old_tg_id text, p_new_tg_id text)
+returns void language plpgsql security definer as $$
+declare
+  old_points numeric;
+begin
+  if p_old_tg_id = p_new_tg_id then return; end if;
+
+  update bot_submissions s
+     set tg_id = p_new_tg_id,
+         display_name = coalesce((select display_name from bot_users where tg_id = p_new_tg_id), s.display_name)
+   where s.tg_id = p_old_tg_id;
+
+  insert into bot_skipped (tg_id, case_id, skipped_at)
+    select p_new_tg_id, case_id, skipped_at
+      from bot_skipped where tg_id = p_old_tg_id
+    on conflict (tg_id, case_id) do nothing;
+  delete from bot_skipped where tg_id = p_old_tg_id;
+
+  insert into bot_case_confirmations (case_id, tg_id, kind, at, answers)
+    select case_id, p_new_tg_id, kind, at, answers
+      from bot_case_confirmations where tg_id = p_old_tg_id
+    on conflict (case_id, tg_id) do nothing;
+  delete from bot_case_confirmations where tg_id = p_old_tg_id;
+
+  insert into bot_daily_scores (tg_id, date_kyiv, count)
+    select p_new_tg_id, date_kyiv, count
+      from bot_daily_scores where tg_id = p_old_tg_id
+    on conflict (tg_id, date_kyiv) do update
+      set count = bot_daily_scores.count + EXCLUDED.count;
+  delete from bot_daily_scores where tg_id = p_old_tg_id;
+
+  update bot_dispatch_log set tg_id = p_new_tg_id where tg_id = p_old_tg_id;
+
+  update bot_cases set locked_by_tg_id      = p_new_tg_id where locked_by_tg_id      = p_old_tg_id;
+  update bot_cases set current_author_tg_id = p_new_tg_id where current_author_tg_id = p_old_tg_id;
+
+  update bot_integrity_reviews set first_tg_id     = p_new_tg_id where first_tg_id     = p_old_tg_id;
+  update bot_integrity_reviews set second_tg_id    = p_new_tg_id where second_tg_id    = p_old_tg_id;
+  update bot_integrity_reviews set penalized_tg_id = p_new_tg_id where penalized_tg_id = p_old_tg_id;
+
+  select total_points into old_points from bot_users where tg_id = p_old_tg_id;
+  if old_points is not null and old_points <> 0 then
+    update bot_users set total_points = total_points + old_points where tg_id = p_new_tg_id;
+  end if;
+
+  delete from bot_users where tg_id = p_old_tg_id;
+end $$;
+revoke all on function bot_merge_users(text, text) from public, anon, authenticated;

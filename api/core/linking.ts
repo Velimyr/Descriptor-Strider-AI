@@ -12,7 +12,10 @@
 // Edge-кейс: TG-юзер може отримати справу, яку web-юзер уже опрацьовував.
 // Прийнятно на MVP.
 import { randomBytes } from 'node:crypto';
-import { BotUser, db, getUser, T, upsertUser } from '../telegram/storage.js';
+import { BotUser, db, getUser, T } from '../telegram/storage.js';
+
+const PREFIX = process.env.TABLE_PREFIX ?? 'bot_';
+const RPC_MERGE_USERS = `${PREFIX}merge_users`;
 
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 хвилин
 
@@ -120,25 +123,23 @@ export async function consumeLinkCode(code: string, telegramTgId: string): Promi
   };
 }
 
-// Внутрішній мерж: TG-юзер отримує бали web-юзера, web-юзер видаляється.
+// Внутрішній мерж: атомарно через SQL-функцію bot_merge_users.
+// Переносить ВСЕ: бали, submissions (з апдейтом display_name), skipped,
+// case_confirmations, daily_scores, dispatch_log, locks/authors у cases,
+// integrity_reviews. Розв'язує PK-конфлікти через ON CONFLICT.
+// Після успішного виконання web-юзера більше не існує.
 async function mergeWebIntoTg(
   webUser: BotUser,
   telegramTgId: string
 ): Promise<{ transferredPoints: number }> {
   const tgUser = await getUser(telegramTgId);
   if (!tgUser) {
-    // TG-юзер ще не існує (наприклад, перший раз /start без link). Викликач має
-    // гарантувати створення раніше. Кидаємо, бо без TG-юзера мерж неможливий.
     throw new Error('mergeWebIntoTg: TG user not found, ensure /start created it first');
   }
-  const newTotal = Math.round((tgUser.totalPoints + webUser.totalPoints) * 100) / 100;
-  await upsertUser({
-    ...tgUser,
-    totalPoints: newTotal,
+  const { error } = await db().rpc(RPC_MERGE_USERS, {
+    p_old_tg_id: webUser.tgId,
+    p_new_tg_id: telegramTgId,
   });
-  // Видаляємо web-юзера. bot_sessions cascades через FK on delete cascade.
-  // bot_submissions / bot_skipped / bot_case_confirmations лишаються з web tg_id як історія.
-  const { error: delError } = await db().from(T.users).delete().eq('tg_id', webUser.tgId);
-  if (delError) throw delError;
+  if (error) throw error;
   return { transferredPoints: webUser.totalPoints };
 }
