@@ -875,10 +875,63 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     });
   };
 
+  // Універсальний обробник: розпізнає тип за магіком всередині файлу, а не за
+  // розширенням чи MIME (це важливо, коли файл прийшов через Telegram / пошту
+  // і втратив правильне розширення).
+  const dispatchDroppedFile = async (file: File) => {
+    setMsg('');
+    try {
+      const headBuf = await file.slice(0, 5).arrayBuffer();
+      const head = new Uint8Array(headBuf);
+      const isDsds =
+        head.length >= 4 &&
+        head[0] === CONTAINER_MAGIC[0] &&
+        head[1] === CONTAINER_MAGIC[1] &&
+        head[2] === CONTAINER_MAGIC[2] &&
+        head[3] === CONTAINER_MAGIC[3];
+      const isPdf =
+        head.length >= 5 &&
+        head[0] === 0x25 && // %
+        head[1] === 0x50 && // P
+        head[2] === 0x44 && // D
+        head[3] === 0x46 && // F
+        head[4] === 0x2d;   // -
+      const isJsonLike = head.length >= 1 && (head[0] === 0x7b || head[0] === 0x20 || head[0] === 0x0a);
+      if (isDsds || isJsonLike) {
+        await importSession(file);
+        return;
+      }
+      if (isPdf) {
+        await loadPdf(file);
+        return;
+      }
+      setMsg('❌ Не вдалося розпізнати файл. Очікувався PDF або файл сесії (.dsds / .json).');
+    } catch (e: any) {
+      setMsg(`❌ Помилка при відкритті файлу: ${e?.message || e}`);
+    }
+  };
+
   const loadPdf = async (file: File) => {
-    if (!file || file.type !== 'application/pdf') {
-      setMsg('❌ Це не PDF-файл.');
+    // type у Файла від Telegram-завантажень може бути порожнім — звіряємось додатково за PDF-магіком.
+    if (!file) {
+      setMsg('❌ Файл не обрано.');
       return;
+    }
+    if (file.type && file.type !== 'application/pdf') {
+      // Перевіримо магік: %PDF- (для випадку коли .pdf перейменований / type зіпсований).
+      try {
+        const head = new Uint8Array(await file.slice(0, 5).arrayBuffer());
+        const ok =
+          head.length >= 5 &&
+          head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46 && head[4] === 0x2d;
+        if (!ok) {
+          setMsg('❌ Це не PDF-файл.');
+          return;
+        }
+      } catch {
+        setMsg('❌ Не вдалося прочитати файл.');
+        return;
+      }
     }
     setMsg('');
     setUploadDone(null);
@@ -2125,20 +2178,21 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
               e.preventDefault();
               setDragOver(false);
               const f = e.dataTransfer.files?.[0];
-              if (f) loadPdf(f);
+              if (f) dispatchDroppedFile(f);
             }}
             className={`flex flex-col items-center justify-center gap-2 p-10 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
               dragOver ? 'bg-indigo-50 border-indigo-400' : 'bg-slate-50 border-slate-300 hover:bg-slate-100'
             }`}
           >
             <UploadCloud size={36} className="text-slate-400" />
-            <div className="text-sm font-medium">Натисніть або перетягніть PDF сюди</div>
-            <div className="text-xs text-slate-500">Файл буде нарізано на справи і завантажено в канал</div>
+            <div className="text-sm font-medium">Натисніть або перетягніть PDF чи файл сесії сюди</div>
+            <div className="text-xs text-slate-500">
+              PDF буде нарізано на справи; файл сесії (.dsds / .json) — відкриє збережену роботу
+            </div>
             <input
               type="file"
-              accept="application/pdf"
               className="hidden"
-              onChange={e => e.target.files?.[0] && loadPdf(e.target.files[0])}
+              onChange={e => e.target.files?.[0] && dispatchDroppedFile(e.target.files[0])}
             />
           </label>
           <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -2147,12 +2201,11 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
               onClick={() => importInputRef.current?.click()}
               className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-medium"
             >
-              📂 Відновити збережену сесію (.json)
+              📂 Відновити збережену сесію (.dsds / .json)
             </button>
             <input
               ref={importInputRef}
               type="file"
-              accept="application/json,.json,.dsds"
               className="hidden"
               onChange={e => e.target.files?.[0] && importSession(e.target.files[0])}
             />
@@ -2241,7 +2294,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
               onClick={exportSession}
               disabled={!pdfBuffer}
               className="px-2.5 py-1.5 bg-slate-200 text-slate-700 text-xs rounded hover:bg-slate-300 disabled:opacity-50"
-              title="Зберегти PDF + усі зони у файл .json для продовження пізніше"
+              title="Зберегти PDF + усі зони у файл .dsds для продовження пізніше"
             >
               💾 Експорт
             </button>
