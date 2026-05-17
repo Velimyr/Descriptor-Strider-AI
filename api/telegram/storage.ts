@@ -17,6 +17,7 @@ export const T = {
   skipped:           `${PREFIX}skipped`,
   caseConfirmations: `${PREFIX}case_confirmations`,
   integrityReviews:  `${PREFIX}integrity_reviews`,
+  partners:          `${PREFIX}partners`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
@@ -51,6 +52,10 @@ export interface BotUser {
   pendingAction: '' | 'rename';
   createdAt: string;
   introShownAt: string; // ISO або '' якщо ще не показували
+  // Web-юзери: source='web', partnerId=<id>. Для TG — source='tg', partnerId=null.
+  // Колонки додані міграцією schema-widget-*.sql.
+  source: 'tg' | 'web';
+  partnerId: string | null;
 }
 
 export interface BotCase {
@@ -104,6 +109,8 @@ function mapUser(r: any): BotUser {
     pendingAction: (r.pending_action || '') as '' | 'rename',
     createdAt: r.created_at || '',
     introShownAt: r.intro_shown_at || '',
+    source: (r.source || 'tg') as 'tg' | 'web',
+    partnerId: r.partner_id || null,
   };
 }
 
@@ -224,6 +231,46 @@ export async function upsertUser(
       { onConflict: 'tg_id' }
     );
   if (error) throw error;
+}
+
+// Створює нового web-юзера (source='web'). tg_id має бути префіксований "web:".
+// nickname має бути унікальним по партнеру — викликач сам гарантує (через retry на collision).
+// Конфлікт на (display_name) усередині партнерського неймспейсу не валідується тут на рівні БД,
+// бо display_name унікальний глобально в існуючому коді — для web це OK через високоентропійні суфікси.
+export async function createWebUser(input: {
+  tgId: string;
+  displayName: string;
+  partnerId: string;
+}): Promise<BotUser> {
+  const { data, error } = await db()
+    .from(T.users)
+    .insert({
+      tg_id: input.tgId,
+      display_name: input.displayName,
+      total_points: 0,
+      last_dispatched_case_id: '',
+      consecutive_misses: 0,
+      status: 'active',
+      pending_action: '',
+      source: 'web',
+      partner_id: input.partnerId,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return mapUser(data);
+}
+
+// Перевірка існування юзера за nickname (для гарантії унікальності web-нікнеймів).
+export async function userExistsByDisplayName(displayName: string): Promise<boolean> {
+  const { data, error } = await db()
+    .from(T.users)
+    .select('tg_id')
+    .eq('display_name', displayName)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return !!data;
 }
 
 export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowIndex' | 'tgId'>>) {

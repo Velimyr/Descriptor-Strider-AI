@@ -358,6 +358,8 @@ async function handleMessage(msg: any) {
         pendingAction: '',
         createdAt: nowIsoUtc(),
         introShownAt: '',
+        source: 'tg',
+        partnerId: null,
       };
       await Promise.all([
         upsertUser(newUser),
