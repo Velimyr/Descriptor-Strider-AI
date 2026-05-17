@@ -5254,11 +5254,22 @@ const IntegrityView: React.FC = () => {
 // CRUD сайтів-партнерів, що встановлюють віджет blukach. API-ключ показується
 // один раз при створенні і більше ніколи — далі лише sha256 у БД.
 type PartnerTheme = 'light' | 'dark' | 'auto';
+type FloaterPosition = 'bottom-right' | 'top-right' | 'middle-right' | 'bottom-left' | 'middle-left' | 'bottom-center';
 interface PartnerCustomization {
   theme?: PartnerTheme;
   buttonColor?: string;
   buttonText?: string;
+  position?: FloaterPosition;
+  verticalOffset?: number;
 }
+const POSITION_OPTIONS: [FloaterPosition, string][] = [
+  ['bottom-right',  'Справа внизу (дефолт)'],
+  ['top-right',     'Справа вверху'],
+  ['middle-right',  'Справа посередині'],
+  ['bottom-left',   'Зліва внизу'],
+  ['middle-left',   'Зліва посередині'],
+  ['bottom-center', 'По центру внизу'],
+];
 interface Partner {
   partnerId: string;
   name: string;
@@ -5288,7 +5299,11 @@ const CustomizationFields: React.FC<{
   setButtonColor: (v: string) => void;
   buttonText: string;
   setButtonText: (v: string) => void;
-}> = ({ theme, setTheme, buttonColor, setButtonColor, buttonText, setButtonText }) => (
+  position: FloaterPosition;
+  setPosition: (v: FloaterPosition) => void;
+  verticalOffset: number;
+  setVerticalOffset: (v: number) => void;
+}> = ({ theme, setTheme, buttonColor, setButtonColor, buttonText, setButtonText, position, setPosition, verticalOffset, setVerticalOffset }) => (
   <>
     <div>
       <label className="block text-xs font-medium mb-1">Тема</label>
@@ -5343,6 +5358,35 @@ const CustomizationFields: React.FC<{
         maxLength={60}
       />
       <p className="text-xs text-slate-500 mt-1">Залиш порожнім, щоб використати дефолт «Допомогти архіву».</p>
+    </div>
+    <div>
+      <label className="block text-xs font-medium mb-1">Позиція кнопки на сторінці</label>
+      <select
+        value={position}
+        onChange={e => setPosition(e.target.value as FloaterPosition)}
+        className="w-full px-2 py-1 border rounded text-sm bg-white"
+      >
+        {POSITION_OPTIONS.map(([v, label]) => (
+          <option key={v} value={v}>{label}</option>
+        ))}
+      </select>
+    </div>
+    <div>
+      <label className="block text-xs font-medium mb-1">
+        Зміщення по вертикалі (px, від -500 до +500)
+      </label>
+      <input
+        type="number"
+        min={-500}
+        max={500}
+        step={1}
+        value={verticalOffset}
+        onChange={e => setVerticalOffset(Math.max(-500, Math.min(500, parseInt(e.target.value, 10) || 0)))}
+        className="w-full px-2 py-1 border rounded text-sm bg-white"
+      />
+      <p className="text-xs text-slate-500 mt-1">
+        Для «внизу» — позитивне значення піднімає кнопку вище. Для «вверху» — опускає нижче. Для «посередині» — зсуває по центру.
+      </p>
     </div>
   </>
 );
@@ -5501,6 +5545,8 @@ const CreatePartnerForm: React.FC<{
   const [theme, setTheme] = useState<PartnerTheme>('light');
   const [buttonColor, setButtonColor] = useState('purple');
   const [buttonText, setButtonText] = useState('');
+  const [position, setPosition] = useState<FloaterPosition>('bottom-right');
+  const [verticalOffset, setVerticalOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -5517,6 +5563,8 @@ const CreatePartnerForm: React.FC<{
           theme,
           buttonColor,
           buttonText: buttonText.trim() || undefined,
+          position,
+          verticalOffset,
         },
       });
       onCreated(r.partner, r.apiKey);
@@ -5579,6 +5627,10 @@ const CreatePartnerForm: React.FC<{
         setButtonColor={setButtonColor}
         buttonText={buttonText}
         setButtonText={setButtonText}
+        position={position}
+        setPosition={setPosition}
+        verticalOffset={verticalOffset}
+        setVerticalOffset={setVerticalOffset}
       />
       {err && <div className="text-sm text-red-600">{err}</div>}
       <div className="flex gap-2">
@@ -5605,6 +5657,8 @@ const EditPartnerForm: React.FC<{
   const [theme, setTheme] = useState<PartnerTheme>((partner.customization?.theme as PartnerTheme) || 'light');
   const [buttonColor, setButtonColor] = useState(partner.customization?.buttonColor || 'purple');
   const [buttonText, setButtonText] = useState(partner.customization?.buttonText || '');
+  const [position, setPosition] = useState<FloaterPosition>((partner.customization?.position as FloaterPosition) || 'bottom-right');
+  const [verticalOffset, setVerticalOffset] = useState(partner.customization?.verticalOffset || 0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -5620,6 +5674,8 @@ const EditPartnerForm: React.FC<{
           theme,
           buttonColor,
           buttonText: buttonText.trim() || undefined,
+          position,
+          verticalOffset,
         },
       });
       onSaved();
@@ -5677,6 +5733,10 @@ const EditPartnerForm: React.FC<{
         setButtonColor={setButtonColor}
         buttonText={buttonText}
         setButtonText={setButtonText}
+        position={position}
+        setPosition={setPosition}
+        verticalOffset={verticalOffset}
+        setVerticalOffset={setVerticalOffset}
       />
       {err && <div className="text-sm text-red-600">{err}</div>}
       <div className="flex gap-2">

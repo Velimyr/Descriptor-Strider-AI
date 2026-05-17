@@ -1,8 +1,9 @@
 // Головний компонент віджета. Стейт-машина: floater → invite → case → submitted.
 // Один файл щоб тримати MVP-бандл невеликим — рефакторити коли UX усталиться.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiClient, CasePayload, HelpTexts, QuestionDef, SubmitResult, UserStats } from './api';
+import { ApiClient, CasePayload, FloaterPosition, HelpTexts, QuestionDef, SubmitResult, UserStats } from './api';
 import { clearSession, loadSession, markIntroShown, saveSession, wasIntroShown } from './storage';
+import { computeFloaterStyle } from './theme';
 
 type HelpSection = 'menu' | 'about' | 'descStruct' | 'howToAnswer' | 'points' | 'faq';
 type Stage =
@@ -25,9 +26,11 @@ export interface AppProps {
   partnerId: string;
   buttonText: string;
   help: HelpTexts | null;
+  position: FloaterPosition;
+  verticalOffset: number;
 }
 
-export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help }) => {
+export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, position, verticalOffset }) => {
   const [stage, setStage] = useState<Stage>({ kind: 'floater' });
   const [stats, setStats] = useState<UserStats | null>(null);
   const heartbeatRef = useRef<number | null>(null);
@@ -185,7 +188,11 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help }) =>
   // ===== RENDER =====
   if (stage.kind === 'floater') {
     return (
-      <button className="blkch-floater" onClick={() => setStage({ kind: 'invite' })}>
+      <button
+        className="blkch-floater"
+        style={computeFloaterStyle(position, verticalOffset)}
+        onClick={() => setStage({ kind: 'invite' })}
+      >
         <span className="blkch-floater-avatar">Б</span>
         {buttonText}
       </button>

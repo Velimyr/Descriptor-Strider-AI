@@ -38,8 +38,7 @@
 /* ---------- Floater (кнопка у кутку) ---------- */
 .blkch-floater {
   position: fixed;
-  bottom: 24px;
-  right: 24px;
+  /* bottom/top/left/right ставляться inline-стилем з computeFloaterStyle() */
   z-index: 2147483646;
   background: var(--blkch-accent);
   color: white;

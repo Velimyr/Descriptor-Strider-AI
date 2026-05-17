@@ -24,10 +24,27 @@ export type ButtonColor = typeof BUTTON_COLOR_PRESETS[number];
 // (плюс реагує на зміну системної теми наживо).
 export type PartnerTheme = 'light' | 'dark' | 'auto';
 
+// Кутки + центри. По осі X: right / left / center. По Y: top / middle / bottom.
+export const FLOATER_POSITIONS = [
+  'bottom-right',  // дефолт
+  'top-right',
+  'middle-right',
+  'bottom-left',
+  'middle-left',
+  'bottom-center',
+] as const;
+export type FloaterPosition = typeof FLOATER_POSITIONS[number];
+
 export interface PartnerCustomization {
   theme?: PartnerTheme;
   buttonColor?: ButtonColor;
   buttonText?: string;
+  position?: FloaterPosition;
+  // Зміщення по вертикалі в пікселях. Додається до природньої координати
+  // (bottom для bottom-*, top для top-*, transform для middle-*).
+  // Допустимий діапазон -500..500. Позитивне — від краю всередину; для middle —
+  // вниз. Корисно щоб не перекривати sticky-хедер партнерського сайту.
+  verticalOffset?: number;
 }
 
 export interface Partner {
@@ -51,6 +68,12 @@ function sanitizeCustomization(raw: any): PartnerCustomization {
   if (typeof raw.buttonText === 'string') {
     const t = raw.buttonText.trim().slice(0, 60);
     if (t) out.buttonText = t;
+  }
+  if (typeof raw.position === 'string' && (FLOATER_POSITIONS as readonly string[]).includes(raw.position)) {
+    out.position = raw.position as FloaterPosition;
+  }
+  if (typeof raw.verticalOffset === 'number' && Number.isFinite(raw.verticalOffset)) {
+    out.verticalOffset = Math.max(-500, Math.min(500, Math.round(raw.verticalOffset)));
   }
   return out;
 }

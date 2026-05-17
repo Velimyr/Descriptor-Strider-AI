@@ -75,9 +75,20 @@ async function init() {
   const buttonText = config?.customization.buttonText || DEFAULT_BUTTON_TEXT;
   const partnerId = config?.partnerId || partnerIdHint;
   const help = config?.help || null;
+  const position = config?.customization.position || 'bottom-right';
+  const verticalOffset = config?.customization.verticalOffset || 0;
 
   const root = createRoot(mountPoint);
-  root.render(<App api={api} partnerId={partnerId} buttonText={buttonText} help={help} />);
+  root.render(
+    <App
+      api={api}
+      partnerId={partnerId}
+      buttonText={buttonText}
+      help={help}
+      position={position}
+      verticalOffset={verticalOffset}
+    />
+  );
 }
 
 if (document.readyState === 'loading') {

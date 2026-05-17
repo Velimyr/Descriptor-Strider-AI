@@ -54,9 +54,19 @@ export interface PartnerConfig {
     theme?: 'light' | 'dark' | 'auto';
     buttonColor?: string;
     buttonText?: string;
+    position?: FloaterPosition;
+    verticalOffset?: number;
   };
   help: HelpTexts;
 }
+
+export type FloaterPosition =
+  | 'bottom-right'
+  | 'top-right'
+  | 'middle-right'
+  | 'bottom-left'
+  | 'middle-left'
+  | 'bottom-center';
 
 export interface UserStats {
   nickname: string;

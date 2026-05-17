@@ -1,3 +1,5 @@
+import type { CSSProperties } from 'react';
+
 // Пресети кольору акценту. Назви мають збігатись з BUTTON_COLOR_PRESETS у бекенді
 // (api/core/partners.ts), щоб валідація на сервері мала сенс.
 export const COLOR_PRESETS: Record<string, { accent: string; hover: string }> = {
@@ -12,6 +14,38 @@ export const COLOR_PRESETS: Record<string, { accent: string; hover: string }> = 
 };
 
 export type ThemeMode = 'light' | 'dark' | 'auto';
+
+import type { FloaterPosition } from './api';
+
+// Обчислює inline-стиль для фікс-позиціонованої кнопки-флоатера.
+// EDGE = відступ від краю по горизонталі (фіксовано 24px).
+// verticalOffset:
+//   bottom-*: додається до bottom (позитивне = далі від нижнього краю);
+//   top-right: додається до top (позитивне = далі від верхнього краю);
+//   middle-*: додається до translateY (позитивне = нижче від центру).
+const EDGE = 24;
+const BASE = 24;
+export function computeFloaterStyle(
+  position: FloaterPosition = 'bottom-right',
+  verticalOffset = 0
+): CSSProperties {
+  const off = Math.max(-500, Math.min(500, verticalOffset || 0));
+  switch (position) {
+    case 'top-right':
+      return { top: BASE + off, right: EDGE, bottom: 'auto', left: 'auto' };
+    case 'middle-right':
+      return { top: '50%', right: EDGE, bottom: 'auto', left: 'auto', transform: `translateY(calc(-50% + ${off}px))` };
+    case 'bottom-left':
+      return { bottom: BASE + off, left: EDGE, top: 'auto', right: 'auto' };
+    case 'middle-left':
+      return { top: '50%', left: EDGE, bottom: 'auto', right: 'auto', transform: `translateY(calc(-50% + ${off}px))` };
+    case 'bottom-center':
+      return { bottom: BASE + off, left: '50%', top: 'auto', right: 'auto', transform: 'translateX(-50%)' };
+    case 'bottom-right':
+    default:
+      return { bottom: BASE + off, right: EDGE, top: 'auto', left: 'auto' };
+  }
+}
 
 function applyDarkClass(root: HTMLElement, dark: boolean) {
   if (dark) root.classList.add('blkch-dark');
