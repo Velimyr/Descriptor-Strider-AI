@@ -62,13 +62,58 @@ function darken(hex: string, ratio = 0.85): string {
   return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
 }
 
-// Застосовує тему і колір. Для 'auto' читає prefers-color-scheme і реагує
-// на її зміну. Повертає cleanup-функцію (зняти media listener).
+// Парсимо CSS background-color у RGB. Підтримуємо rgb() / rgba() / hex.
+// Повертає null якщо колір не вдалось розпарсити або повністю прозорий.
+function parseBg(s: string): { r: number; g: number; b: number } | null {
+  if (!s) return null;
+  // rgb(255, 255, 255) або rgba(255, 255, 255, 0.5) або new CSS rgb(255 255 255 / 50%)
+  const m = s.match(/rgba?\s*\(\s*([\d.]+)[ ,]+([\d.]+)[ ,]+([\d.]+)(?:[ ,/]+([\d.%]+))?\s*\)/i);
+  if (m) {
+    const a = m[4] === undefined ? 1 : (m[4].includes('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4]));
+    if (a < 0.05) return null; // повністю прозорий
+    return { r: +m[1], g: +m[2], b: +m[3] };
+  }
+  // #rgb / #rrggbb
+  const hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    const h = hex[1];
+    const exp = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    return {
+      r: parseInt(exp.slice(0, 2), 16),
+      g: parseInt(exp.slice(2, 4), 16),
+      b: parseInt(exp.slice(4, 6), 16),
+    };
+  }
+  return null;
+}
+
+// Визначає, чи сайт-носій використовує темну тему. Логіка:
+// 1. Шукаємо непрозорий background у body → html → найближчого предка.
+// 2. Рахуємо відносну яскравість (sRGB luminance). < 128 = темно.
+// Так само працюємо коли сайт використовує `class="dark"` чи custom CSS — нам важлива
+// підсумкова кольорова картина, не назва класу.
+function detectHostDarkness(): boolean {
+  const candidates: Element[] = [document.body, document.documentElement];
+  for (const el of candidates) {
+    if (!el) continue;
+    const bg = getComputedStyle(el).backgroundColor;
+    const rgb = parseBg(bg);
+    if (rgb) {
+      const luminance = 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b;
+      return luminance < 128;
+    }
+  }
+  // Fallback на системну якщо нічого не визначили.
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+// Застосовує тему і колір. Для 'auto' — реагує на тему ХОСТ-САЙТУ (не системну):
+// читає background-color body, перевіряємо повторно при змінах атрибутів/класів
+// document.documentElement (MutationObserver). Повертає cleanup-функцію.
 export function applyCustomization(
   root: HTMLElement,
   customization: { theme?: ThemeMode; buttonColor?: string; buttonColorCustom?: string }
 ): () => void {
-  // Кастомний hex (якщо валідний) має пріоритет над preset.
   if (customization.buttonColorCustom && /^#[0-9a-fA-F]{6}$/.test(customization.buttonColorCustom)) {
     const accent = customization.buttonColorCustom;
     root.style.setProperty('--blkch-accent', accent);
@@ -79,25 +124,34 @@ export function applyCustomization(
     root.style.setProperty('--blkch-accent-hover', preset.hover);
   }
 
-  // Тема: light / dark — фіксовано. auto — слухаємо системну.
   const mode = customization.theme || 'light';
-  if (mode === 'light') {
-    applyDarkClass(root, false);
-    return () => {};
+  if (mode === 'light') { applyDarkClass(root, false); return () => {}; }
+  if (mode === 'dark')  { applyDarkClass(root, true);  return () => {}; }
+
+  // auto = відстежуємо тему сайту-носія.
+  const refresh = () => applyDarkClass(root, detectHostDarkness());
+  refresh();
+
+  // Спостерігаємо за змінами класу/атрибутів на <html> і <body> — більшість тем-перемикачів
+  // саме там додають/прибирають "dark" або data-theme=...
+  const observers: MutationObserver[] = [];
+  for (const target of [document.documentElement, document.body]) {
+    if (!target) continue;
+    const obs = new MutationObserver(refresh);
+    obs.observe(target, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
+    observers.push(obs);
   }
-  if (mode === 'dark') {
-    applyDarkClass(root, true);
-    return () => {};
-  }
-  // auto
+
+  // Системна — як останній fallback (на випадок коли сайт не змінює background при тему-перемиканні
+  // взагалі і покладається повністю на prefers-color-scheme).
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
-  applyDarkClass(root, mq.matches);
-  const onChange = (e: MediaQueryListEvent) => applyDarkClass(root, e.matches);
-  // addEventListener для сучасних браузерів; addListener — fallback для старих Safari.
-  if (typeof mq.addEventListener === 'function') {
-    mq.addEventListener('change', onChange);
-    return () => mq.removeEventListener('change', onChange);
-  }
-  (mq as any).addListener(onChange);
-  return () => (mq as any).removeListener(onChange);
+  const onSys = () => refresh();
+  if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onSys);
+  else (mq as any).addListener(onSys);
+
+  return () => {
+    observers.forEach(o => o.disconnect());
+    if (typeof mq.removeEventListener === 'function') mq.removeEventListener('change', onSys);
+    else (mq as any).removeListener(onSys);
+  };
 }
