@@ -4,6 +4,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiClient, CasePayload, FloaterPosition, HelpTexts, QuestionDef, SubmitResult, UserStats } from './api';
 import { clearSession, loadSession, markIntroShown, saveSession, wasIntroShown } from './storage';
 import { computeFloaterStyle } from './theme';
+// Логотип інлайниться у бандл як base64 data-URI — віджет повністю самодостатній,
+// не потребує окремого запиту на хост-сайт.
+import logoUrl from './logo.png';
 
 type HelpSection = 'menu' | 'about' | 'descStruct' | 'howToAnswer' | 'points' | 'faq';
 type Stage =
@@ -29,9 +32,10 @@ export interface AppProps {
   position: FloaterPosition;
   verticalOffset: number;
   tgBotUsername: string;
+  buttonDisplayMode: 'text' | 'image';
 }
 
-export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, position, verticalOffset, tgBotUsername }) => {
+export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, position, verticalOffset, tgBotUsername, buttonDisplayMode }) => {
   const [stage, setStage] = useState<Stage>({ kind: 'floater' });
   const [stats, setStats] = useState<UserStats | null>(null);
   const heartbeatRef = useRef<number | null>(null);
@@ -190,12 +194,20 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, posi
   if (stage.kind === 'floater') {
     return (
       <button
-        className="blkch-floater"
+        className={`blkch-floater ${buttonDisplayMode === 'image' ? 'blkch-floater-image' : ''}`}
         style={computeFloaterStyle(position, verticalOffset)}
         onClick={() => setStage({ kind: 'invite' })}
+        title={buttonText}
+        aria-label={buttonText}
       >
-        <span className="blkch-floater-avatar">Б</span>
-        {buttonText}
+        {buttonDisplayMode === 'image' ? (
+          <img src={logoUrl} alt={buttonText} className="blkch-floater-logo" />
+        ) : (
+          <>
+            <span className="blkch-floater-avatar">Б</span>
+            {buttonText}
+          </>
+        )}
       </button>
     );
   }

@@ -26,6 +26,9 @@ export default defineConfig({
     // Базова мініфікація вистачає для CSS-in-JS.
     cssCodeSplit: false,
     minify: 'esbuild',
+    // Інлайнимо в JS усі ассети до 100KB (логотип ~33KB) — щоб бандл був
+    // самодостатнім і не вимагав окремих запитів.
+    assetsInlineLimit: 100_000,
   },
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),

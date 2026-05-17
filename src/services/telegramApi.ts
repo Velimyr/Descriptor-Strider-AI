@@ -116,7 +116,9 @@ export const tgApi = {
     customization?: {
       theme?: 'light' | 'dark' | 'auto';
       buttonColor?: string;
+      buttonColorCustom?: string;
       buttonText?: string;
+      buttonDisplayMode?: 'text' | 'image';
       position?: 'bottom-right' | 'top-right' | 'middle-right' | 'bottom-left' | 'middle-left' | 'bottom-center';
       verticalOffset?: number;
     };
@@ -131,7 +133,9 @@ export const tgApi = {
       customization: {
         theme?: 'light' | 'dark' | 'auto';
         buttonColor?: string;
+        buttonColorCustom?: string;
         buttonText?: string;
+        buttonDisplayMode?: 'text' | 'image';
         position?: 'bottom-right' | 'top-right' | 'middle-right' | 'bottom-left' | 'middle-left' | 'bottom-center';
         verticalOffset?: number;
       };

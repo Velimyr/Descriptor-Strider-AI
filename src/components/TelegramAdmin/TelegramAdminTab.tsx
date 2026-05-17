@@ -5255,10 +5255,13 @@ const IntegrityView: React.FC = () => {
 // один раз при створенні і більше ніколи — далі лише sha256 у БД.
 type PartnerTheme = 'light' | 'dark' | 'auto';
 type FloaterPosition = 'bottom-right' | 'top-right' | 'middle-right' | 'bottom-left' | 'middle-left' | 'bottom-center';
+type ButtonDisplayMode = 'text' | 'image';
 interface PartnerCustomization {
   theme?: PartnerTheme;
   buttonColor?: string;
+  buttonColorCustom?: string;
   buttonText?: string;
+  buttonDisplayMode?: ButtonDisplayMode;
   position?: FloaterPosition;
   verticalOffset?: number;
 }
@@ -5297,13 +5300,17 @@ const CustomizationFields: React.FC<{
   setTheme: (v: PartnerTheme) => void;
   buttonColor: string;
   setButtonColor: (v: string) => void;
+  buttonColorCustom: string;
+  setButtonColorCustom: (v: string) => void;
   buttonText: string;
   setButtonText: (v: string) => void;
+  buttonDisplayMode: ButtonDisplayMode;
+  setButtonDisplayMode: (v: ButtonDisplayMode) => void;
   position: FloaterPosition;
   setPosition: (v: FloaterPosition) => void;
   verticalOffset: number;
   setVerticalOffset: (v: number) => void;
-}> = ({ theme, setTheme, buttonColor, setButtonColor, buttonText, setButtonText, position, setPosition, verticalOffset, setVerticalOffset }) => (
+}> = ({ theme, setTheme, buttonColor, setButtonColor, buttonColorCustom, setButtonColorCustom, buttonText, setButtonText, buttonDisplayMode, setButtonDisplayMode, position, setPosition, verticalOffset, setVerticalOffset }) => (
   <>
     <div>
       <label className="block text-xs font-medium mb-1">Тема</label>
@@ -5349,6 +5356,59 @@ const CustomizationFields: React.FC<{
       </div>
     </div>
     <div>
+      <label className="block text-xs font-medium mb-1">
+        Кастомний колір (hex, перебиває preset вище)
+      </label>
+      <div className="flex gap-2 items-center">
+        <input
+          type="color"
+          value={buttonColorCustom || '#6b46c1'}
+          onChange={e => setButtonColorCustom(e.target.value)}
+          className="w-12 h-8 border rounded cursor-pointer"
+        />
+        <input
+          type="text"
+          value={buttonColorCustom}
+          onChange={e => setButtonColorCustom(e.target.value)}
+          placeholder="#RRGGBB або порожньо щоб скинути"
+          pattern="^#[0-9a-fA-F]{6}$"
+          className="flex-1 px-2 py-1 border rounded text-sm font-mono bg-white"
+        />
+        {buttonColorCustom && (
+          <button
+            type="button"
+            onClick={() => setButtonColorCustom('')}
+            className="px-2 py-1 text-xs border rounded text-slate-600 hover:bg-slate-50"
+            title="Очистити (використати preset)"
+          >Очистити</button>
+        )}
+      </div>
+      <p className="text-xs text-slate-500 mt-1">Формат: #RRGGBB. Поки задано — preset вище ігнорується.</p>
+    </div>
+    <div>
+      <label className="block text-xs font-medium mb-1">Варіант кнопки</label>
+      <div className="flex gap-2">
+        {([
+          ['text', 'Текст + аватар'],
+          ['image', 'Тільки логотип'],
+        ] as [ButtonDisplayMode, string][]).map(([v, label]) => (
+          <button
+            type="button"
+            key={v}
+            onClick={() => setButtonDisplayMode(v)}
+            className={`px-3 py-1 rounded border text-sm ${
+              buttonDisplayMode === v ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-slate-500 mt-1">
+        «Тільки логотип» — кругла кнопка-іконка Блукача без тексту (компактніше).
+      </p>
+    </div>
+    <div>
       <label className="block text-xs font-medium mb-1">Текст кнопки (до 60 символів)</label>
       <input
         value={buttonText}
@@ -5356,8 +5416,13 @@ const CustomizationFields: React.FC<{
         className="w-full px-2 py-1 border rounded text-sm bg-white"
         placeholder="Допомогти архіву"
         maxLength={60}
+        disabled={buttonDisplayMode === 'image'}
       />
-      <p className="text-xs text-slate-500 mt-1">Залиш порожнім, щоб використати дефолт «Допомогти архіву».</p>
+      <p className="text-xs text-slate-500 mt-1">
+        {buttonDisplayMode === 'image'
+          ? 'Не використовується в режимі «Тільки логотип» (буде у tooltip/aria-label).'
+          : 'Залиш порожнім, щоб використати дефолт «Допомогти архіву».'}
+      </p>
     </div>
     <div>
       <label className="block text-xs font-medium mb-1">Позиція кнопки на сторінці</label>
@@ -5544,7 +5609,9 @@ const CreatePartnerForm: React.FC<{
   const [origins, setOrigins] = useState('');
   const [theme, setTheme] = useState<PartnerTheme>('light');
   const [buttonColor, setButtonColor] = useState('purple');
+  const [buttonColorCustom, setButtonColorCustom] = useState('');
   const [buttonText, setButtonText] = useState('');
+  const [buttonDisplayMode, setButtonDisplayMode] = useState<ButtonDisplayMode>('text');
   const [position, setPosition] = useState<FloaterPosition>('bottom-right');
   const [verticalOffset, setVerticalOffset] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -5562,7 +5629,9 @@ const CreatePartnerForm: React.FC<{
         customization: {
           theme,
           buttonColor,
+          buttonColorCustom: buttonColorCustom.trim() || undefined,
           buttonText: buttonText.trim() || undefined,
+          buttonDisplayMode,
           position,
           verticalOffset,
         },
@@ -5625,8 +5694,12 @@ const CreatePartnerForm: React.FC<{
         setTheme={setTheme}
         buttonColor={buttonColor}
         setButtonColor={setButtonColor}
+        buttonColorCustom={buttonColorCustom}
+        setButtonColorCustom={setButtonColorCustom}
         buttonText={buttonText}
         setButtonText={setButtonText}
+        buttonDisplayMode={buttonDisplayMode}
+        setButtonDisplayMode={setButtonDisplayMode}
         position={position}
         setPosition={setPosition}
         verticalOffset={verticalOffset}
@@ -5656,7 +5729,9 @@ const EditPartnerForm: React.FC<{
   const [origins, setOrigins] = useState(partner.allowedOrigins.join('\n'));
   const [theme, setTheme] = useState<PartnerTheme>((partner.customization?.theme as PartnerTheme) || 'light');
   const [buttonColor, setButtonColor] = useState(partner.customization?.buttonColor || 'purple');
+  const [buttonColorCustom, setButtonColorCustom] = useState(partner.customization?.buttonColorCustom || '');
   const [buttonText, setButtonText] = useState(partner.customization?.buttonText || '');
+  const [buttonDisplayMode, setButtonDisplayMode] = useState<ButtonDisplayMode>((partner.customization?.buttonDisplayMode as ButtonDisplayMode) || 'text');
   const [position, setPosition] = useState<FloaterPosition>((partner.customization?.position as FloaterPosition) || 'bottom-right');
   const [verticalOffset, setVerticalOffset] = useState(partner.customization?.verticalOffset || 0);
   const [busy, setBusy] = useState(false);
@@ -5673,7 +5748,9 @@ const EditPartnerForm: React.FC<{
         customization: {
           theme,
           buttonColor,
+          buttonColorCustom: buttonColorCustom.trim() || undefined,
           buttonText: buttonText.trim() || undefined,
+          buttonDisplayMode,
           position,
           verticalOffset,
         },
@@ -5731,8 +5808,12 @@ const EditPartnerForm: React.FC<{
         setTheme={setTheme}
         buttonColor={buttonColor}
         setButtonColor={setButtonColor}
+        buttonColorCustom={buttonColorCustom}
+        setButtonColorCustom={setButtonColorCustom}
         buttonText={buttonText}
         setButtonText={setButtonText}
+        buttonDisplayMode={buttonDisplayMode}
+        setButtonDisplayMode={setButtonDisplayMode}
         position={position}
         setPosition={setPosition}
         verticalOffset={verticalOffset}

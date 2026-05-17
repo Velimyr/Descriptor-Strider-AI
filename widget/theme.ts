@@ -52,16 +52,32 @@ function applyDarkClass(root: HTMLElement, dark: boolean) {
   else root.classList.remove('blkch-dark');
 }
 
+// Затемнюємо hex на ~10% для hover-стану кастомного кольору.
+function darken(hex: string, ratio = 0.85): string {
+  if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return hex;
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.max(0, Math.min(255, Math.round(((n >> 16) & 0xff) * ratio)));
+  const g = Math.max(0, Math.min(255, Math.round(((n >> 8) & 0xff) * ratio)));
+  const b = Math.max(0, Math.min(255, Math.round((n & 0xff) * ratio)));
+  return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+}
+
 // Застосовує тему і колір. Для 'auto' читає prefers-color-scheme і реагує
 // на її зміну. Повертає cleanup-функцію (зняти media listener).
 export function applyCustomization(
   root: HTMLElement,
-  customization: { theme?: ThemeMode; buttonColor?: string }
+  customization: { theme?: ThemeMode; buttonColor?: string; buttonColorCustom?: string }
 ): () => void {
-  // Колір — статичний, виставляємо одразу.
-  const preset = COLOR_PRESETS[customization.buttonColor || 'purple'] || COLOR_PRESETS.purple;
-  root.style.setProperty('--blkch-accent', preset.accent);
-  root.style.setProperty('--blkch-accent-hover', preset.hover);
+  // Кастомний hex (якщо валідний) має пріоритет над preset.
+  if (customization.buttonColorCustom && /^#[0-9a-fA-F]{6}$/.test(customization.buttonColorCustom)) {
+    const accent = customization.buttonColorCustom;
+    root.style.setProperty('--blkch-accent', accent);
+    root.style.setProperty('--blkch-accent-hover', darken(accent));
+  } else {
+    const preset = COLOR_PRESETS[customization.buttonColor || 'purple'] || COLOR_PRESETS.purple;
+    root.style.setProperty('--blkch-accent', preset.accent);
+    root.style.setProperty('--blkch-accent-hover', preset.hover);
+  }
 
   // Тема: light / dark — фіксовано. auto — слухаємо системну.
   const mode = customization.theme || 'light';

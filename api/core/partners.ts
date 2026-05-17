@@ -35,15 +35,20 @@ export const FLOATER_POSITIONS = [
 ] as const;
 export type FloaterPosition = typeof FLOATER_POSITIONS[number];
 
+// Варіант відображення кнопки: текст з аватаром (default) або тільки логотип.
+export type ButtonDisplayMode = 'text' | 'image';
+
 export interface PartnerCustomization {
   theme?: PartnerTheme;
+  // buttonColor — preset з whitelist. Якщо задано buttonColorCustom — він перебиває preset.
   buttonColor?: ButtonColor;
+  // Кастомний hex-колір (#RRGGBB), вибирається коли preset не підходить.
+  buttonColorCustom?: string;
   buttonText?: string;
+  buttonDisplayMode?: ButtonDisplayMode;
   position?: FloaterPosition;
-  // Зміщення по вертикалі в пікселях. Додається до природньої координати
-  // (bottom для bottom-*, top для top-*, transform для middle-*).
-  // Допустимий діапазон -500..500. Позитивне — від краю всередину; для middle —
-  // вниз. Корисно щоб не перекривати sticky-хедер партнерського сайту.
+  // Зміщення по вертикалі в пікселях. -500..500. Позитивне — від краю всередину;
+  // для middle — вниз. Корисно щоб не перекривати sticky-хедер партнерського сайту.
   verticalOffset?: number;
 }
 
@@ -68,6 +73,15 @@ function sanitizeCustomization(raw: any): PartnerCustomization {
   if (typeof raw.buttonText === 'string') {
     const t = raw.buttonText.trim().slice(0, 60);
     if (t) out.buttonText = t;
+  }
+  if (typeof raw.buttonColorCustom === 'string') {
+    // Приймаємо тільки #RRGGBB (6 hex). Це достатньо для UX і блокує CSS-injection
+    // (rgba(...), var(...), url(...) тощо).
+    const c = raw.buttonColorCustom.trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(c)) out.buttonColorCustom = c.toLowerCase();
+  }
+  if (raw.buttonDisplayMode === 'text' || raw.buttonDisplayMode === 'image') {
+    out.buttonDisplayMode = raw.buttonDisplayMode;
   }
   if (typeof raw.position === 'string' && (FLOATER_POSITIONS as readonly string[]).includes(raw.position)) {
     out.position = raw.position as FloaterPosition;

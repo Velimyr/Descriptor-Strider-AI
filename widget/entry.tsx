@@ -70,6 +70,7 @@ async function init() {
   applyCustomization(mountPoint, {
     theme: config?.customization.theme,
     buttonColor: config?.customization.buttonColor,
+    buttonColorCustom: config?.customization.buttonColorCustom,
   });
 
   const buttonText = config?.customization.buttonText || DEFAULT_BUTTON_TEXT;
@@ -78,6 +79,7 @@ async function init() {
   const position = config?.customization.position || 'bottom-right';
   const verticalOffset = config?.customization.verticalOffset || 0;
   const tgBotUsername = config?.tgBotUsername || 'descriptorstriderbot';
+  const buttonDisplayMode: 'text' | 'image' = config?.customization.buttonDisplayMode === 'image' ? 'image' : 'text';
 
   const root = createRoot(mountPoint);
   root.render(
@@ -89,6 +91,7 @@ async function init() {
       position={position}
       verticalOffset={verticalOffset}
       tgBotUsername={tgBotUsername}
+      buttonDisplayMode={buttonDisplayMode}
     />
   );
 }

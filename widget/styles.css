@@ -61,6 +61,15 @@
   background: #fff; color: var(--blkch-accent); display: flex;
   align-items: center; justify-content: center; font-weight: 700;
 }
+/* Image-mode floater: круглий, без тексту, тільки логотип всередині */
+.blkch-floater.blkch-floater-image {
+  width: 64px; height: 64px; padding: 0; border-radius: 50%;
+  justify-content: center;
+}
+.blkch-floater-logo {
+  width: 48px; height: 48px; border-radius: 50%;
+  object-fit: cover; display: block;
+}
 
 /* ---------- Modal backdrop ---------- */
 .blkch-backdrop {

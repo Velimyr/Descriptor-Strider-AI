@@ -53,7 +53,9 @@ export interface PartnerConfig {
   customization: {
     theme?: 'light' | 'dark' | 'auto';
     buttonColor?: string;
+    buttonColorCustom?: string;
     buttonText?: string;
+    buttonDisplayMode?: 'text' | 'image';
     position?: FloaterPosition;
     verticalOffset?: number;
   };
