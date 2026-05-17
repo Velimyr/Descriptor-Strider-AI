@@ -49,14 +49,11 @@ export async function requirePartner(req: Request, res: Response, next: NextFunc
 
   const origin = req.headers.origin as string | undefined;
   if (!isOriginAllowed(partner, origin)) {
-    // Діагностичне повідомлення: повертаємо incoming origin і дозволений список,
-    // щоб у консолі браузера відразу було видно різницю (типова проблема — trailing slash,
-    // інший протокол, port mismatch). Це безпечно бо partner вже автентифікований ключем.
+    // Повертаємо тільки incoming_origin — щоб партнер міг порівняти зі своїм списком
+    // в адмінці. Сам список не розкриваємо.
     return res.status(403).json({
       error: 'origin not allowed for this partner',
       incoming_origin: origin || '(missing Origin header)',
-      allowed_origins: partner.allowedOrigins,
-      hint: 'Origin must match exactly (no trailing slash). For local testing, add http://localhost:PORT to allowed_origins.',
     });
   }
   // Тепер можемо вставити CORS-заголовок з конкретним allowed origin.
