@@ -29,6 +29,19 @@ const router = express.Router();
 // після успішної валідації origin.
 router.use(widgetCors);
 
+// ---------- PARTNER CONFIG ----------
+// Публічна (без сесії) конфігурація для віджета: тема, колір, текст кнопки, префікс ніку.
+// Викликається віджетом одразу після завантаження бандла — до того як юзер щось натиснув.
+router.get('/partner-config', requirePartner, async (req, res) => {
+  const p = req.partner!;
+  res.json({
+    partner_id: p.partnerId,
+    name: p.name,
+    nickname_prefix: p.nicknamePrefix,
+    customization: p.customization,
+  });
+});
+
 // ---------- SESSION ----------
 router.post('/session/start', requirePartner, async (req, res) => {
   try {

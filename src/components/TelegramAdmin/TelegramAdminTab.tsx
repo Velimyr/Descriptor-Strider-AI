@@ -5253,6 +5253,11 @@ const IntegrityView: React.FC = () => {
 // ==================== PARTNERS VIEW ====================
 // CRUD сайтів-партнерів, що встановлюють віджет blukach. API-ключ показується
 // один раз при створенні і більше ніколи — далі лише sha256 у БД.
+interface PartnerCustomization {
+  theme?: 'light' | 'dark';
+  buttonColor?: string;
+  buttonText?: string;
+}
 interface Partner {
   partnerId: string;
   name: string;
@@ -5260,7 +5265,79 @@ interface Partner {
   allowedOrigins: string[];
   active: boolean;
   createdAt: string;
+  customization: PartnerCustomization;
 }
+
+const BUTTON_COLOR_OPTIONS = [
+  { value: 'purple', label: 'Фіолетовий (дефолт)', swatch: '#6b46c1' },
+  { value: 'blue',   label: 'Синій',               swatch: '#3182ce' },
+  { value: 'green',  label: 'Зелений',             swatch: '#38a169' },
+  { value: 'red',    label: 'Червоний',            swatch: '#e53e3e' },
+  { value: 'orange', label: 'Помаранчевий',        swatch: '#dd6b20' },
+  { value: 'slate',  label: 'Сірий',               swatch: '#4a5568' },
+  { value: 'pink',   label: 'Рожевий',             swatch: '#d53f8c' },
+  { value: 'teal',   label: 'Бірюзовий',           swatch: '#319795' },
+];
+
+// Спільний UI-блок «Кастомізація віджета» — використовується і в Create, і в Edit формах.
+const CustomizationFields: React.FC<{
+  theme: 'light' | 'dark';
+  setTheme: (v: 'light' | 'dark') => void;
+  buttonColor: string;
+  setButtonColor: (v: string) => void;
+  buttonText: string;
+  setButtonText: (v: string) => void;
+}> = ({ theme, setTheme, buttonColor, setButtonColor, buttonText, setButtonText }) => (
+  <>
+    <div>
+      <label className="block text-xs font-medium mb-1">Тема</label>
+      <div className="flex gap-2">
+        {(['light', 'dark'] as const).map(t => (
+          <button
+            type="button"
+            key={t}
+            onClick={() => setTheme(t)}
+            className={`px-3 py-1 rounded border text-sm ${
+              theme === t ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600'
+            }`}
+          >
+            {t === 'light' ? 'Світла' : 'Темна'}
+          </button>
+        ))}
+      </div>
+    </div>
+    <div>
+      <label className="block text-xs font-medium mb-1">Колір кнопки</label>
+      <div className="flex gap-2 flex-wrap">
+        {BUTTON_COLOR_OPTIONS.map(opt => (
+          <button
+            type="button"
+            key={opt.value}
+            onClick={() => setButtonColor(opt.value)}
+            className={`px-2 py-1 rounded border text-xs flex items-center gap-1.5 ${
+              buttonColor === opt.value ? 'border-slate-800 ring-2 ring-slate-300' : 'border-slate-300 bg-white'
+            }`}
+            title={opt.label}
+          >
+            <span style={{ width: 14, height: 14, background: opt.swatch, borderRadius: 3, display: 'inline-block' }} />
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+    <div>
+      <label className="block text-xs font-medium mb-1">Текст кнопки (до 60 символів)</label>
+      <input
+        value={buttonText}
+        onChange={e => setButtonText(e.target.value)}
+        className="w-full px-2 py-1 border rounded text-sm bg-white"
+        placeholder="Допомогти архіву"
+        maxLength={60}
+      />
+      <p className="text-xs text-slate-500 mt-1">Залиш порожнім, щоб використати дефолт «Допомогти архіву».</p>
+    </div>
+  </>
+);
 
 const PartnersView: React.FC = () => {
   const [partners, setPartners] = useState<Partner[]>([]);
@@ -5413,6 +5490,9 @@ const CreatePartnerForm: React.FC<{
   const [name, setName] = useState('');
   const [nicknamePrefix, setNicknamePrefix] = useState('');
   const [origins, setOrigins] = useState('');
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [buttonColor, setButtonColor] = useState('purple');
+  const [buttonText, setButtonText] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -5425,6 +5505,11 @@ const CreatePartnerForm: React.FC<{
         name: name.trim(),
         nicknamePrefix: nicknamePrefix.trim(),
         allowedOrigins: origins.split('\n').map(s => s.trim()).filter(Boolean),
+        customization: {
+          theme,
+          buttonColor,
+          buttonText: buttonText.trim() || undefined,
+        },
       });
       onCreated(r.partner, r.apiKey);
     } catch (e: any) {
@@ -5477,6 +5562,16 @@ const CreatePartnerForm: React.FC<{
           placeholder="https://archium.org&#10;https://www.archium.org"
         />
       </div>
+      <hr className="border-slate-200" />
+      <h4 className="text-sm font-semibold">Кастомізація віджета</h4>
+      <CustomizationFields
+        theme={theme}
+        setTheme={setTheme}
+        buttonColor={buttonColor}
+        setButtonColor={setButtonColor}
+        buttonText={buttonText}
+        setButtonText={setButtonText}
+      />
       {err && <div className="text-sm text-red-600">{err}</div>}
       <div className="flex gap-2">
         <button type="submit" disabled={busy} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm disabled:opacity-50">
@@ -5499,6 +5594,9 @@ const EditPartnerForm: React.FC<{
   const [name, setName] = useState(partner.name);
   const [nicknamePrefix, setNicknamePrefix] = useState(partner.nicknamePrefix);
   const [origins, setOrigins] = useState(partner.allowedOrigins.join('\n'));
+  const [theme, setTheme] = useState<'light' | 'dark'>(partner.customization?.theme || 'light');
+  const [buttonColor, setButtonColor] = useState(partner.customization?.buttonColor || 'purple');
+  const [buttonText, setButtonText] = useState(partner.customization?.buttonText || '');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -5510,6 +5608,11 @@ const EditPartnerForm: React.FC<{
         name: name.trim(),
         nicknamePrefix: nicknamePrefix.trim(),
         allowedOrigins: origins.split('\n').map(s => s.trim()).filter(Boolean),
+        customization: {
+          theme,
+          buttonColor,
+          buttonText: buttonText.trim() || undefined,
+        },
       });
       onSaved();
     } catch (e: any) {
@@ -5557,6 +5660,16 @@ const EditPartnerForm: React.FC<{
           Без trailing slash. Кожна піддомен/протокол — окремий рядок.
         </p>
       </div>
+      <hr className="border-slate-200" />
+      <h4 className="text-sm font-semibold">Кастомізація віджета</h4>
+      <CustomizationFields
+        theme={theme}
+        setTheme={setTheme}
+        buttonColor={buttonColor}
+        setButtonColor={setButtonColor}
+        buttonText={buttonText}
+        setButtonText={setButtonText}
+      />
       {err && <div className="text-sm text-red-600">{err}</div>}
       <div className="flex gap-2">
         <button type="submit" disabled={busy} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm disabled:opacity-50">

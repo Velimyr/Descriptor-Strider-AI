@@ -37,6 +37,17 @@ export interface SubmitResult {
   actionTaken: string;
 }
 
+export interface PartnerConfig {
+  partnerId: string;
+  name: string;
+  nicknamePrefix: string;
+  customization: {
+    theme?: 'light' | 'dark';
+    buttonColor?: string;
+    buttonText?: string;
+  };
+}
+
 export interface UserStats {
   nickname: string;
   total: number;
@@ -74,6 +85,16 @@ export class ApiClient {
       throw err;
     }
     return res.json() as Promise<T>;
+  }
+
+  async partnerConfig(): Promise<PartnerConfig> {
+    const r = await this.req<any>('/partner-config', { method: 'GET', headers: this.headers() });
+    return {
+      partnerId: r.partner_id,
+      name: r.name,
+      nicknamePrefix: r.nickname_prefix,
+      customization: r.customization || {},
+    };
   }
 
   startSession(): Promise<{ session_token: string; user_id: string; nickname: string }> {

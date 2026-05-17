@@ -43,3 +43,8 @@ alter table bot_users
   add  constraint bot_users_partner_fk
   foreign key (partner_id) references bot_partners(partner_id) on delete set null;
 create index if not exists idx_users_source_partner on bot_users(source, partner_id);
+
+-- ========== customization: тема / колір кнопки / текст кнопки ==========
+-- jsonb-обʼєкт. Ключі: theme ('light'|'dark'), buttonColor (один із пресетів),
+-- buttonText (рядок). Дефолти живуть у віджеті.
+alter table bot_partners add column if not exists customization jsonb not null default '{}'::jsonb;

@@ -910,7 +910,7 @@ router.get('/admin/partners', async (req, res) => {
 
 router.post('/admin/partners', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { partnerId, name, nicknamePrefix, allowedOrigins } = req.body || {};
+  const { partnerId, name, nicknamePrefix, allowedOrigins, customization } = req.body || {};
   if (!partnerId || !name || !nicknamePrefix) {
     return res.status(400).json({ error: 'partnerId, name, nicknamePrefix required' });
   }
@@ -920,8 +920,7 @@ router.post('/admin/partners', async (req, res) => {
   const origins = Array.isArray(allowedOrigins) ? allowedOrigins.map(String).filter(Boolean) : [];
   try {
     const { createPartner } = await import('../core/partners.js');
-    const result = await createPartner({ partnerId, name, nicknamePrefix, allowedOrigins: origins });
-    // apiKey показуємо тут і більше ніколи — клієнт має його скопіювати.
+    const result = await createPartner({ partnerId, name, nicknamePrefix, allowedOrigins: origins, customization });
     res.json({ partner: result.partner, apiKey: result.apiKey });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'internal' });
@@ -930,7 +929,7 @@ router.post('/admin/partners', async (req, res) => {
 
 router.patch('/admin/partners/:id', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { name, nicknamePrefix, allowedOrigins, active } = req.body || {};
+  const { name, nicknamePrefix, allowedOrigins, active, customization } = req.body || {};
   try {
     const { updatePartner } = await import('../core/partners.js');
     await updatePartner(req.params.id, {
@@ -938,6 +937,7 @@ router.patch('/admin/partners/:id', async (req, res) => {
       nicknamePrefix,
       allowedOrigins,
       active,
+      customization,
     });
     res.json({ ok: true });
   } catch (e: any) {

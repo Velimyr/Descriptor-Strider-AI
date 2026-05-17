@@ -113,10 +113,17 @@ export const tgApi = {
     name: string;
     nicknamePrefix: string;
     allowedOrigins: string[];
+    customization?: { theme?: 'light' | 'dark'; buttonColor?: string; buttonText?: string };
   }) => call('/admin/partners', { method: 'POST', body: JSON.stringify(data) }),
   updatePartner: (
     partnerId: string,
-    patch: Partial<{ name: string; nicknamePrefix: string; allowedOrigins: string[]; active: boolean }>
+    patch: Partial<{
+      name: string;
+      nicknamePrefix: string;
+      allowedOrigins: string[];
+      active: boolean;
+      customization: { theme?: 'light' | 'dark'; buttonColor?: string; buttonText?: string };
+    }>
   ) =>
     call(`/admin/partners/${encodeURIComponent(partnerId)}`, {
       method: 'PATCH',

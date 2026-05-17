@@ -5,31 +5,34 @@
 //           data-api-base="https://blukach.app"
 //           async></script>
 //
-// На завантаженні: знаходить свій <script>, читає data-атрибути, монтує React-додаток
-// у Shadow DOM (повна ізоляція стилів від хост-сторінки).
+// Послідовність ініціалізації:
+//   1. Знаходимо наш <script>, читаємо data-атрибути.
+//   2. Створюємо shadow root, інлайнимо CSS.
+//   3. Тягнемо partner-config (тема, колір, текст кнопки) — швидкий публічний запит.
+//   4. Застосовуємо тему/колір до root.
+//   5. Монтуємо React-додаток.
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { ApiClient } from './api';
+import { ApiClient, PartnerConfig } from './api';
 import { App } from './App';
+import { applyCustomization } from './theme';
 import widgetCss from './styles.css?inline';
 
+const DEFAULT_BUTTON_TEXT = 'Допомогти архіву';
+
 function findOwnScript(): HTMLScriptElement | null {
-  // У продакшні шукаємо за data-partner-key. Якщо є кілька — беремо перший.
   const all = Array.from(document.scripts) as HTMLScriptElement[];
   return all.find(s => s.dataset.partnerKey) || null;
 }
 
-function init() {
+async function init() {
   const script = findOwnScript();
   if (!script) {
     console.warn('[blukach-widget] no script with data-partner-key found');
     return;
   }
   const partnerKey = script.dataset.partnerKey || '';
-  // partnerId — публічна частина (slug). Потрібен для localStorage namespace.
-  // Якщо не вказаний — fallback на перші 8 символів ключа.
-  const partnerId = script.dataset.partnerId || partnerKey.slice(0, 12);
-  // Базовий URL: за замовчанням походить з src самого скрипта.
+  const partnerIdHint = script.dataset.partnerId || partnerKey.slice(0, 12);
   const apiBase =
     script.dataset.apiBase ||
     (script.src ? new URL(script.src).origin : window.location.origin);
@@ -44,7 +47,6 @@ function init() {
   document.body.appendChild(host);
   const shadow = host.attachShadow({ mode: 'open' });
 
-  // Інлайнимо CSS у shadow root.
   const style = document.createElement('style');
   style.textContent = widgetCss;
   shadow.appendChild(style);
@@ -54,8 +56,27 @@ function init() {
   shadow.appendChild(mountPoint);
 
   const api = new ApiClient({ baseUrl: apiBase, partnerKey });
+
+  // Тягнемо partner-config. Якщо падає (403, мережа) — мовчки беремо дефолти
+  // і показуємо віджет з дефолтним стилем; реальна помилка зʼявиться коли юзер
+  // натисне кнопку (у поп-апі побачить error stage).
+  let config: PartnerConfig | null = null;
+  try {
+    config = await api.partnerConfig();
+  } catch (e) {
+    console.warn('[blukach-widget] partner-config failed, using defaults', e);
+  }
+
+  applyCustomization(mountPoint, {
+    theme: config?.customization.theme,
+    buttonColor: config?.customization.buttonColor,
+  });
+
+  const buttonText = config?.customization.buttonText || DEFAULT_BUTTON_TEXT;
+  const partnerId = config?.partnerId || partnerIdHint;
+
   const root = createRoot(mountPoint);
-  root.render(<App api={api} partnerId={partnerId} />);
+  root.render(<App api={api} partnerId={partnerId} buttonText={buttonText} />);
 }
 
 if (document.readyState === 'loading') {

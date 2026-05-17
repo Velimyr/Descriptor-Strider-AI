@@ -18,9 +18,10 @@ const HEARTBEAT_MS = 30_000;
 export interface AppProps {
   api: ApiClient;
   partnerId: string;
+  buttonText: string;
 }
 
-export const App: React.FC<AppProps> = ({ api, partnerId }) => {
+export const App: React.FC<AppProps> = ({ api, partnerId, buttonText }) => {
   const [stage, setStage] = useState<Stage>({ kind: 'floater' });
   const [stats, setStats] = useState<UserStats | null>(null);
   const heartbeatRef = useRef<number | null>(null);
@@ -136,7 +137,7 @@ export const App: React.FC<AppProps> = ({ api, partnerId }) => {
     return (
       <button className="blkch-floater" onClick={() => setStage({ kind: 'invite' })}>
         <span className="blkch-floater-avatar">Б</span>
-        Допомогти архіву
+        {buttonText}
       </button>
     );
   }

@@ -5,6 +5,27 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { db, T } from '../telegram/storage.js';
 
+// Допустимі значення для presetColor у кастомізації віджета. Кожне мапиться
+// на конкретний hex у віджеті (widget/App.tsx) — щоб партнер не міг ввести
+// довільне значення CSS і зламати UI.
+export const BUTTON_COLOR_PRESETS = [
+  'purple',
+  'blue',
+  'green',
+  'red',
+  'orange',
+  'slate',
+  'pink',
+  'teal',
+] as const;
+export type ButtonColor = typeof BUTTON_COLOR_PRESETS[number];
+
+export interface PartnerCustomization {
+  theme?: 'light' | 'dark';
+  buttonColor?: ButtonColor;
+  buttonText?: string;
+}
+
 export interface Partner {
   partnerId: string;
   name: string;
@@ -13,6 +34,21 @@ export interface Partner {
   allowedOrigins: string[];
   active: boolean;
   createdAt: string;
+  customization: PartnerCustomization;
+}
+
+function sanitizeCustomization(raw: any): PartnerCustomization {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: PartnerCustomization = {};
+  if (raw.theme === 'light' || raw.theme === 'dark') out.theme = raw.theme;
+  if (typeof raw.buttonColor === 'string' && (BUTTON_COLOR_PRESETS as readonly string[]).includes(raw.buttonColor)) {
+    out.buttonColor = raw.buttonColor as ButtonColor;
+  }
+  if (typeof raw.buttonText === 'string') {
+    const t = raw.buttonText.trim().slice(0, 60);
+    if (t) out.buttonText = t;
+  }
+  return out;
 }
 
 function mapPartner(r: any): Partner {
@@ -24,6 +60,7 @@ function mapPartner(r: any): Partner {
     allowedOrigins: r.allowed_origins || [],
     active: !!r.active,
     createdAt: r.created_at || '',
+    customization: sanitizeCustomization(r.customization),
   };
 }
 
@@ -42,6 +79,7 @@ export async function createPartner(input: {
   name: string;
   nicknamePrefix: string;
   allowedOrigins: string[];
+  customization?: PartnerCustomization;
 }): Promise<{ partner: Partner; apiKey: string }> {
   const apiKey = generateApiKey();
   const apiKeyHash = hashApiKey(apiKey);
@@ -54,6 +92,7 @@ export async function createPartner(input: {
       api_key_hash: apiKeyHash,
       allowed_origins: input.allowedOrigins.map(normalizeOrigin).filter(Boolean),
       active: true,
+      customization: sanitizeCustomization(input.customization),
     })
     .select()
     .single();
@@ -95,7 +134,7 @@ export async function getPartnerByApiKey(apiKey: string): Promise<Partner | null
 
 export async function updatePartner(
   partnerId: string,
-  patch: Partial<Pick<Partner, 'name' | 'nicknamePrefix' | 'allowedOrigins' | 'active'>>
+  patch: Partial<Pick<Partner, 'name' | 'nicknamePrefix' | 'allowedOrigins' | 'active' | 'customization'>>
 ): Promise<void> {
   const row: Record<string, unknown> = {};
   if (patch.name !== undefined) row.name = patch.name;
@@ -104,6 +143,7 @@ export async function updatePartner(
     row.allowed_origins = patch.allowedOrigins.map(normalizeOrigin).filter(Boolean);
   }
   if (patch.active !== undefined) row.active = patch.active;
+  if (patch.customization !== undefined) row.customization = sanitizeCustomization(patch.customization);
   if (Object.keys(row).length === 0) return;
   const { error } = await db().from(T.partners).update(row).eq('partner_id', partnerId);
   if (error) throw error;

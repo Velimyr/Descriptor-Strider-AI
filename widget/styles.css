@@ -1,10 +1,37 @@
 /* Базові стилі віджета. Інлайняться у Shadow Root → не конфліктують зі стилями партнера. */
-:host, .blkch-root {
-  all: initial;
+.blkch-root {
+  /* CSS-змінні: тема (light/dark) + акцентний колір. Перевизначаються JS-ом
+     при ініціалізації, якщо у партнера є customization. */
+  --blkch-accent: #6b46c1;
+  --blkch-accent-hover: #553c9a;
+  --blkch-bg: #ffffff;
+  --blkch-bg-secondary: #f3f3f3;
+  --blkch-bg-modal: #ffffff;
+  --blkch-text: #1a1a1a;
+  --blkch-text-secondary: #555;
+  --blkch-text-muted: #888;
+  --blkch-border: #d0d0d0;
+  --blkch-border-soft: #eee;
+  --blkch-success-bg: #e6fffa;
+  --blkch-success-text: #2c7a7b;
+  --blkch-danger: #c53030;
+
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
-  color: #1a1a1a;
+  color: var(--blkch-text);
   line-height: 1.4;
+}
+.blkch-root.blkch-dark {
+  --blkch-bg: #1a1a1a;
+  --blkch-bg-secondary: #2a2a2a;
+  --blkch-bg-modal: #232323;
+  --blkch-text: #f0f0f0;
+  --blkch-text-secondary: #b8b8b8;
+  --blkch-text-muted: #808080;
+  --blkch-border: #404040;
+  --blkch-border-soft: #2e2e2e;
+  --blkch-success-bg: #1c3d3a;
+  --blkch-success-text: #7eddd6;
 }
 .blkch-root *, .blkch-root *::before, .blkch-root *::after { box-sizing: border-box; }
 
@@ -14,23 +41,25 @@
   bottom: 24px;
   right: 24px;
   z-index: 2147483646;
-  background: #6b46c1;
+  background: var(--blkch-accent);
   color: white;
   border-radius: 9999px;
   padding: 12px 18px;
   cursor: pointer;
   box-shadow: 0 4px 20px rgba(0,0,0,.15);
   font-weight: 600;
+  font-family: inherit;
+  font-size: 14px;
   display: flex;
   align-items: center;
   gap: 8px;
   border: none;
-  transition: transform .15s ease, box-shadow .15s ease;
+  transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
 }
-.blkch-floater:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(0,0,0,.2); }
+.blkch-floater:hover { background: var(--blkch-accent-hover); transform: translateY(-2px); box-shadow: 0 8px 28px rgba(0,0,0,.2); }
 .blkch-floater-avatar {
   width: 28px; height: 28px; border-radius: 50%;
-  background: #fff; color: #6b46c1; display: flex;
+  background: #fff; color: var(--blkch-accent); display: flex;
   align-items: center; justify-content: center; font-weight: 700;
 }
 
@@ -42,35 +71,37 @@
   padding: 16px;
 }
 .blkch-modal {
-  background: #fff; border-radius: 12px;
+  background: var(--blkch-bg-modal); border-radius: 12px;
   max-width: 480px; width: 100%; max-height: 90vh; overflow: auto;
   box-shadow: 0 20px 60px rgba(0,0,0,.3);
   padding: 20px;
+  color: var(--blkch-text);
 }
 .blkch-close {
   float: right; background: transparent; border: none; cursor: pointer;
-  font-size: 22px; line-height: 1; color: #888; padding: 0;
+  font-size: 22px; line-height: 1; color: var(--blkch-text-muted); padding: 0;
 }
-.blkch-close:hover { color: #222; }
+.blkch-close:hover { color: var(--blkch-text); }
 
 /* ---------- Generic ---------- */
-.blkch-h1 { font-size: 18px; font-weight: 700; margin: 0 0 12px; }
-.blkch-text { margin: 0 0 12px; color: #444; }
+.blkch-h1 { font-size: 18px; font-weight: 700; margin: 0 0 12px; color: var(--blkch-text); }
+.blkch-text { margin: 0 0 12px; color: var(--blkch-text-secondary); }
 .blkch-image {
   width: 100%; border-radius: 8px; margin: 8px 0 12px;
-  background: #f3f3f3;
+  background: var(--blkch-bg-secondary);
 }
 .blkch-question-label {
-  font-weight: 600; margin-bottom: 6px; display: block;
+  font-weight: 600; margin-bottom: 6px; display: block; color: var(--blkch-text);
 }
-.blkch-question-hint { color: #666; font-size: 13px; margin-bottom: 8px; }
+.blkch-question-hint { color: var(--blkch-text-muted); font-size: 13px; margin-bottom: 8px; }
 .blkch-input, .blkch-textarea {
-  width: 100%; border: 1px solid #d0d0d0; border-radius: 6px;
+  width: 100%; border: 1px solid var(--blkch-border); border-radius: 6px;
   padding: 8px 10px; font: inherit; font-size: 14px;
   margin-bottom: 12px;
+  background: var(--blkch-bg); color: var(--blkch-text);
 }
 .blkch-input:focus, .blkch-textarea:focus {
-  outline: none; border-color: #6b46c1; box-shadow: 0 0 0 2px rgba(107,70,193,.15);
+  outline: none; border-color: var(--blkch-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--blkch-accent) 25%, transparent);
 }
 .blkch-textarea { min-height: 60px; resize: vertical; }
 
@@ -78,27 +109,28 @@
 .blkch-btn {
   border: none; border-radius: 6px; padding: 9px 14px;
   font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
-  transition: opacity .15s ease;
+  transition: opacity .15s ease, background .15s ease;
 }
 .blkch-btn:disabled { opacity: .5; cursor: default; }
-.blkch-btn-primary { background: #6b46c1; color: #fff; }
-.blkch-btn-secondary { background: #f0f0f0; color: #333; }
-.blkch-btn-ghost { background: transparent; color: #6b46c1; }
-.blkch-btn-danger { background: transparent; color: #c53030; }
+.blkch-btn-primary { background: var(--blkch-accent); color: #fff; }
+.blkch-btn-primary:hover:not(:disabled) { background: var(--blkch-accent-hover); }
+.blkch-btn-secondary { background: var(--blkch-bg-secondary); color: var(--blkch-text); }
+.blkch-btn-ghost { background: transparent; color: var(--blkch-accent); }
+.blkch-btn-danger { background: transparent; color: var(--blkch-danger); }
 
-.blkch-progress { color: #666; font-size: 12px; margin-bottom: 8px; }
+.blkch-progress { color: var(--blkch-text-muted); font-size: 12px; margin-bottom: 8px; }
 .blkch-summary-row {
   display: flex; gap: 8px; padding: 6px 0;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--blkch-border-soft);
 }
 .blkch-summary-row:last-child { border: none; }
-.blkch-summary-label { color: #666; min-width: 100px; }
-.blkch-summary-value { flex: 1; word-break: break-word; }
+.blkch-summary-label { color: var(--blkch-text-muted); min-width: 100px; }
+.blkch-summary-value { flex: 1; word-break: break-word; color: var(--blkch-text); }
 
-.blkch-error { color: #c53030; margin: 8px 0; font-size: 13px; }
+.blkch-error { color: var(--blkch-danger); margin: 8px 0; font-size: 13px; }
 .blkch-success {
-  background: #e6fffa; color: #2c7a7b;
+  background: var(--blkch-success-bg); color: var(--blkch-success-text);
   padding: 10px 12px; border-radius: 6px; margin-bottom: 12px;
 }
 
-.blkch-stats { color: #666; font-size: 13px; margin-bottom: 12px; }
+.blkch-stats { color: var(--blkch-text-muted); font-size: 13px; margin-bottom: 12px; }
