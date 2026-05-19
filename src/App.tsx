@@ -218,10 +218,17 @@ export default function App() {
     const parsed = raw ? Number(raw) : NaN;
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3;
   });
+  const RECOGNITION_LANGUAGES = ['Українська', 'російська', 'Польська', 'Латина'];
+  const [recognitionLanguage, setRecognitionLanguage] = useState<string>(() => {
+    const saved = localStorage.getItem('gemini_recognition_language');
+    if (saved && RECOGNITION_LANGUAGES.includes(saved)) return saved;
+    return 'російська';
+  });
   const [isKeysPanelOpen, setIsKeysPanelOpen] = useState<boolean>(false);
   const geminiKeysRef = useRef(geminiKeys);
   const geminiModelRef = useRef(geminiModel);
   const retryIntervalSecRef = useRef(retryIntervalSec);
+  const recognitionLanguageRef = useRef(recognitionLanguage);
   const errorStopRef = useRef(false);
 
   useEffect(() => {
@@ -235,6 +242,10 @@ export default function App() {
   useEffect(() => {
     retryIntervalSecRef.current = retryIntervalSec;
   }, [retryIntervalSec]);
+
+  useEffect(() => {
+    recognitionLanguageRef.current = recognitionLanguage;
+  }, [recognitionLanguage]);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
@@ -490,11 +501,17 @@ export default function App() {
     localStorage.setItem('gemini_retry_interval_sec', String(clamped));
   };
 
+  const saveRecognitionLanguage = (lang: string) => {
+    setRecognitionLanguage(lang);
+    localStorage.setItem('gemini_recognition_language', lang);
+  };
+
   const buildGeminiService = () => {
     return new GeminiService({
       keys: geminiKeysRef.current.map(k => k.trim()).filter(k => k.length > 0),
       model: geminiModelRef.current,
       retryIntervalMs: Math.max(0, retryIntervalSecRef.current) * 1000,
+      recognitionLanguage: recognitionLanguageRef.current,
       onKeyRotate: ({ toIndex, totalKeys, reason }) => {
         const safeReason = reason ? reason.slice(0, 200) : 'невідома помилка';
         addLog(
@@ -1456,6 +1473,7 @@ export default function App() {
                 />
               </div>
             </div>
+
           </div>
           
           <div className="flex gap-2 px-3">
@@ -1712,6 +1730,25 @@ export default function App() {
                             <option value="continue">Продовжити на наступній сторінці</option>
                             <option value="stop">Зупинити розпізнавання</option>
                           </select>
+                        </div>
+
+                        <div className="pt-2 space-y-2">
+                          <h4 className="font-bold text-sm flex items-center gap-2 text-slate-700">
+                            <FileText size={16} className="text-indigo-600" />
+                            Мова документа
+                          </h4>
+                          <select
+                            value={recognitionLanguage}
+                            onChange={(e) => saveRecognitionLanguage(e.target.value)}
+                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                          >
+                            {RECOGNITION_LANGUAGES.map(lang => (
+                              <option key={lang} value={lang}>{lang}</option>
+                            ))}
+                          </select>
+                          <p className="text-[10px] text-slate-400 leading-snug">
+                            Підставляється у промт для Gemini як мова оригіналу документа.
+                          </p>
                         </div>
                       </div>
                     </div>
