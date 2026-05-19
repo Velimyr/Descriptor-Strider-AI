@@ -2,14 +2,87 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { TableColumn } from "../types";
 import { getColumnLabel } from "../lib/tableColumns";
 
-export class GeminiService {
-  private ai: GoogleGenAI;
-  private model: string;
+export interface GeminiKeyRotationInfo {
+  fromIndex: number;
+  toIndex: number;
+  totalKeys: number;
+  attempt: number;
+  reason: string;
+}
 
-  constructor(apiKey: string, model: string = "gemini-3-flash-preview") {
-    console.log(`GeminiService initialized with model: ${model}`);
-    this.ai = new GoogleGenAI({ apiKey });
-    this.model = model;
+export interface GeminiServiceOptions {
+  keys: string[];
+  model?: string;
+  retryIntervalMs?: number;
+  onKeyRotate?: (info: GeminiKeyRotationInfo) => void;
+}
+
+export class GeminiService {
+  private keys: string[];
+  private model: string;
+  private currentIndex: number;
+  private retryIntervalMs: number;
+  private onKeyRotate?: (info: GeminiKeyRotationInfo) => void;
+
+  constructor(options: GeminiServiceOptions | string, modelArg?: string) {
+    if (typeof options === "string") {
+      this.keys = options ? [options] : [];
+      this.model = modelArg || "gemini-3-flash-preview";
+      this.retryIntervalMs = 3000;
+      this.currentIndex = 0;
+    } else {
+      this.keys = (options.keys || []).filter(k => typeof k === "string" && k.trim().length > 0);
+      this.model = options.model || "gemini-3-flash-preview";
+      this.retryIntervalMs = options.retryIntervalMs ?? 3000;
+      this.onKeyRotate = options.onKeyRotate;
+      this.currentIndex = 0;
+    }
+    console.log(`GeminiService initialized with model: ${this.model}, keys count: ${this.keys.length}, retry interval: ${this.retryIntervalMs}ms`);
+  }
+
+  getCurrentKeyIndex() {
+    return this.currentIndex;
+  }
+
+  getKeysCount() {
+    return this.keys.length;
+  }
+
+  private async callWithRotation<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
+    if (this.keys.length === 0) {
+      throw new Error("Не задано жодного Gemini API ключа");
+    }
+
+    const totalKeys = this.keys.length;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= totalKeys; attempt++) {
+      const idx = this.currentIndex;
+      const ai = new GoogleGenAI({ apiKey: this.keys[idx] });
+      try {
+        return await fn(ai);
+      } catch (err) {
+        lastError = err;
+        if (attempt < totalKeys) {
+          const nextIdx = (idx + 1) % totalKeys;
+          const reason = err instanceof Error ? err.message : String(err);
+          this.currentIndex = nextIdx;
+          this.onKeyRotate?.({
+            fromIndex: idx,
+            toIndex: nextIdx,
+            totalKeys,
+            attempt,
+            reason
+          });
+          if (this.retryIntervalMs > 0) {
+            await new Promise(resolve => setTimeout(resolve, this.retryIntervalMs));
+          }
+        }
+      }
+    }
+
+    if (lastError instanceof Error) throw lastError;
+    throw new Error(String(lastError));
   }
 
   async processPage(
@@ -88,7 +161,7 @@ export class GeminiService {
     };
 
     console.log(`GeminiService processing page with model: ${this.model}`);
-    const response = await this.ai.models.generateContent({
+    const response = await this.callWithRotation(ai => ai.models.generateContent({
       model: this.model,
       contents: {
         parts: [
@@ -101,7 +174,7 @@ export class GeminiService {
         responseMimeType: "application/json",
         responseSchema
       }
-    });
+    }));
 
     const text = response.text;
 
@@ -131,7 +204,7 @@ export class GeminiService {
       required: ["tags"]
     };
 
-    const response = await this.ai.models.generateContent({
+    const response = await this.callWithRotation(ai => ai.models.generateContent({
       model: this.model,
       contents: {
         parts: [{ text: `Заголовок справи: "${recordTitle}"` }]
@@ -141,7 +214,7 @@ export class GeminiService {
         responseMimeType: "application/json",
         responseSchema
       }
-    });
+    }));
 
     try {
       const parsed = JSON.parse(response.text || "{}");
