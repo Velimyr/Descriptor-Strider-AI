@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  FolderPlus, 
-  FileText, 
-  Settings as SettingsIcon, 
+import {
+  FolderPlus,
+  FileText,
+  Settings as SettingsIcon,
   ArrowDown,
   ArrowUp,
-  Play, 
-  Trash2, 
-  Plus, 
+  Play,
+  Trash2,
+  Plus,
   X,
   Database,
   Search,
@@ -21,7 +21,11 @@ import {
   Terminal,
   FileUp,
   RotateCcw,
-  Square
+  Square,
+  ChevronDown,
+  ChevronRight,
+  KeyRound,
+  Timer
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Papa from 'papaparse';
@@ -185,24 +189,72 @@ export default function App() {
   useEffect(() => {
     activeProjectIdRef.current = activeProjectId;
   }, [activeProjectId]);
-  const [geminiKey, setGeminiKey] = useState<string>(localStorage.getItem('gemini_key') || '');
-  const [geminiModel, setGeminiModel] = useState<string>(() => {
-    const saved = localStorage.getItem('gemini_model');
-    const validModels = ['gemini-3-flash-preview', 'gemini-3.1-pro-preview', 'gemini-flash-latest'];
-    if (saved && validModels.includes(saved)) return saved;
-    return 'gemini-3-flash-preview';
+  const [geminiKeys, setGeminiKeys] = useState<string[]>(() => {
+    try {
+      const savedArr = localStorage.getItem('gemini_keys');
+      if (savedArr) {
+        const parsed = JSON.parse(savedArr);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((k: unknown): k is string => typeof k === 'string' && k.trim().length > 0);
+        }
+      }
+    } catch {}
+    const legacy = localStorage.getItem('gemini_key');
+    return legacy ? [legacy] : [];
   });
-  const geminiKeyRef = useRef(geminiKey);
+  const [geminiModel, setGeminiModel] = useState<string>(() => {
+    const DEFAULT_MODEL = 'gemini-flash-lite-latest';
+    const validModels = [
+      'gemini-3-flash-preview',
+      'gemini-3.1-pro-preview',
+      'gemini-flash-latest',
+      'gemini-flash-lite-latest'
+    ];
+    const migrationDone = localStorage.getItem('gemini_model_migrated_to_flash_lite') === '1';
+    const saved = localStorage.getItem('gemini_model');
+
+    if (!migrationDone) {
+      localStorage.setItem('gemini_model', DEFAULT_MODEL);
+      localStorage.setItem('gemini_model_migrated_to_flash_lite', '1');
+      return DEFAULT_MODEL;
+    }
+
+    if (saved && validModels.includes(saved)) return saved;
+    return DEFAULT_MODEL;
+  });
+  const [retryIntervalSec, setRetryIntervalSec] = useState<number>(() => {
+    const raw = localStorage.getItem('gemini_retry_interval_sec');
+    const parsed = raw ? Number(raw) : NaN;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 3;
+  });
+  const RECOGNITION_LANGUAGES = ['Українська', 'російська', 'Польська', 'Латина'];
+  const [recognitionLanguage, setRecognitionLanguage] = useState<string>(() => {
+    const saved = localStorage.getItem('gemini_recognition_language');
+    if (saved && RECOGNITION_LANGUAGES.includes(saved)) return saved;
+    return 'російська';
+  });
+  const [isKeysPanelOpen, setIsKeysPanelOpen] = useState<boolean>(false);
+  const geminiKeysRef = useRef(geminiKeys);
   const geminiModelRef = useRef(geminiModel);
+  const retryIntervalSecRef = useRef(retryIntervalSec);
+  const recognitionLanguageRef = useRef(recognitionLanguage);
   const errorStopRef = useRef(false);
 
   useEffect(() => {
-    geminiKeyRef.current = geminiKey;
-  }, [geminiKey]);
+    geminiKeysRef.current = geminiKeys;
+  }, [geminiKeys]);
 
   useEffect(() => {
     geminiModelRef.current = geminiModel;
   }, [geminiModel]);
+
+  useEffect(() => {
+    retryIntervalSecRef.current = retryIntervalSec;
+  }, [retryIntervalSec]);
+
+  useEffect(() => {
+    recognitionLanguageRef.current = recognitionLanguage;
+  }, [recognitionLanguage]);
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [isIndexing, setIsIndexing] = useState(false);
@@ -419,15 +471,67 @@ export default function App() {
     }
   }, [projects]);
 
-  const saveGeminiKey = (key: string) => {
-    setGeminiKey(key);
-    localStorage.setItem('gemini_key', key);
+  const saveGeminiKeys = (keys: string[]) => {
+    const sanitized = keys.map(k => k.trim()).filter(k => k.length > 0);
+    setGeminiKeys(keys);
+    localStorage.setItem('gemini_keys', JSON.stringify(keys));
+    // Keep legacy single-key for any code paths still reading it.
+    if (sanitized.length > 0) {
+      localStorage.setItem('gemini_key', sanitized[0]);
+    } else {
+      localStorage.removeItem('gemini_key');
+    }
+  };
+
+  const addGeminiKey = () => {
+    saveGeminiKeys([...geminiKeys, '']);
+    setIsKeysPanelOpen(true);
+  };
+
+  const updateGeminiKeyAt = (index: number, value: string) => {
+    const next = [...geminiKeys];
+    next[index] = value;
+    saveGeminiKeys(next);
+  };
+
+  const removeGeminiKeyAt = (index: number) => {
+    const next = geminiKeys.filter((_, i) => i !== index);
+    saveGeminiKeys(next);
   };
 
   const saveGeminiModel = (model: string) => {
     setGeminiModel(model);
     localStorage.setItem('gemini_model', model);
   };
+
+  const saveRetryInterval = (seconds: number) => {
+    const clamped = Number.isFinite(seconds) && seconds >= 0 ? seconds : 3;
+    setRetryIntervalSec(clamped);
+    localStorage.setItem('gemini_retry_interval_sec', String(clamped));
+  };
+
+  const saveRecognitionLanguage = (lang: string) => {
+    setRecognitionLanguage(lang);
+    localStorage.setItem('gemini_recognition_language', lang);
+  };
+
+  const buildGeminiService = () => {
+    return new GeminiService({
+      keys: geminiKeysRef.current.map(k => k.trim()).filter(k => k.length > 0),
+      model: geminiModelRef.current,
+      retryIntervalMs: Math.max(0, retryIntervalSecRef.current) * 1000,
+      recognitionLanguage: recognitionLanguageRef.current,
+      onKeyRotate: ({ toIndex, totalKeys, reason }) => {
+        const safeReason = reason ? reason.slice(0, 200) : 'невідома помилка';
+        addLog(
+          `Перемикання Gemini API ключа: переходимо до ключа #${toIndex + 1} з ${totalKeys}. Причина: ${safeReason}`,
+          'warn'
+        );
+      }
+    });
+  };
+
+  const hasGeminiKey = () => geminiKeys.some(k => k.trim().length > 0);
 
   const handleGoogleConnect = async () => {
     if (!activeProject) return;
@@ -772,10 +876,10 @@ export default function App() {
   };
 
   const retryPage = async (url: string, pageNum: number) => {
-    if (!activeProject || !geminiKey) return;
-    
+    if (!activeProject || !hasGeminiKey()) return;
+
     addLog(`Перезапуск опрацювання сторінки ${pageNum} для ${url} [Модель: ${geminiModelRef.current}]...`);
-    const gemini = new GeminiService(geminiKeyRef.current, geminiModelRef.current);
+    const gemini = buildGeminiService();
     
     try {
       // 1. Find file info
@@ -837,7 +941,7 @@ export default function App() {
 
   // Processing Logic
   const startProcessing = async (mode: 'start' | 'continue' = 'continue') => {
-    if (!activeProject || !geminiKey) {
+    if (!activeProject || !hasGeminiKey()) {
       const msg = "Будь ласка, вкажіть Gemini API ключ у налаштуваннях";
       setError(msg);
       addLog(msg, 'error');
@@ -1004,7 +1108,7 @@ export default function App() {
           return ps?.status === 'completed';
         }).length;
 
-        const currentGemini = new GeminiService(geminiKeyRef.current, geminiModelRef.current);
+        const currentGemini = buildGeminiService();
         for (const pageNum of targetPages) {
           if (stopRef.current) break;
 
@@ -1022,15 +1126,19 @@ export default function App() {
 
             try {
               if (retryCount > 0) {
-                addLog(`Повторна спроба для сторінки ${pageNum} через ліміти (спроба ${retryCount}/${maxRetries}). Очікуємо 15с...`, 'warn');
+                const waitMs = Math.max(0, retryIntervalSecRef.current) * 1000;
+                const waitLabel = `${retryIntervalSecRef.current}с`;
+                addLog(`Повторна спроба для сторінки ${pageNum} через ліміти (спроба ${retryCount}/${maxRetries}). Очікуємо ${waitLabel}...`, 'warn');
                 updatePageStatus(url, pageNum, { status: 'processing', message: `Очікування лімітів (спроба ${retryCount})...` });
                 const waitStartedAt = performance.now();
-                addLog(`Сторінка ${pageNum} (${url}): пауза перед повтором 15с...`);
-                await new Promise(resolve => setTimeout(resolve, 15000));
+                addLog(`Сторінка ${pageNum} (${url}): пауза перед повтором ${waitLabel}...`);
+                if (waitMs > 0) {
+                  await new Promise(resolve => setTimeout(resolve, waitMs));
+                }
                 const actualWait = performance.now() - waitStartedAt;
                 addLog(
                   `Сторінка ${pageNum} (${url}): пауза завершена за ${formatDuration(actualWait)}`,
-                  actualWait > 17000 ? 'warn' : 'info'
+                  actualWait > waitMs + 2000 ? 'warn' : 'info'
                 );
               }
               const pageResults = await processSinglePage(pdf, pageNum, url, activeProject, currentGemini);
@@ -1117,11 +1225,11 @@ export default function App() {
   };
 
   const startIndexing = async () => {
-    if (!activeProject || !geminiKey) return;
+    if (!activeProject || !hasGeminiKey()) return;
     setIsIndexing(true);
     stopRef.current = false;
     addLog("Запуск створення покажчика (тегів)...");
-    const gemini = new GeminiService(geminiKey, geminiModel);
+    const gemini = buildGeminiService();
     const titleColumn = getTitleColumn(activeProject.tableStructure);
 
     if (!titleColumn) {
@@ -1221,7 +1329,7 @@ export default function App() {
       {showTelegramAdmin && (
         <TelegramAdminTab
           onClose={closeTelegramAdmin}
-          geminiKey={geminiKey}
+          geminiKey={geminiKeys.find(k => k.trim().length > 0) || ''}
           initialQuestions={
             projects.find(p => p.id === activeProjectId)?.tableStructure
           }
@@ -1277,20 +1385,69 @@ export default function App() {
 
         <div className="p-4 border-t border-slate-100 space-y-4">
           <div className="space-y-3">
-            <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 px-3">Gemini API Key</label>
-              <div className="relative px-3">
-                <input 
-                  type="password"
-                  value={geminiKey}
-                  onChange={(e) => saveGeminiKey(e.target.value)}
-                  placeholder="Введіть ключ..."
-                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none pr-8"
-                />
-                <div className="absolute right-5 top-1/2 -translate-y-1/2 text-slate-300">
-                  <SettingsIcon size={14} />
-                </div>
-              </div>
+            <div className="px-3">
+              <button
+                type="button"
+                onClick={() => setIsKeysPanelOpen(open => !open)}
+                className="w-full flex items-center justify-between gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors"
+              >
+                <span className="flex items-center gap-2 text-xs font-bold text-slate-600">
+                  <KeyRound size={14} className="text-indigo-500" />
+                  Gemini Keys - {geminiKeys.length}
+                </span>
+                {isKeysPanelOpen
+                  ? <ChevronDown size={14} className="text-slate-400" />
+                  : <ChevronRight size={14} className="text-slate-400" />}
+              </button>
+              <AnimatePresence initial={false}>
+                {isKeysPanelOpen && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="pt-2 space-y-2">
+                      {geminiKeys.length === 0 && (
+                        <p className="text-[10px] text-slate-400 italic">
+                          Жодного ключа не додано. Додайте принаймні один.
+                        </p>
+                      )}
+                      {geminiKeys.map((key, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-400 w-5 text-center">#{idx + 1}</span>
+                          <input
+                            type="password"
+                            value={key}
+                            onChange={(e) => updateGeminiKeyAt(idx, e.target.value)}
+                            placeholder="Введіть ключ..."
+                            className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeGeminiKeyAt(idx)}
+                            className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                            title="Видалити ключ"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={addGeminiKey}
+                        className="w-full flex items-center justify-center gap-1.5 py-1.5 border border-dashed border-slate-200 rounded text-[10px] font-bold text-slate-400 hover:text-indigo-600 hover:border-indigo-200 transition-all"
+                      >
+                        <Plus size={12} />
+                        Додати ключ
+                      </button>
+                      <p className="text-[10px] text-slate-400 leading-snug">
+                        Ключі ротуються по колу: при помилці автоматично використовується наступний.
+                      </p>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             <div>
@@ -1303,10 +1460,29 @@ export default function App() {
                 >
                   <option value="gemini-3-flash-preview">Gemini 3 Flash (Швидка)</option>
                   <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Потужна)</option>
+                  <option value="gemini-flash-lite-latest">Gemini 3.1 Flash Lite (Економна)</option>
                   <option value="gemini-flash-latest">Gemini Flash Latest</option>
                 </select>
               </div>
             </div>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 px-3">
+                Інтервал між спробами (сек)
+              </label>
+              <div className="px-3 flex items-center gap-2">
+                <Timer size={14} className="text-slate-400" />
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={retryIntervalSec}
+                  onChange={(e) => saveRetryInterval(Number(e.target.value))}
+                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
+                />
+              </div>
+            </div>
+
           </div>
           
           <div className="flex gap-2 px-3">
@@ -1563,6 +1739,25 @@ export default function App() {
                             <option value="continue">Продовжити на наступній сторінці</option>
                             <option value="stop">Зупинити розпізнавання</option>
                           </select>
+                        </div>
+
+                        <div className="pt-2 space-y-2">
+                          <h4 className="font-bold text-sm flex items-center gap-2 text-slate-700">
+                            <FileText size={16} className="text-indigo-600" />
+                            Мова документа
+                          </h4>
+                          <select
+                            value={recognitionLanguage}
+                            onChange={(e) => saveRecognitionLanguage(e.target.value)}
+                            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                          >
+                            {RECOGNITION_LANGUAGES.map(lang => (
+                              <option key={lang} value={lang}>{lang}</option>
+                            ))}
+                          </select>
+                          <p className="text-[10px] text-slate-400 leading-snug">
+                            Підставляється у промт для Gemini як мова оригіналу документа.
+                          </p>
                         </div>
                       </div>
                     </div>

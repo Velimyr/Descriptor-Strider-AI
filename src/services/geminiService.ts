@@ -2,14 +2,91 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { TableColumn } from "../types";
 import { getColumnLabel } from "../lib/tableColumns";
 
-export class GeminiService {
-  private ai: GoogleGenAI;
-  private model: string;
+export interface GeminiKeyRotationInfo {
+  fromIndex: number;
+  toIndex: number;
+  totalKeys: number;
+  attempt: number;
+  reason: string;
+}
 
-  constructor(apiKey: string, model: string = "gemini-3-flash-preview") {
-    console.log(`GeminiService initialized with model: ${model}`);
-    this.ai = new GoogleGenAI({ apiKey });
-    this.model = model;
+export interface GeminiServiceOptions {
+  keys: string[];
+  model?: string;
+  retryIntervalMs?: number;
+  recognitionLanguage?: string;
+  onKeyRotate?: (info: GeminiKeyRotationInfo) => void;
+}
+
+export class GeminiService {
+  private keys: string[];
+  private model: string;
+  private currentIndex: number;
+  private retryIntervalMs: number;
+  private recognitionLanguage: string;
+  private onKeyRotate?: (info: GeminiKeyRotationInfo) => void;
+
+  constructor(options: GeminiServiceOptions | string, modelArg?: string) {
+    if (typeof options === "string") {
+      this.keys = options ? [options] : [];
+      this.model = modelArg || "gemini-flash-lite-latest";
+      this.retryIntervalMs = 3000;
+      this.recognitionLanguage = "російська";
+      this.currentIndex = 0;
+    } else {
+      this.keys = (options.keys || []).filter(k => typeof k === "string" && k.trim().length > 0);
+      this.model = options.model || "gemini-flash-lite-latest";
+      this.retryIntervalMs = options.retryIntervalMs ?? 3000;
+      this.recognitionLanguage = options.recognitionLanguage || "російська";
+      this.onKeyRotate = options.onKeyRotate;
+      this.currentIndex = 0;
+    }
+    console.log(`GeminiService initialized with model: ${this.model}, keys count: ${this.keys.length}, retry interval: ${this.retryIntervalMs}ms, language: ${this.recognitionLanguage}`);
+  }
+
+  getCurrentKeyIndex() {
+    return this.currentIndex;
+  }
+
+  getKeysCount() {
+    return this.keys.length;
+  }
+
+  private async callWithRotation<T>(fn: (ai: GoogleGenAI) => Promise<T>): Promise<T> {
+    if (this.keys.length === 0) {
+      throw new Error("Не задано жодного Gemini API ключа");
+    }
+
+    const totalKeys = this.keys.length;
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= totalKeys; attempt++) {
+      const idx = this.currentIndex;
+      const ai = new GoogleGenAI({ apiKey: this.keys[idx] });
+      try {
+        return await fn(ai);
+      } catch (err) {
+        lastError = err;
+        if (attempt < totalKeys) {
+          const nextIdx = (idx + 1) % totalKeys;
+          const reason = err instanceof Error ? err.message : String(err);
+          this.currentIndex = nextIdx;
+          this.onKeyRotate?.({
+            fromIndex: idx,
+            toIndex: nextIdx,
+            totalKeys,
+            attempt,
+            reason
+          });
+          if (this.retryIntervalMs > 0) {
+            await new Promise(resolve => setTimeout(resolve, this.retryIntervalMs));
+          }
+        }
+      }
+    }
+
+    if (lastError instanceof Error) throw lastError;
+    throw new Error(String(lastError));
   }
 
   async processPage(
@@ -42,17 +119,43 @@ export class GeminiService {
     }
 
     const rulesBlock = roleRules.length > 0
-      ? '\nДодаткові правила нормалізації:\n' + roleRules.map((r, i) => `${i + 1}. ${r}`).join('\n')
+      ? roleRules.map((r, i) => `${i + 1}. ${r}`).join('\n')
       : '';
 
-    const systemInstruction = `Ви професійний архівіст. Ваше завдання - розпізнати ВСІ справи в таблиці на зображенні архівної сторінки.
-      Для кожної справи поверніть дані у форматі JSON.
-      Використовуйте ТОЧНО цю структуру таблиці: ${columnsDesc}.
-      У полі data ключами мають бути саме технічні ключі колонок, а не їхні назви.
-      Для кожної колонки заповніть рядок. Якщо значення відсутнє або не читається, поверніть порожній рядок "".
-      Якщо текст у будь-якій колонці переноситься на новий рядок, об'єднайте його в один нормалізований рядок без переносів.
-      Для кожної справи проаналізуйте заголовок та додайте список тегів (люди, прізвища, населені пункти, установи).
-      Також для кожного рядка вкажіть координати bounding box у форматі [ymin, xmin, ymax, xmax] (значення від 0 до 1000).${rulesBlock}`;
+    const systemInstruction = `# РОЛЬ
+Ви професійний архівіст, який розпізнає табличні описи архівних справ зі сканованих сторінок.
+
+# ЗАВДАННЯ
+Розпізнайте ВСІ справи в таблиці на зображенні архівної сторінки та поверніть їх у форматі JSON згідно зі схемою відповіді.
+
+# СТРУКТУРА ТАБЛИЦІ
+Колонки (мітка -> технічний ключ): ${columnsDesc}.
+У полі data ключами мають бути САМЕ технічні ключі колонок, а не їхні назви (мітки).
+
+# ПОРЯДОК ОБРОБКИ
+- Обробляйте рядки зверху вниз у природному порядку таблиці.
+- Пропускайте рядок-шапку (заголовки колонок) — він не є справою.
+- Не пропускайте справи, навіть якщо текст частково обрізаний або погано читається.
+
+# ФОРМАТ ЗНАЧЕНЬ
+- Для кожної колонки заповніть рядок (string).
+- Якщо значення відсутнє або не читається — поверніть порожній рядок "" (НЕ null, НЕ "—", НЕ пробіл).
+- Якщо текст у колонці переноситься на новий рядок — об'єднайте його в один рядок без переносів.
+- Якщо слово розірване дефісом при переносі — склейте його без дефіса.
+
+# BOUNDING BOX
+Для кожного рядка вкажіть координати у форматі [ymin, xmin, ymax, xmax] (значення від 0 до 1000, нормалізовані відносно зображення). Рамка має охоплювати ВЕСЬ рядок справи (всі колонки), а не лише назву.
+
+# МОВА ОРИГІНАЛУ (КРИТИЧНО)
+Текст на зображенні написаний мовою: ${this.recognitionLanguage}.
+Зберігайте розпізнаний текст ТОЧНО цією мовою, як у документі.
+НЕ перекладайте, НЕ транслітеруйте, НЕ модернізуйте орфографію. Зберігайте оригінальні літери (ѣ, і, ъ, ѳ, ѵ, ó, ą, ł, ż, ī тощо), діакритику та правопис як у джерелі.
+
+# ЗАБОРОНИ
+- НЕ вигадуйте значення. Якщо щось не читається або відсутнє — поверніть "".
+- НЕ доповнюйте дати, прізвища чи назви зі своїх знань або з контексту інших рядків.
+- НЕ перекладайте і не модернізуйте текст (див. блок "МОВА ОРИГІНАЛУ").
+- НЕ використовуйте назви колонок як ключі в data — лише технічні ключі зі списку вище.${rulesBlock ? `\n\n# ПРАВИЛА НОРМАЛІЗАЦІЇ ЗА РОЛЯМИ КОЛОНОК\n${rulesBlock}` : ''}`;
 
     const responseSchema: any = {
       type: Type.OBJECT,
@@ -74,10 +177,6 @@ export class GeminiService {
                 type: Type.ARRAY,
                 items: { type: Type.NUMBER },
                 description: "[ymin, xmin, ymax, xmax]"
-              },
-              tags: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING }
               }
             },
             required: ["data", "boundingBox"]
@@ -88,7 +187,7 @@ export class GeminiService {
     };
 
     console.log(`GeminiService processing page with model: ${this.model}`);
-    const response = await this.ai.models.generateContent({
+    const response = await this.callWithRotation(ai => ai.models.generateContent({
       model: this.model,
       contents: {
         parts: [
@@ -101,7 +200,7 @@ export class GeminiService {
         responseMimeType: "application/json",
         responseSchema
       }
-    });
+    }));
 
     const text = response.text;
 
@@ -131,7 +230,7 @@ export class GeminiService {
       required: ["tags"]
     };
 
-    const response = await this.ai.models.generateContent({
+    const response = await this.callWithRotation(ai => ai.models.generateContent({
       model: this.model,
       contents: {
         parts: [{ text: `Заголовок справи: "${recordTitle}"` }]
@@ -141,7 +240,7 @@ export class GeminiService {
         responseMimeType: "application/json",
         responseSchema
       }
-    });
+    }));
 
     try {
       const parsed = JSON.parse(response.text || "{}");
