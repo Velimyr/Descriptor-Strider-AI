@@ -29,13 +29,13 @@ export class GeminiService {
   constructor(options: GeminiServiceOptions | string, modelArg?: string) {
     if (typeof options === "string") {
       this.keys = options ? [options] : [];
-      this.model = modelArg || "gemini-3-flash-preview";
+      this.model = modelArg || "gemini-flash-lite-latest";
       this.retryIntervalMs = 3000;
       this.recognitionLanguage = "російська";
       this.currentIndex = 0;
     } else {
       this.keys = (options.keys || []).filter(k => typeof k === "string" && k.trim().length > 0);
-      this.model = options.model || "gemini-3-flash-preview";
+      this.model = options.model || "gemini-flash-lite-latest";
       this.retryIntervalMs = options.retryIntervalMs ?? 3000;
       this.recognitionLanguage = options.recognitionLanguage || "російська";
       this.onKeyRotate = options.onKeyRotate;

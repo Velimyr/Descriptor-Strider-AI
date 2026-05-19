@@ -203,15 +203,24 @@ export default function App() {
     return legacy ? [legacy] : [];
   });
   const [geminiModel, setGeminiModel] = useState<string>(() => {
-    const saved = localStorage.getItem('gemini_model');
+    const DEFAULT_MODEL = 'gemini-flash-lite-latest';
     const validModels = [
       'gemini-3-flash-preview',
       'gemini-3.1-pro-preview',
       'gemini-flash-latest',
       'gemini-flash-lite-latest'
     ];
+    const migrationDone = localStorage.getItem('gemini_model_migrated_to_flash_lite') === '1';
+    const saved = localStorage.getItem('gemini_model');
+
+    if (!migrationDone) {
+      localStorage.setItem('gemini_model', DEFAULT_MODEL);
+      localStorage.setItem('gemini_model_migrated_to_flash_lite', '1');
+      return DEFAULT_MODEL;
+    }
+
     if (saved && validModels.includes(saved)) return saved;
-    return 'gemini-3-flash-preview';
+    return DEFAULT_MODEL;
   });
   const [retryIntervalSec, setRetryIntervalSec] = useState<number>(() => {
     const raw = localStorage.getItem('gemini_retry_interval_sec');
