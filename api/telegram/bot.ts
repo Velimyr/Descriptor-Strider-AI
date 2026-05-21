@@ -907,11 +907,20 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
 
 async function cmdStats(chatId: number, tgId: string, user: BotUser) {
   const today = kyivDateString();
-  const [todayCount, allUsers, badges] = await Promise.all([
+  const [todayCount, allUsers] = await Promise.all([
     getDailyCount(tgId, today),
     getAllUsers(),
-    countEarnedInCatalog(tgId),
   ]);
+  // Догоняюча перевірка: видати бейджі, які користувач уже заслужив раніше
+  // (для існуючих до фічі — тихо). Робимо ДО підрахунку, щоб лічильник був свіжим.
+  await evaluateBadges({
+    chatId,
+    tgId,
+    totalPoints: user.totalPoints,
+    todayCount,
+    badgesSeededAt: user.badgesSeededAt,
+  });
+  const badges = await countEarnedInCatalog(tgId);
   const points = computePointsForToday(Math.max(todayCount, 1));
   const todayPoints = todayCount * points.multiplier * telegramBotConfig.points.base;
   const all = leaderboardSorted(allUsers);

@@ -350,6 +350,8 @@ export const telegramBotConfig: TelegramBotConfig = {
     menuBadges: '🏅 Мої досягнення',
     // Заголовок списку досягнень.
     badgesListHeader: '🏅 <b>Мої досягнення</b> ({earned}/{total})',
+    // Рядок ще не отриманого бейджа — назву приховуємо, хай користувач досліджує сам.
+    badgesLockedLabel: '🔒 <i>Невідома відзнака</i>',
     // Коли ще нічого не отримано.
     badgesListEmpty:
       '🏅 <b>Мої досягнення</b>\n\nПоки що жодної відзнаки. Опрацьовуйте справи — і вони з’являться!',
@@ -405,7 +407,6 @@ export const telegramBotConfig: TelegramBotConfig = {
       id: 'first_case',
       title: 'Перша справа',
       text: 'Ви опрацювали свою першу архівну справу. Дякуємо, що приєдналися!',
-      hint: 'Опрацюйте першу справу.',
       image: 'first_case.png',
       criteria: { type: 'cases_total', threshold: 1 },
     },
@@ -413,7 +414,6 @@ export const telegramBotConfig: TelegramBotConfig = {
       id: 'points_100',
       title: '100 балів',
       text: 'Ви набрали 100 балів. Архіви стають читабельнішими завдяки вам!',
-      hint: 'Наберіть 100 балів.',
       image: 'points_100.png',
       criteria: { type: 'total_points', threshold: 100 },
     },

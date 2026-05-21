@@ -25,9 +25,8 @@ export type BadgeCriteria =
 
 export interface BadgeDef {
   id: string;          // стабільний ключ — НЕ змінювати після релізу (зберігається в БД)
-  title: string;       // коротка назва відзнаки
+  title: string;       // коротка назва відзнаки (показуємо лише після отримання)
   text: string;        // підпис на картці отриманого бейджа
-  hint?: string;       // як здобути (показуємо для ще не отриманих)
   image: string;       // ім'я файлу в api/telegram/badges/
   criteria: BadgeCriteria;
 }

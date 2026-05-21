@@ -121,10 +121,11 @@ export async function sendBadgesList(chatId: number | string, tgId: string): Pro
   }
   const earned = new Set(await getEarnedBadgeIds(tgId));
   const earnedCount = all.filter(b => earned.has(b.id)).length;
+  // Назви неотриманих НЕ показуємо — користувач сам досліджує, як їх здобути.
   const lines = all.map(b =>
     earned.has(b.id)
       ? `✅ <b>${esc(b.title)}</b> — ${esc(b.text)}`
-      : `🔒 <b>${esc(b.title)}</b> — ${esc(b.hint || b.text)}`
+      : T.badgesLockedLabel
   );
   const header = fmt(T.badgesListHeader, { earned: earnedCount, total: all.length });
   const body = `${header}\n\n${lines.join('\n')}`;
