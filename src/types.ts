@@ -15,6 +15,23 @@ export interface TableColumn {
   role?: ColumnRole;
 }
 
+// --- Бейджі (досягнення) ---
+// Критерій здобуття бейджа. Декларативний — додати новий бейдж наявного типу
+// = лише правка config.badges; новий тип критерію потребує правки движка (badges.ts).
+export type BadgeCriteria =
+  | { type: 'total_points'; threshold: number } // накопичені бали ≥ threshold
+  | { type: 'cases_total'; threshold: number }   // опрацьовано справ за весь час ≥ threshold
+  | { type: 'day_count'; threshold: number };     // справ за один день ≥ threshold
+
+export interface BadgeDef {
+  id: string;          // стабільний ключ — НЕ змінювати після релізу (зберігається в БД)
+  title: string;       // коротка назва відзнаки
+  text: string;        // підпис на картці отриманого бейджа
+  hint?: string;       // як здобути (показуємо для ще не отриманих)
+  image: string;       // ім'я файлу в api/telegram/badges/
+  criteria: BadgeCriteria;
+}
+
 export interface LogEntry {
   id: string;
   timestamp: number;

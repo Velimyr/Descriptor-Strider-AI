@@ -19,6 +19,11 @@ alter table bot_users add column if not exists pending_action text not null defa
 -- Час, коли користувачу показали онбординг-підказку «З чого складається опис».
 -- NULL означає «ще не показували» — наступна дія тригерить показ.
 alter table bot_users add column if not exists intro_shown_at timestamptz;
+-- Час "засіву" бейджів. NULL = існуючий до фічі користувач: на першій перевірці
+-- вже зароблені бейджі видаються ТИХО (без вітань), щоб не спамити ретро-сповіщеннями.
+-- Новим користувачам бот ставить це поле одразу при /start, тож їхні справжні
+-- досягнення сповіщаються нормально.
+alter table bot_users add column if not exists badges_seeded_at timestamptz;
 
 -- Журнал рішень адміна по парах різночитань ("Перевірка доброчесності").
 -- Пара ідентифікується справою + двома tg_id у відсортованому порядку (щоб
@@ -153,6 +158,17 @@ create table if not exists bot_dispatch_log (
 );
 create index if not exists idx_dispatch_user on bot_dispatch_log(tg_id);
 
+-- Отримані користувачем бейджі (досягнення). PK (tg_id, badge_id) гарантує
+-- «один раз і назавжди»: повторний insert через on conflict do nothing — no-op.
+-- badge_id — стабільний ключ із config.badges, тут не валідуємо (каталог у коді).
+create table if not exists bot_user_badges (
+  tg_id      text        not null,
+  badge_id   text        not null,
+  earned_at  timestamptz not null default now(),
+  primary key (tg_id, badge_id)
+);
+create index if not exists idx_user_badges_user on bot_user_badges(tg_id);
+
 -- Справи, від яких користувач відмовився (натиснув "Скасувати" під час опитування).
 -- Виключаються при доборі наступної справи цьому користувачу.
 create table if not exists bot_skipped (
@@ -197,6 +213,7 @@ alter table bot_skipped      enable row level security;
 alter table bot_meta         enable row level security;
 alter table bot_case_confirmations enable row level security;
 alter table bot_integrity_reviews  enable row level security;
+alter table bot_user_badges        enable row level security;
 
 -- Заборонити виконання RPC від імені anon/authenticated.
 -- (security definer функція без явного grant не виконається сторонніми ролями.)

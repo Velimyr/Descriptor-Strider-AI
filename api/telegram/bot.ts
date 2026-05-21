@@ -45,6 +45,12 @@ import {
   recomputeCaseSubmissionCount,
   selectNextCaseForUser,
 } from './scheduler.js';
+import {
+  evaluateBadges,
+  countEarnedInCatalog,
+  sendBadgesList,
+  sendBadgeCardById,
+} from './badges.js';
 
 const T = telegramBotConfig.texts;
 
@@ -365,6 +371,9 @@ async function handleMessage(msg: any) {
         pendingAction: '',
         createdAt: nowIsoUtc(),
         introShownAt: '',
+        // Новому юзеру одразу фіксуємо засів бейджів, щоб його справжні
+        // досягнення сповіщалися (тиха видача — лише для існуючих до фічі).
+        badgesSeededAt: nowIsoUtc(),
         source: 'tg',
         partnerId: null,
       };
@@ -672,6 +681,19 @@ async function handleCallback(cb: any) {
     return;
   }
 
+  // Досягнення — не залежать від сесії.
+  if (data === 'badges') {
+    await answerCallbackQuery(cb.id);
+    await sendBadgesList(chatId, tgId);
+    return;
+  }
+  if (data.startsWith('badge:')) {
+    const badgeId = data.slice('badge:'.length);
+    const ok = await sendBadgeCardById(chatId, tgId, badgeId);
+    await answerCallbackQuery(cb.id, ok ? undefined : T.badgeLockedToast);
+    return;
+  }
+
   // ack + читання сесії і питань — паралельно
   const [, session, questions] = await Promise.all([
     answerCallbackQuery(cb.id),
@@ -885,24 +907,34 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
 
 async function cmdStats(chatId: number, tgId: string, user: BotUser) {
   const today = kyivDateString();
-  const [todayCount, allUsers] = await Promise.all([getDailyCount(tgId, today), getAllUsers()]);
+  const [todayCount, allUsers, badges] = await Promise.all([
+    getDailyCount(tgId, today),
+    getAllUsers(),
+    countEarnedInCatalog(tgId),
+  ]);
   const points = computePointsForToday(Math.max(todayCount, 1));
   const todayPoints = todayCount * points.multiplier * telegramBotConfig.points.base;
   const all = leaderboardSorted(allUsers);
   const rank = all.findIndex(u => u.tgId === tgId) + 1;
-  await sendMessage(
-    chatId,
-    fmt(T.statsLine, {
-      name: user.displayName,
-      total: user.totalPoints,
-      todayCount,
-      todayPoints: Math.round(todayPoints * 100) / 100,
-      multiplier: points.multiplier,
-      rank: rank || all.length + 1,
-      totalUsers: all.length,
-    }),
-    { reply_markup: mainMenuKeyboard(user) }
-  );
+  let body = fmt(T.statsLine, {
+    name: user.displayName,
+    total: user.totalPoints,
+    todayCount,
+    todayPoints: Math.round(todayPoints * 100) / 100,
+    multiplier: points.multiplier,
+    rank: rank || all.length + 1,
+    totalUsers: all.length,
+  });
+  // Якщо є каталог бейджів — показуємо лічильник і даємо inline-кнопку «Мої досягнення».
+  // Reply-меню внизу лишається (воно is_persistent), тож inline тут не конфліктує.
+  if (badges.total > 0) {
+    body += '\n' + fmt(T.badgesStatsLine, { earned: badges.earned, total: badges.total });
+    await sendMessage(chatId, body, {
+      reply_markup: { inline_keyboard: [[{ text: T.menuBadges, callback_data: 'badges' }]] },
+    });
+    return;
+  }
+  await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
 }
 
 async function cmdProgress(chatId: number, user: BotUser) {
@@ -1294,6 +1326,14 @@ async function confirmAndSubmit(
   if (tierMsg) {
     await sendMessage(chatId, tierMsg);
   }
+
+  await evaluateBadges({
+    chatId,
+    tgId,
+    totalPoints: newTotal,
+    todayCount,
+    badgesSeededAt: user.badgesSeededAt,
+  });
 }
 
 // ----- Collaborative submit: спільна логіка для create і edit. -----
@@ -1394,6 +1434,14 @@ async function deliverCollabPoints(
   ]);
 
   if (tierMsg) await sendMessage(chatId, tierMsg);
+
+  await evaluateBadges({
+    chatId,
+    tgId,
+    totalPoints: newTotal,
+    todayCount,
+    badgesSeededAt: user.badgesSeededAt,
+  });
 }
 
 function buildSourceLink(cse: any): string {

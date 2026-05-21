@@ -16,6 +16,8 @@ create table if not exists botdev_users (
 alter table botdev_users add column if not exists pending_action text not null default '';
 -- Час показу онбординг-підказки «З чого складається опис».
 alter table botdev_users add column if not exists intro_shown_at timestamptz;
+-- Час "засіву" бейджів (див. коментар у schema.sql). NULL = тиха видача на першій перевірці.
+alter table botdev_users add column if not exists badges_seeded_at timestamptz;
 
 create table if not exists botdev_integrity_reviews (
   case_id          text        not null,
@@ -139,6 +141,15 @@ create table if not exists botdev_dispatch_log (
 );
 create index if not exists idx_botdev_dispatch_user on botdev_dispatch_log(tg_id);
 
+-- Отримані бейджі (досягнення). PK (tg_id, badge_id) → «один раз і назавжди».
+create table if not exists botdev_user_badges (
+  tg_id      text        not null,
+  badge_id   text        not null,
+  earned_at  timestamptz not null default now(),
+  primary key (tg_id, badge_id)
+);
+create index if not exists idx_botdev_user_badges_user on botdev_user_badges(tg_id);
+
 create table if not exists botdev_skipped (
   tg_id      text        not null,
   case_id    text        not null,
@@ -174,6 +185,7 @@ alter table botdev_skipped      enable row level security;
 alter table botdev_meta         enable row level security;
 alter table botdev_case_confirmations enable row level security;
 alter table botdev_integrity_reviews  enable row level security;
+alter table botdev_user_badges        enable row level security;
 
 revoke all on function botdev_inc_daily(text, date) from public, anon, authenticated;
 

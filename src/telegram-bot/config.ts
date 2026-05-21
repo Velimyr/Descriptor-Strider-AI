@@ -1,6 +1,8 @@
 // Конфігурація Telegram-бота. Усе, що тут є, можна змінювати.
 // Секрети — через env. Решта — правте файл і робіть деплой.
 
+import type { BadgeDef } from '../types.js';
+
 export interface TelegramBotConfig {
   tg: {
     botTokenEnv: string;        // назва env-змінної з токеном
@@ -84,6 +86,10 @@ export interface TelegramBotConfig {
     tier1: string[];
     tier2: string[];
   };
+
+  // Каталог бейджів (досягнень). Можна доповнювати з часом — кожен бейдж
+  // користувач отримує один раз і назавжди. Картинки лежать у api/telegram/badges/.
+  badges: BadgeDef[];
 }
 
 export const telegramBotConfig: TelegramBotConfig = {
@@ -336,6 +342,23 @@ export const telegramBotConfig: TelegramBotConfig = {
     // Швидкий фідбек
     savingNotice: '💾 Зберігаю...',
     processingNotice: '⏳ Обробляю...',
+
+    // --- Бейджі (досягнення) ---
+    // Рядок із лічильником у розділі «Мої бали».
+    badgesStatsLine: '🏅 Досягнення: {earned}/{total}',
+    // Кнопка під «Мої бали».
+    menuBadges: '🏅 Мої досягнення',
+    // Заголовок списку досягнень.
+    badgesListHeader: '🏅 <b>Мої досягнення</b> ({earned}/{total})',
+    // Коли ще нічого не отримано.
+    badgesListEmpty:
+      '🏅 <b>Мої досягнення</b>\n\nПоки що жодної відзнаки. Опрацьовуйте справи — і вони з’являться!',
+    // Повідомлення при здобутті бейджа (надсилається з картинкою як caption).
+    badgeEarned: '🎉 <b>Нова відзнака!</b>\n\n<b>{title}</b>\n{text}',
+    // Нотатка під карткою отриманого бейджа (підказка, що його можна переслати).
+    badgeShareHint: '🔁 Перешліть це повідомлення друзям, щоб поділитися відзнакою.',
+    // Тост, коли тиснуть на ще не отриманий бейдж.
+    badgeLockedToast: 'Цю відзнаку ще не отримано.',
   },
 
   scheduledGreetings: [
@@ -374,4 +397,25 @@ export const telegramBotConfig: TelegramBotConfig = {
       'Легендарно! Це вже не просто розпізнавання справ. Це систематичний наступ на хаос архівних описів.',
     ],
   },
+
+  // Плейсхолдер-бейджі. Картинки тимчасові (копія sample.png) — замінимо реальними.
+  // id НЕ змінювати після релізу (зберігається в БД).
+  badges: [
+    {
+      id: 'first_case',
+      title: 'Перша справа',
+      text: 'Ви опрацювали свою першу архівну справу. Дякуємо, що приєдналися!',
+      hint: 'Опрацюйте першу справу.',
+      image: 'first_case.png',
+      criteria: { type: 'cases_total', threshold: 1 },
+    },
+    {
+      id: 'points_100',
+      title: '100 балів',
+      text: 'Ви набрали 100 балів. Архіви стають читабельнішими завдяки вам!',
+      hint: 'Наберіть 100 балів.',
+      image: 'points_100.png',
+      criteria: { type: 'total_points', threshold: 100 },
+    },
+  ],
 };

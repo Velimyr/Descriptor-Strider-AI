@@ -19,6 +19,7 @@ export const T = {
   integrityReviews:  `${PREFIX}integrity_reviews`,
   partners:          `${PREFIX}partners`,
   linkCodes:         `${PREFIX}link_codes`,
+  userBadges:        `${PREFIX}user_badges`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
@@ -53,6 +54,9 @@ export interface BotUser {
   pendingAction: '' | 'rename';
   createdAt: string;
   introShownAt: string; // ISO або '' якщо ще не показували
+  // Час "засіву" бейджів. '' (NULL у БД) = ще не засівали: на першій перевірці
+  // вже зароблені бейджі видаються тихо. Новим юзерам ставимо при /start.
+  badgesSeededAt: string;
   // Web-юзери: source='web', partnerId=<id>. Для TG — source='tg', partnerId=null.
   // Колонки додані міграцією schema-widget-*.sql.
   source: 'tg' | 'web';
@@ -110,6 +114,7 @@ function mapUser(r: any): BotUser {
     pendingAction: (r.pending_action || '') as '' | 'rename',
     createdAt: r.created_at || '',
     introShownAt: r.intro_shown_at || '',
+    badgesSeededAt: r.badges_seeded_at || '',
     source: (r.source || 'tg') as 'tg' | 'web',
     partnerId: r.partner_id || null,
   };
@@ -226,6 +231,7 @@ export async function upsertUser(
         status: u.status,
         pending_action: u.pendingAction || '',
         intro_shown_at: u.introShownAt || null,
+        badges_seeded_at: u.badgesSeededAt || null,
         // created_at — не оновлюємо при апдейті, але дамо при insert
         ...(u.createdAt ? { created_at: u.createdAt } : {}),
       },
@@ -284,6 +290,7 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.status !== undefined) dbPatch.status = patch.status;
   if (patch.pendingAction !== undefined) dbPatch.pending_action = patch.pendingAction;
   if (patch.introShownAt !== undefined) dbPatch.intro_shown_at = patch.introShownAt || null;
+  if (patch.badgesSeededAt !== undefined) dbPatch.badges_seeded_at = patch.badgesSeededAt || null;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;
@@ -1058,6 +1065,36 @@ export async function getAllIntegrityReviews(): Promise<
     from += pageSize;
   }
   return out;
+}
+
+// ---------- BADGES (досягнення) ----------
+// Перелік id бейджів, які користувач уже отримав.
+export async function getEarnedBadgeIds(tgId: string): Promise<string[]> {
+  const { data, error } = await db().from(T.userBadges).select('badge_id').eq('tg_id', tgId);
+  if (error) throw error;
+  return (data || []).map((r: any) => r.badge_id);
+}
+
+// Видати бейджі (ідемпотентно: PK (tg_id, badge_id) + ignoreDuplicates).
+export async function grantBadges(tgId: string, badgeIds: string[]): Promise<void> {
+  if (badgeIds.length === 0) return;
+  const rows = badgeIds.map(badge_id => ({ tg_id: tgId, badge_id }));
+  const { error } = await db()
+    .from(T.userBadges)
+    .upsert(rows, { onConflict: 'tg_id,badge_id', ignoreDuplicates: true });
+  if (error) throw error;
+}
+
+// Скільки справ користувач опрацював за весь час: parallel-сабміти + collab-події.
+// Різні режими не перетинаються по одній справі, тож сума без дедуплікації прийнятна.
+export async function countUserCases(tgId: string): Promise<number> {
+  const [subs, confs] = await Promise.all([
+    db().from(T.submissions).select('id', { count: 'exact', head: true }).eq('tg_id', tgId),
+    db().from(T.caseConfirmations).select('case_id', { count: 'exact', head: true }).eq('tg_id', tgId),
+  ]);
+  if (subs.error) throw subs.error;
+  if (confs.error) throw confs.error;
+  return (subs.count || 0) + (confs.count || 0);
 }
 
 // Прострочені блокування — на випадок ручної очистки (бот і так враховує locked_until).
