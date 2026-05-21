@@ -73,18 +73,29 @@ export async function countEarnedInCatalog(
   return { earned: all.filter(b => earned.has(b.id)).length, total: all.length };
 }
 
-// Надсилає вітальну картку про здобутий бейдж (фото + текст + підказка про forward).
-async function sendBadgeEarnedCard(chatId: number | string, badge: BadgeDef): Promise<void> {
-  const caption =
-    fmt(T.badgeEarned, { title: esc(badge.title), text: esc(badge.text) }) +
-    `\n\n${T.badgeShareHint}`;
+// Чиста картка бейджа: фото + (назва, опис) у caption. Без жодних службових
+// підказок — щоб користувач міг переслати її другу як є.
+function badgeCaption(badge: BadgeDef): string {
+  return `🏅 <b>${esc(badge.title)}</b>\n${esc(badge.text)}`;
+}
+
+async function sendBadgePhoto(chatId: number | string, badge: BadgeDef): Promise<void> {
+  const caption = badgeCaption(badge);
   const fid = await getBadgeFileId(badge);
   if (fid && caption.length <= 1024) {
     await sendPhotoByFileId(chatId, fid, caption);
-    return;
+  } else if (fid) {
+    await sendPhotoByFileId(chatId, fid);
+    await sendMessage(chatId, caption);
+  } else {
+    await sendMessage(chatId, caption);
   }
-  if (fid) await sendPhotoByFileId(chatId, fid);
-  await sendMessage(chatId, caption);
+}
+
+// Здобуття бейджа: чиста картка + окреме вітальне повідомлення з підказкою про forward.
+async function sendBadgeEarnedCard(chatId: number | string, badge: BadgeDef): Promise<void> {
+  await sendBadgePhoto(chatId, badge);
+  await sendMessage(chatId, T.badgeEarned);
 }
 
 // Картка отриманого бейджа на вимогу (із розділу «Мої досягнення») для пересилання.
@@ -98,16 +109,7 @@ export async function sendBadgeCardById(
   if (!badge) return false;
   const earned = await getEarnedBadgeIds(tgId);
   if (!earned.includes(badgeId)) return false;
-  const caption = `<b>${esc(badge.title)}</b>\n${esc(badge.text)}\n\n${T.badgeShareHint}`;
-  const fid = await getBadgeFileId(badge);
-  if (fid && caption.length <= 1024) {
-    await sendPhotoByFileId(chatId, fid, caption);
-  } else if (fid) {
-    await sendPhotoByFileId(chatId, fid);
-    await sendMessage(chatId, caption);
-  } else {
-    await sendMessage(chatId, caption);
-  }
+  await sendBadgePhoto(chatId, badge);
   return true;
 }
 
@@ -128,10 +130,13 @@ export async function sendBadgesList(chatId: number | string, tgId: string): Pro
       : T.badgesLockedLabel
   );
   const header = fmt(T.badgesListHeader, { earned: earnedCount, total: all.length });
-  const body = `${header}\n\n${lines.join('\n')}`;
   const buttons = all
     .filter(b => earned.has(b.id))
     .map(b => [{ text: `📤 ${b.title}`, callback_data: `badge:${b.id}` }]);
+  // Підказку про пересилання показуємо, лише якщо є отримані бейджі (є що пересилати).
+  const body = buttons.length
+    ? `${header}\n\n${lines.join('\n')}\n\n${T.badgesListShareHint}`
+    : `${header}\n\n${lines.join('\n')}`;
   await sendMessage(
     chatId,
     body,
