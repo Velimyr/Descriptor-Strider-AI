@@ -20,6 +20,7 @@ import {
   tokenizeSentence,
   titleAnswer,
   matchedPuzzleWords,
+  normalizeWord,
 } from './puzzleWords.js';
 
 export {
@@ -165,12 +166,16 @@ export async function sendPuzzleResults(chatId: number | string, tgId: string): 
   }
   const stopwords = telegramBotConfig.puzzle.stopwords;
   const targets = new Set(collectibleWords(puzzle.sentence, stopwords));
+  const stopSet = new Set(stopwords.map(w => normalizeWord(w)).filter(Boolean));
   const progress = await getPuzzleProgressForUser(today, tgId);
   const statusByWord = new Map(progress.map(p => [p.word, p.status]));
 
   const rendered = tokenizeSentence(puzzle.sentence)
     .map(({ raw, norm }) => {
-      if (!norm || !targets.has(norm)) return esc(raw); // пунктуація / стоп-слова
+      if (!norm) return esc(raw); // суто пунктуація
+      // Стоп-слова показуємо одразу як підтверджені — їх не треба збирати.
+      if (stopSet.has(norm)) return `<b>${esc(raw.toUpperCase())}</b>`;
+      if (!targets.has(norm)) return esc(raw); // запобіжник (не має статись)
       const st = statusByWord.get(norm);
       if (st === 'confirmed') return `<b>${esc(raw.toUpperCase())}</b>`;
       if (st === 'unconfirmed') return `<u>${esc(raw)}</u>`;
