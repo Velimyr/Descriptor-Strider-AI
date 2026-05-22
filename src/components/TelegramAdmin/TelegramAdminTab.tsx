@@ -5896,8 +5896,7 @@ function puzzleTodayKyiv(): string {
   }).format(new Date());
 }
 
-const PuzzleView: React.FC = () => {
-  const [date, setDate] = useState<string>(puzzleTodayKyiv());
+const PuzzleDayView: React.FC<{ date: string; setDate: (d: string) => void }> = ({ date, setDate }) => {
   const [sentence, setSentence] = useState('');
   const [savedSentence, setSavedSentence] = useState('');
   const [loading, setLoading] = useState(false);
@@ -6106,6 +6105,219 @@ const PuzzleView: React.FC = () => {
           </table>
         )}
       </div>
+    </div>
+  );
+};
+
+// ---- Масове заповнення фраз на дні вперед ----
+const PuzzleBulkView: React.FC = () => {
+  const [text, setText] = useState('');
+  const [startDate, setStartDate] = useState(puzzleTodayKyiv());
+  const [preview, setPreview] = useState<Array<{ date: string; sentence: string }> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const phrases = () => text.split('\n').map(s => s.trim()).filter(Boolean);
+
+  const doPreview = async () => {
+    setError(null);
+    setDone(null);
+    setBusy(true);
+    try {
+      const r = await tgApi.bulkPuzzles(phrases(), startDate, true);
+      setPreview(r.assignments);
+    } catch (e: any) {
+      setError(e.message || 'Помилка');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const apply = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const r = await tgApi.bulkPuzzles(phrases(), startDate, false);
+      setPreview(r.assignments);
+      setDone(`Збережено фраз: ${r.assignments.length}.`);
+    } catch (e: any) {
+      setError(e.message || 'Помилка');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const count = phrases().length;
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <div>
+        <h3 className="font-bold text-lg mb-1">Масове заповнення</h3>
+        <p className="text-sm text-slate-600">
+          По одній фразі в рядку. Кожна потрапляє на найближчий <b>порожній</b> день, починаючи з
+          вказаної дати; уже задані дні не перезаписуються.
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <label className="text-sm text-slate-600">Починати з (Київ):</label>
+        <input
+          type="date"
+          value={startDate}
+          onChange={e => setStartDate(e.target.value)}
+          className="border rounded px-2 py-1 text-sm"
+        />
+        <span className="text-xs text-slate-400">фраз у списку: {count}</span>
+      </div>
+      <textarea
+        value={text}
+        onChange={e => setText(e.target.value)}
+        rows={8}
+        placeholder={'Фраза першого дня\nФраза другого дня\n…'}
+        className="w-full border rounded px-3 py-2 text-sm font-mono"
+      />
+      <div className="flex items-center gap-2">
+        <button
+          onClick={doPreview}
+          disabled={busy || count === 0}
+          className="px-3 py-1 border rounded text-sm disabled:opacity-50"
+        >
+          {busy ? 'Рахую…' : 'Прев’ю'}
+        </button>
+        <button
+          onClick={apply}
+          disabled={busy || count === 0}
+          className="px-3 py-1 bg-indigo-600 text-white rounded text-sm disabled:opacity-50"
+        >
+          {busy ? 'Зберігаю…' : 'Зберегти'}
+        </button>
+      </div>
+      {error && <div className="text-sm text-red-600">{error}</div>}
+      {done && <div className="text-sm text-emerald-700">{done}</div>}
+      {preview && preview.length > 0 && (
+        <table className="w-full text-sm border">
+          <thead>
+            <tr className="bg-slate-50 text-left">
+              <th className="px-2 py-1 border-b">Дата</th>
+              <th className="px-2 py-1 border-b">Фраза</th>
+            </tr>
+          </thead>
+          <tbody>
+            {preview.map(a => (
+              <tr key={a.date}>
+                <td className="px-2 py-1 border-b whitespace-nowrap">{a.date}</td>
+                <td className="px-2 py-1 border-b">{a.sentence}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
+// ---- Список усіх фраз (минулі/сьогодні/майбутні) ----
+const PuzzleListView: React.FC<{ onEdit: (d: string) => void }> = ({ onEdit }) => {
+  const [puzzles, setPuzzles] = useState<Array<{ date: string; sentence: string }> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const today = puzzleTodayKyiv();
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await tgApi.listPuzzles();
+      setPuzzles(r.puzzles);
+    } catch (e: any) {
+      setError(e.message || 'Помилка');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    load();
+  }, []);
+
+  const marker = (d: string) =>
+    d < today ? <span className="text-slate-400">минуле</span>
+      : d === today ? <span className="text-emerald-700 font-medium">сьогодні</span>
+      : <span className="text-indigo-700">майбутнє</span>;
+
+  return (
+    <div className="max-w-3xl space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="font-bold text-lg">Усі фрази</h3>
+        <button onClick={load} disabled={loading} className="px-3 py-1 border rounded text-sm disabled:opacity-50">
+          {loading ? 'Оновлюю…' : 'Оновити'}
+        </button>
+      </div>
+      {error && <div className="text-sm text-red-600">{error}</div>}
+      {!puzzles || puzzles.length === 0 ? (
+        <div className="text-sm text-slate-400">Фраз ще немає.</div>
+      ) : (
+        <table className="w-full text-sm border">
+          <thead>
+            <tr className="bg-slate-50 text-left">
+              <th className="px-2 py-1 border-b whitespace-nowrap">Дата</th>
+              <th className="px-2 py-1 border-b">Коли</th>
+              <th className="px-2 py-1 border-b">Фраза</th>
+              <th className="px-2 py-1 border-b"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {puzzles.map(p => (
+              <tr key={p.date} className={p.date === today ? 'bg-emerald-50' : ''}>
+                <td className="px-2 py-1 border-b whitespace-nowrap">{p.date}</td>
+                <td className="px-2 py-1 border-b whitespace-nowrap">{marker(p.date)}</td>
+                <td className="px-2 py-1 border-b">{p.sentence || <span className="text-slate-300">—</span>}</td>
+                <td className="px-2 py-1 border-b">
+                  <button onClick={() => onEdit(p.date)} className="text-indigo-600 hover:underline">
+                    Редагувати
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
+// Обгортка з підвкладками День / Масово / Список.
+const PuzzleView: React.FC = () => {
+  const [sub, setSub] = useState<'day' | 'bulk' | 'list'>('day');
+  const [date, setDate] = useState<string>(puzzleTodayKyiv());
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 border-b pb-2">
+        {([
+          ['day', 'День'],
+          ['bulk', 'Масово'],
+          ['list', 'Список'],
+        ] as Array<['day' | 'bulk' | 'list', string]>).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setSub(k)}
+            className={`px-3 py-1 text-sm rounded ${
+              sub === k ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {sub === 'day' && <PuzzleDayView date={date} setDate={setDate} />}
+      {sub === 'bulk' && <PuzzleBulkView />}
+      {sub === 'list' && (
+        <PuzzleListView
+          onEdit={d => {
+            setDate(d);
+            setSub('day');
+          }}
+        />
+      )}
     </div>
   );
 };

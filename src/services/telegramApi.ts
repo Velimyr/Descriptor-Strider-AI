@@ -177,4 +177,15 @@ export const tgApi = {
       }>;
       winners: Array<{ place: number; tgId: string; points: number; displayName: string }>;
     }>,
+  listPuzzles: () =>
+    call('/admin/puzzles') as Promise<{ puzzles: Array<{ date: string; sentence: string }> }>,
+  bulkPuzzles: (phrases: string[], startDate?: string, dryRun = false) =>
+    call('/admin/puzzle/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ phrases, startDate, dryRun }),
+    }) as Promise<{
+      ok: boolean;
+      dryRun: boolean;
+      assignments: Array<{ date: string; sentence: string }>;
+    }>,
 };

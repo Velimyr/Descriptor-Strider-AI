@@ -1,5 +1,6 @@
-// «Описовий пазл» — токенізація, зіставлення слів і рушій гри.
-// Чисті функції (нормалізація/токенізація) можна використати і в admin API.
+// «Описовий пазл» — рушій гри (БД + нарахування + сповіщення + UI).
+// Чисті функції токенізації — у ./puzzleWords (leaf-модуль), реекспортуємо їх
+// тут для зворотної сумісності з наявними імпортами.
 import type { TableColumn } from '../../src/types.js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import {
@@ -13,67 +14,24 @@ import {
 } from './storage.js';
 import { kyivDateString } from './scheduler.js';
 import { sendMessage } from './tg-api.js';
+import {
+  collectibleWords,
+  tokenizeSentence,
+  titleAnswer,
+  matchedPuzzleWords,
+} from './puzzleWords.js';
 
-// Різновиди апострофа зводимо до одного, щоб «п'ять» і «п’ять» збігалися.
-const APOSTROPHES = /[''‘`´]/g;
+export {
+  normalizeWord,
+  tokenizeSentence,
+  collectibleWords,
+  wordsInText,
+  titleFieldIndex,
+  titleAnswer,
+  matchedPuzzleWords,
+} from './puzzleWords.js';
 
-// Нормалізація слова для точного зіставлення (без урахування регістру):
-// нижній регістр, єдиний апостроф, обрізана облямівкова пунктуація.
-// Внутрішні апостроф/дефіс лишаємо («слобода-руська», «п'ять»).
-export function normalizeWord(raw: string): string {
-  const s = (raw || '').toLowerCase().replace(APOSTROPHES, '\'');
-  // \p{L}\p{N} — будь-яка літера/цифра (Unicode), тож українська працює.
-  return s.replace(/^[^\p{L}\p{N}]+/u, '').replace(/[^\p{L}\p{N}]+$/u, '');
-}
-
-// Розбиває речення на токени, зберігаючи оригінал (для рендера) і норму (для збігу).
-// norm === '' означає суто пунктуаційний токен — не збирається.
-export function tokenizeSentence(sentence: string): Array<{ raw: string; norm: string }> {
-  return (sentence || '')
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(raw => ({ raw, norm: normalizeWord(raw) }));
-}
-
-// Унікальні «слова для збору» речення: норми без порожніх і без стоп-слів.
-export function collectibleWords(sentence: string, stopwords: string[] = []): string[] {
-  const stop = new Set(stopwords.map(w => normalizeWord(w)).filter(Boolean));
-  const out = new Set<string>();
-  for (const { norm } of tokenizeSentence(sentence)) {
-    if (norm && !stop.has(norm)) out.add(norm);
-  }
-  return [...out];
-}
-
-// Множина нормалізованих слів довільного тексту (напр. заголовка справи).
-export function wordsInText(text: string): Set<string> {
-  const out = new Set<string>();
-  for (const { norm } of tokenizeSentence(text)) {
-    if (norm) out.add(norm);
-  }
-  return out;
-}
-
-// Індекс поля-заголовка серед питань (role === 'title'). -1, якщо немає.
-export function titleFieldIndex(questions: TableColumn[]): number {
-  return questions.findIndex(q => q.role === 'title');
-}
-
-// Значення заголовка з масиву відповідей (за роллю title). '' якщо немає.
-export function titleAnswer(questions: TableColumn[], answers: string[]): string {
-  const idx = titleFieldIndex(questions);
-  return idx >= 0 ? String(answers[idx] ?? '') : '';
-}
-
-// Які слова пазла зустрілися в заголовку справи (перетин title ∩ collectible).
-export function matchedPuzzleWords(
-  titleText: string,
-  sentence: string,
-  stopwords: string[] = []
-): string[] {
-  const titleWords = wordsInText(titleText);
-  return collectibleWords(sentence, stopwords).filter(w => titleWords.has(w));
-}
+const T = telegramBotConfig.texts;
 
 // --------- Рушій гри (БД + нарахування + сповіщення) ---------
 // Усе — best-effort: помилки логуються, але НЕ ламають основний flow справи.
@@ -167,7 +125,6 @@ function puzzleTaskKeyboard(): any {
 
 // Задача дня + кнопки «Правила» / «Мої результати».
 export async function sendPuzzleTask(chatId: number | string): Promise<void> {
-  const T = telegramBotConfig.texts;
   const puzzle = await getPuzzle(kyivDateString());
   if (!puzzle || !puzzle.sentence.trim()) {
     await sendMessage(chatId, T.puzzleNoToday);
@@ -185,7 +142,6 @@ export async function sendPuzzleRules(chatId: number | string): Promise<void> {
 // Фраза дня з виділенням: підтверджені — ВЕЛИКИМИ+жирним, зібрані-непідтверджені —
 // підкреслені, решта — звичайні. Знизу — лічильник і легенда.
 export async function sendPuzzleResults(chatId: number | string, tgId: string): Promise<void> {
-  const T = telegramBotConfig.texts;
   const today = kyivDateString();
   const puzzle = await getPuzzle(today);
   if (!puzzle || !puzzle.sentence.trim()) {

@@ -1018,6 +1018,65 @@ router.get('/admin/puzzle/progress', async (req, res) => {
   }
 });
 
+// Усі пазли (минулі й майбутні), за зростанням дати.
+router.get('/admin/puzzles', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { getAllPuzzles } = await import('./storage.js');
+    const puzzles = await getAllPuzzles();
+    res.json({ puzzles: puzzles.map(p => ({ date: p.dateKyiv, sentence: p.sentence })) });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Масове заповнення: кожна фраза — на найближчий ПОРОЖНІЙ день, починаючи зі
+// startDate (за замовч. сьогодні, Київ), не перезаписуючи вже задані дні.
+// dryRun=true — лише прев'ю (нічого не зберігаємо).
+function addDaysIso(dateStr: string, n: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const t = Date.UTC(y, m - 1, d) + n * 86_400_000;
+  const dt = new Date(t);
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${dt.getUTCFullYear()}-${mm}-${dd}`;
+}
+
+router.post('/admin/puzzle/bulk', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const body = req.body || {};
+  const dryRun = body.dryRun === true;
+  const phrases = Array.isArray(body.phrases)
+    ? body.phrases.map((s: any) => String(s).trim()).filter(Boolean)
+    : [];
+  const startDate = String(body.startDate || '') || kyivDateString();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+    return res.status(400).json({ error: 'startDate must be YYYY-MM-DD' });
+  }
+  if (phrases.length === 0) {
+    return res.status(400).json({ error: 'phrases required' });
+  }
+  try {
+    const { getAllPuzzles, upsertPuzzle } = await import('./storage.js');
+    const all = await getAllPuzzles();
+    const filled = new Set(all.filter(p => p.sentence.trim()).map(p => p.dateKyiv));
+    const assignments: Array<{ date: string; sentence: string }> = [];
+    let cursor = startDate;
+    for (const sentence of phrases) {
+      while (filled.has(cursor)) cursor = addDaysIso(cursor, 1);
+      assignments.push({ date: cursor, sentence });
+      filled.add(cursor);
+      cursor = addDaysIso(cursor, 1);
+    }
+    if (!dryRun) {
+      for (const a of assignments) await upsertPuzzle(a.date, a.sentence);
+    }
+    res.json({ ok: true, dryRun, assignments });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===================== WIDGET PARTNERS CRUD =====================
 // Реєстрація партнерських сайтів, які встановлюють віджет blukach. Ключ
 // показується ОДИН РАЗ на створення — далі тільки sha256 у БД.

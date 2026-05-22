@@ -1117,6 +1117,27 @@ export async function getPuzzle(dateKyiv: string): Promise<PuzzleRow | null> {
   return data ? { dateKyiv: (data as any).date_kyiv, sentence: (data as any).sentence || '' } : null;
 }
 
+// Усі пазли за зростанням дати (для списку та масового заповнення).
+export async function getAllPuzzles(): Promise<PuzzleRow[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: PuzzleRow[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.puzzles)
+      .select('date_kyiv, sentence')
+      .order('date_kyiv', { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) out.push({ dateKyiv: (r as any).date_kyiv, sentence: (r as any).sentence || '' });
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
 export async function upsertPuzzle(dateKyiv: string, sentence: string): Promise<void> {
   const { error } = await db()
     .from(T.puzzles)
