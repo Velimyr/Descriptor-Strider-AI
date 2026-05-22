@@ -53,7 +53,7 @@ import {
 } from './badges.js';
 import {
   collectPuzzleWordsOnCreate,
-  onCollabCaseClosed,
+  onCollabCaseConfirmed,
   sendPuzzleTask,
   sendPuzzleRules,
   sendPuzzleResults,
@@ -1433,9 +1433,9 @@ async function collabConfirm(
   // Перевірка — 1 бал база.
   await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1);
   await deleteSession(tgId);
-  // Описовий пазл: якщо справу зведено — підтверджуємо зібрані з неї слова
-  // (і, можливо, видаємо приз розпізнавачу).
-  if (closed) await onCollabCaseClosed(caseId);
+  // Описовий пазл: зараховуємо слова (для розпізнавача). Чи на кожне підтвердження,
+  // чи лише на повне закриття — вирішує config.puzzle.confirmMode.
+  await onCollabCaseConfirmed(caseId, closed);
 }
 
 // Спільна частина для collab create/edit/confirm: бали, повідомлення.

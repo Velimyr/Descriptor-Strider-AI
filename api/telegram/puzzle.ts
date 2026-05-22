@@ -62,18 +62,22 @@ export async function collectPuzzleWordsOnCreate(
   }
 }
 
-// Виклик при ЗАКРИТТІ колаб-справи (з будь-якого шляху — бот чи web).
+// Виклик при ПІДТВЕРДЖЕННІ колаб-справи. Залежно від config.puzzle.confirmMode:
+//   'single' — зараховуємо слова на КОЖНЕ підтвердження (не чекаємо закриття);
+//   'full'   — лише коли справа повністю закрита (closed=true).
 // Підтверджуємо слова, зібрані з цієї справи СЬОГОДНІ (строго денний), і для
-// зачеплених гравців перевіряємо, чи зібрано всю фразу → видача призу.
-export async function onCollabCaseClosed(caseId: string): Promise<void> {
+// зачеплених гравців перевіряємо повний збір фрази → видача призу.
+// Ідемпотентно: вже підтверджені слова не чіпаються.
+export async function onCollabCaseConfirmed(caseId: string, closed: boolean): Promise<void> {
   try {
+    if (telegramBotConfig.puzzle.confirmMode === 'full' && !closed) return;
     const today = kyivDateString();
     const affected = await confirmPuzzleWordsByCase(caseId, today);
     for (const tgId of affected) {
       await checkPuzzleCompletion(tgId, today);
     }
   } catch (e) {
-    console.error('onCollabCaseClosed failed', e);
+    console.error('onCollabCaseConfirmed failed', e);
   }
 }
 
