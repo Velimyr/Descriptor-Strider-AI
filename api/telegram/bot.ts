@@ -958,16 +958,15 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
     rank: rank || all.length + 1,
     totalUsers: all.length,
   });
-  // Якщо є каталог бейджів — показуємо лічильник і даємо inline-кнопку «Мої досягнення».
+  // Inline-кнопки під «Мої бали»: досягнення (якщо є каталог) + «Мій Описовий пазл».
   // Reply-меню внизу лишається (воно is_persistent), тож inline тут не конфліктує.
+  const rows: any[] = [];
   if (badges.total > 0) {
     body += '\n' + fmt(T.badgesStatsLine, { earned: badges.earned, total: badges.total });
-    await sendMessage(chatId, body, {
-      reply_markup: { inline_keyboard: [[{ text: T.menuBadges, callback_data: 'badges' }]] },
-    });
-    return;
+    rows.push([{ text: T.menuBadges, callback_data: 'badges' }]);
   }
-  await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
+  rows.push([{ text: T.puzzleResultsButton, callback_data: 'puzzle:me' }]);
+  await sendMessage(chatId, body, { reply_markup: { inline_keyboard: rows } });
 }
 
 async function cmdProgress(chatId: number, user: BotUser) {

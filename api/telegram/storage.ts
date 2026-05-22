@@ -1150,13 +1150,14 @@ export async function upsertPuzzle(dateKyiv: string, sentence: string): Promise<
 
 // Записати зібрані (непідтверджені) слова. ignoreDuplicates — не чіпаємо вже наявні
 // (зокрема не «понижуємо» підтверджені назад до unconfirmed).
+// Повертає слова, які були РЕАЛЬНО додані (нові) — для сповіщення «слово знайдено».
 export async function addPuzzleWords(
   dateKyiv: string,
   tgId: string,
   words: string[],
   caseId: string
-): Promise<void> {
-  if (words.length === 0) return;
+): Promise<string[]> {
+  if (words.length === 0) return [];
   const now = new Date().toISOString();
   const rows = words.map(word => ({
     date_kyiv: dateKyiv,
@@ -1166,10 +1167,12 @@ export async function addPuzzleWords(
     case_id: caseId,
     collected_at: now,
   }));
-  const { error } = await db()
+  const { data, error } = await db()
     .from(T.puzzleProgress)
-    .upsert(rows, { onConflict: 'date_kyiv,tg_id,word', ignoreDuplicates: true });
+    .upsert(rows, { onConflict: 'date_kyiv,tg_id,word', ignoreDuplicates: true })
+    .select('word');
   if (error) throw error;
+  return (data || []).map((r: any) => r.word);
 }
 
 // Підтвердити слова, зібрані з конкретної справи в конкретний день.

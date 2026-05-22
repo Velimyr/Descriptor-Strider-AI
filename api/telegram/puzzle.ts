@@ -8,6 +8,7 @@ import {
   addPuzzleWords,
   confirmPuzzleWordsByCase,
   getPuzzleProgressForUser,
+  getPuzzleWinners,
   awardPuzzleWinner,
   getUser,
   patchUser,
@@ -56,7 +57,17 @@ export async function collectPuzzleWordsOnCreate(
     if (!title.trim()) return;
     const words = matchedPuzzleWords(title, puzzle.sentence, telegramBotConfig.puzzle.stopwords);
     if (words.length === 0) return;
-    await addPuzzleWords(today, tgId, words, caseId);
+    const added = await addPuzzleWords(today, tgId, words, caseId);
+    if (added.length === 0) return;
+    // Сповіщаємо про КОЖНЕ нове знайдене слово. Для гарного вигляду беремо
+    // оригінальну форму слова з фрази (а не нормалізовану).
+    const rawByNorm = new Map<string, string>();
+    for (const { raw, norm } of tokenizeSentence(puzzle.sentence)) {
+      if (norm && !rawByNorm.has(norm)) rawByNorm.set(norm, raw);
+    }
+    for (const w of added) {
+      await sendMessage(tgId, fmt(T.puzzleWordFound, { word: esc(rawByNorm.get(w) || w) }));
+    }
   } catch (e) {
     console.error('collectPuzzleWordsOnCreate failed', e);
   }
@@ -176,7 +187,15 @@ export async function sendPuzzleResults(chatId: number | string, tgId: string): 
     if (st === 'confirmed') confirmed++;
   }
 
+  // Якщо користувач уже зібрав фразу й отримав приз — вітаємо ще раз зверху.
+  const winners = await getPuzzleWinners(today);
+  const mine = winners.find(w => w.tgId === tgId);
+  const congrats = mine
+    ? fmt(T.puzzleCongrats, { place: mine.place, points: mine.points }) + '\n\n'
+    : '';
+
   const body =
+    congrats +
     `${T.puzzleResultsHeader}\n\n` +
     `${rendered}\n\n` +
     `${fmt(T.puzzleProgressLine, { collected, confirmed, total })}\n\n` +

@@ -388,7 +388,11 @@ export const telegramBotConfig: TelegramBotConfig = {
       '🧩 <b>Описовий пазл</b>\n\nФраза дня:\n«<b>{sentence}</b>»\n\n' +
       'Збирай слова фрази, розпізнаючи справи. Перші троє, хто збере й підтвердить усю фразу за сьогодні, отримають призові бали!',
     puzzleRulesButton: '📜 Правила',
-    puzzleResultsButton: '📊 Мої результати',
+    puzzleResultsButton: '🧩 Мій Описовий пазл',
+    // Повідомлення при знаходженні (зборі) слова фрази на розпізнаванні.
+    puzzleWordFound:
+      '🧩 Вітаю! Слово «<b>{word}</b>» з сьогоднішньої гри «Описовий пазл» знайдено! ' +
+      'Продовжуй шукати інші слова й очікуй, коли твоє слово підтвердять інші учасники.',
     puzzleResultsHeader: '🧩 <b>Фраза дня</b>',
     // {collected}/{total} зібрано, {confirmed}/{total} підтверджено.
     puzzleProgressLine: 'Зібрано: {collected}/{total} · підтверджено: {confirmed}/{total}',
