@@ -16,6 +16,7 @@ import { handleUpdate, dispatchCaseToUser, sendScheduledGreeting } from './bot.j
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
 import { detectCaseBoxes } from './slicer.js';
 import {
+  kyivDateString,
   nowIsoUtc,
   progressByDescription,
   progressOfAllCases,
@@ -893,6 +894,128 @@ router.post('/admin/recompute-case', async (req, res) => {
   const { caseId } = req.body || {};
   const count = await recomputeCaseSubmissionCount(caseId);
   res.json({ ok: true, count });
+});
+
+// ===================== ОПИСОВИЙ ПАЗЛ =====================
+// Речення дня (read).
+router.get('/admin/puzzle', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const date = String(req.query.date || '') || kyivDateString();
+  try {
+    const { getPuzzle } = await import('./storage.js');
+    const p = await getPuzzle(date);
+    res.json({ date, sentence: p?.sentence || '' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Зберегти речення дня.
+router.post('/admin/puzzle', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { date, sentence } = req.body || {};
+  const d = String(date || '') || kyivDateString();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  }
+  try {
+    const { upsertPuzzle } = await import('./storage.js');
+    await upsertPuzzle(d, String(sentence || ''));
+    res.json({ ok: true, date: d });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Індикатор наявності: скільки вже розпізнаних колаб-заголовків містять кожне
+// слово речення. Це орієнтир (слова реально трапляються в архіві), НЕ гарантія,
+// що слово збереться саме сьогодні.
+router.get('/admin/puzzle/word-availability', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const sentence = String(req.query.sentence || '');
+  try {
+    const { getRecognizedCollabAnswers } = await import('./storage.js');
+    const { collectibleWords, titleFieldIndex, wordsInText } = await import('./puzzle.js');
+    const qRaw = await getMeta('questions');
+    let questions: any[] = [];
+    try {
+      questions = qRaw ? JSON.parse(qRaw) : [];
+      if (!Array.isArray(questions)) questions = [];
+    } catch {
+      questions = [];
+    }
+    const titleIdx = titleFieldIndex(questions);
+    const words = collectibleWords(sentence, telegramBotConfig.puzzle.stopwords);
+    const counts = new Map<string, number>(words.map(w => [w, 0]));
+    if (titleIdx >= 0 && words.length > 0) {
+      const answersList = await getRecognizedCollabAnswers(3000);
+      for (const ans of answersList) {
+        const title = String(ans[titleIdx] ?? '');
+        if (!title) continue;
+        const tw = wordsInText(title);
+        for (const w of words) if (tw.has(w)) counts.set(w, (counts.get(w) || 0) + 1);
+      }
+    }
+    res.json({
+      sentence,
+      titleConfigured: titleIdx >= 0,
+      words: words.map(w => ({ word: w, count: counts.get(w) || 0 })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Зведення дня: фраза + учасники (нік, зібрано/підтверджено) відсортовані за
+// підтвердженими, потім зібраними + переможці.
+router.get('/admin/puzzle/progress', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const date = String(req.query.date || '') || kyivDateString();
+  try {
+    const {
+      getPuzzle,
+      getPuzzleProgressForDate,
+      getPuzzleWinners,
+      getDisplayNamesMap,
+    } = await import('./storage.js');
+    const { collectibleWords } = await import('./puzzle.js');
+    const [puzzle, rows, winners] = await Promise.all([
+      getPuzzle(date),
+      getPuzzleProgressForDate(date),
+      getPuzzleWinners(date),
+    ]);
+    const total = puzzle
+      ? collectibleWords(puzzle.sentence, telegramBotConfig.puzzle.stopwords).length
+      : 0;
+    const agg = new Map<string, { collected: number; confirmed: number }>();
+    for (const r of rows) {
+      const a = agg.get(r.tgId) || { collected: 0, confirmed: 0 };
+      a.collected++;
+      if (r.status === 'confirmed') a.confirmed++;
+      agg.set(r.tgId, a);
+    }
+    const tgIds = [...agg.keys()];
+    const names = await getDisplayNamesMap(tgIds);
+    const placeByTg = new Map(winners.map(w => [w.tgId, w.place]));
+    const participants = tgIds
+      .map(tgId => ({
+        tgId,
+        displayName: names[tgId] || '',
+        collected: agg.get(tgId)!.collected,
+        confirmed: agg.get(tgId)!.confirmed,
+        place: placeByTg.get(tgId) ?? null,
+      }))
+      .sort((a, b) => b.confirmed - a.confirmed || b.collected - a.collected);
+    res.json({
+      date,
+      sentence: puzzle?.sentence || '',
+      total,
+      participants,
+      winners: winners.map(w => ({ ...w, displayName: names[w.tgId] || '' })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ===================== WIDGET PARTNERS CRUD =====================

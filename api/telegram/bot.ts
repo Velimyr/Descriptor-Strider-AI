@@ -51,6 +51,13 @@ import {
   sendBadgesList,
   sendBadgeCardById,
 } from './badges.js';
+import {
+  collectPuzzleWordsOnCreate,
+  onCollabCaseClosed,
+  sendPuzzleTask,
+  sendPuzzleRules,
+  sendPuzzleResults,
+} from './puzzle.js';
 
 const T = telegramBotConfig.texts;
 
@@ -694,6 +701,23 @@ async function handleCallback(cb: any) {
     return;
   }
 
+  // Описовий пазл — не залежить від сесії.
+  if (data === 'puzzle') {
+    await answerCallbackQuery(cb.id);
+    await sendPuzzleTask(chatId);
+    return;
+  }
+  if (data === 'puzzle:rules') {
+    await answerCallbackQuery(cb.id);
+    await sendPuzzleRules(chatId);
+    return;
+  }
+  if (data === 'puzzle:me') {
+    await answerCallbackQuery(cb.id);
+    await sendPuzzleResults(chatId, tgId);
+    return;
+  }
+
   // ack + читання сесії і питань — паралельно
   const [, session, questions] = await Promise.all([
     answerCallbackQuery(cb.id),
@@ -976,7 +1000,10 @@ async function cmdProgress(chatId: number, user: BotUser) {
     })
   );
   const body = [header, ...blocks].join('\n\n') || header;
-  await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
+  // Inline-кнопка гри «Описовий пазл». Reply-меню внизу лишається (is_persistent).
+  await sendMessage(chatId, body, {
+    reply_markup: { inline_keyboard: [[{ text: T.menuPuzzle, callback_data: 'puzzle' }]] },
+  });
 }
 
 async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
@@ -1375,6 +1402,8 @@ async function collabSubmit(
       setCaseCreated(cse.caseId, tgId, finalAnswers),
       recordCaseEvent(cse.caseId, tgId, 'create', finalAnswers),
     ]);
+    // Описовий пазл: збираємо слова заголовка для фрази дня (тільки на розпізнаванні).
+    await collectPuzzleWordsOnCreate(tgId, cse.caseId, questions, finalAnswers);
   }
 
   // Розпізнавання (create) — 3 бали база; редагування — 1 (це перевірка з правкою).
@@ -1404,6 +1433,9 @@ async function collabConfirm(
   // Перевірка — 1 бал база.
   await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1);
   await deleteSession(tgId);
+  // Описовий пазл: якщо справу зведено — підтверджуємо зібрані з неї слова
+  // (і, можливо, видаємо приз розпізнавачу).
+  if (closed) await onCollabCaseClosed(caseId);
 }
 
 // Спільна частина для collab create/edit/confirm: бали, повідомлення.

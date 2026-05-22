@@ -150,6 +150,64 @@ create table if not exists botdev_user_badges (
 );
 create index if not exists idx_botdev_user_badges_user on botdev_user_badges(tg_id);
 
+-- ===== Описовий пазл (гра «слово дня») — staging =====
+create table if not exists botdev_puzzles (
+  date_kyiv  date primary key,
+  sentence   text        not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists botdev_puzzle_progress (
+  date_kyiv    date        not null,
+  tg_id        text        not null,
+  word         text        not null,
+  status       text        not null default 'unconfirmed' check (status in ('unconfirmed','confirmed')),
+  case_id      text        not null default '',
+  collected_at timestamptz not null default now(),
+  confirmed_at timestamptz,
+  primary key (date_kyiv, tg_id, word)
+);
+create index if not exists idx_botdev_puzzle_progress_day  on botdev_puzzle_progress(date_kyiv);
+create index if not exists idx_botdev_puzzle_progress_case on botdev_puzzle_progress(case_id);
+
+create table if not exists botdev_puzzle_winners (
+  date_kyiv  date        not null,
+  place      int         not null check (place between 1 and 3),
+  tg_id      text        not null,
+  points     int         not null default 0,
+  awarded_at timestamptz not null default now(),
+  primary key (date_kyiv, place),
+  unique (date_kyiv, tg_id)
+);
+
+alter table botdev_puzzles         enable row level security;
+alter table botdev_puzzle_progress enable row level security;
+alter table botdev_puzzle_winners  enable row level security;
+
+create or replace function botdev_award_puzzle_winner(p_date date, p_tg_id text)
+returns table(place int, points int) language plpgsql security definer as $$
+declare
+  v_count  int;
+  v_place  int;
+  v_points int;
+begin
+  perform pg_advisory_xact_lock(hashtext('botdev_puzzle:' || p_date::text));
+  if exists (select 1 from botdev_puzzle_winners w where w.date_kyiv = p_date and w.tg_id = p_tg_id) then
+    return;
+  end if;
+  select count(*) into v_count from botdev_puzzle_winners w where w.date_kyiv = p_date;
+  if v_count >= 3 then
+    return;
+  end if;
+  v_place  := v_count + 1;
+  v_points := case v_place when 1 then 1000 when 2 then 500 when 3 then 300 else 0 end;
+  insert into botdev_puzzle_winners(date_kyiv, place, tg_id, points)
+    values (p_date, v_place, p_tg_id, v_points);
+  return query select v_place, v_points;
+end $$;
+revoke all on function botdev_award_puzzle_winner(date, text) from public, anon, authenticated;
+
 create table if not exists botdev_skipped (
   tg_id      text        not null,
   case_id    text        not null,

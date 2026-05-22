@@ -12,7 +12,7 @@ interface Props {
   initialQuestions?: TableColumn[]; // зазвичай tableStructure активного проєкту
 }
 
-type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity' | 'chart' | 'partners';
+type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity' | 'chart' | 'partners' | 'puzzle';
 
 export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => {
   const [tab, setTab] = useState<TabKey>('setup');
@@ -54,6 +54,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['chart', 'Графік'],
           ['integrity', 'Перевірка доброчесності'],
           ['partners', 'Партнери'],
+          ['puzzle', 'Пазл'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
             key={k}
@@ -77,6 +78,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         {tab === 'chart' && <ChartView />}
         {tab === 'integrity' && <IntegrityView />}
         {tab === 'partners' && <PartnersView />}
+        {tab === 'puzzle' && <PuzzleView />}
       </div>
     </div>
   );
@@ -5880,5 +5882,230 @@ const EditPartnerForm: React.FC<{
         </button>
       </div>
     </form>
+  );
+};
+
+// ==================== PUZZLE VIEW (Описовий пазл) ====================
+
+function puzzleTodayKyiv(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Kyiv',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+const PuzzleView: React.FC = () => {
+  const [date, setDate] = useState<string>(puzzleTodayKyiv());
+  const [sentence, setSentence] = useState('');
+  const [savedSentence, setSavedSentence] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [avail, setAvail] = useState<{
+    titleConfigured: boolean;
+    words: Array<{ word: string; count: number }>;
+  } | null>(null);
+  const [progress, setProgress] = useState<{
+    total: number;
+    participants: Array<{
+      tgId: string;
+      displayName: string;
+      collected: number;
+      confirmed: number;
+      place: number | null;
+    }>;
+    winners: Array<{ place: number; tgId: string; points: number; displayName: string }>;
+  } | null>(null);
+
+  const load = async (d: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [p, prog] = await Promise.all([tgApi.getPuzzle(d), tgApi.puzzleProgress(d)]);
+      setSentence(p.sentence || '');
+      setSavedSentence(p.sentence || '');
+      setProgress(prog);
+    } catch (e: any) {
+      setError(e.message || 'Помилка завантаження');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load(date);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
+
+  // Дебаунс індикатора наявності слів.
+  useEffect(() => {
+    const s = sentence.trim();
+    if (!s) {
+      setAvail(null);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        setAvail(await tgApi.puzzleWordAvailability(s));
+      } catch {
+        /* мовчки — індикатор не критичний */
+      }
+    }, 500);
+    return () => clearTimeout(t);
+  }, [sentence]);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await tgApi.savePuzzle(date, sentence);
+      await load(date);
+    } catch (e: any) {
+      setError(e.message || 'Помилка збереження');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const dirty = sentence !== savedSentence;
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <div>
+        <h3 className="font-bold text-lg mb-1">🧩 Описовий пазл</h3>
+        <p className="text-sm text-slate-600">
+          Задайте «фразу дня». Гравці збирають її слова, розпізнаючи справи. Збирати й
+          підтверджувати всі слова потрібно протягом одного дня.
+        </p>
+      </div>
+
+      {/* Фраза дня (збережена) */}
+      <div className="rounded border bg-slate-50 p-3">
+        <div className="text-xs uppercase text-slate-500 mb-1">Фраза дня ({date})</div>
+        <div className="text-base">
+          {savedSentence ? (
+            <span>«{savedSentence}»</span>
+          ) : (
+            <span className="text-slate-400">не задано</span>
+          )}
+        </div>
+      </div>
+
+      {/* Редактор */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-slate-600">Дата (Київ):</label>
+          <input
+            type="date"
+            value={date}
+            onChange={e => setDate(e.target.value)}
+            className="border rounded px-2 py-1 text-sm"
+          />
+        </div>
+        <textarea
+          value={sentence}
+          onChange={e => setSentence(e.target.value)}
+          rows={3}
+          placeholder="Введіть речення дня…"
+          className="w-full border rounded px-3 py-2 text-sm"
+        />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={save}
+            disabled={saving || !dirty}
+            className="px-3 py-1 bg-indigo-600 text-white rounded text-sm disabled:opacity-50"
+          >
+            {saving ? 'Зберігаю…' : 'Зберегти фразу'}
+          </button>
+          <button
+            onClick={() => load(date)}
+            disabled={loading}
+            className="px-3 py-1 border rounded text-sm disabled:opacity-50"
+          >
+            {loading ? 'Оновлюю…' : 'Оновити'}
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="text-sm text-red-600">{error}</div>}
+
+      {/* Індикатор наявності слів */}
+      {avail && (
+        <div className="rounded border p-3 space-y-2">
+          <div className="text-sm font-medium">Наявність слів у вже розпізнаних заголовках</div>
+          {!avail.titleConfigured && (
+            <div className="text-xs text-amber-700">
+              ⚠ Поле «Заголовок справи» (роль title) не налаштоване у вкладці «Питання» — індикатор
+              не працюватиме.
+            </div>
+          )}
+          <div className="flex flex-wrap gap-1.5">
+            {avail.words.length === 0 && (
+              <span className="text-xs text-slate-400">
+                немає слів для збору (усе — стоп-слова)
+              </span>
+            )}
+            {avail.words.map(w => (
+              <span
+                key={w.word}
+                className={`text-xs px-2 py-0.5 rounded ${
+                  w.count > 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                }`}
+                title={
+                  w.count > 0
+                    ? `Трапляється у ${w.count} заголовках`
+                    : 'Не зустрічалося в розпізнаних заголовках'
+                }
+              >
+                {w.word} · {w.count}
+              </span>
+            ))}
+          </div>
+          <div className="text-xs text-slate-500">
+            Зелене — слово вже траплялось у заголовках (орієнтир, не гарантія на сьогодні); червоне —
+            не зустрічалось.
+          </div>
+        </div>
+      )}
+
+      {/* Учасники дня */}
+      <div className="space-y-2">
+        <div className="text-sm font-medium">
+          Учасники {progress ? `(слів у фразі: ${progress.total})` : ''}
+        </div>
+        {!progress || progress.participants.length === 0 ? (
+          <div className="text-sm text-slate-400">Поки що ніхто не збирає цю фразу.</div>
+        ) : (
+          <table className="w-full text-sm border">
+            <thead>
+              <tr className="bg-slate-50 text-left">
+                <th className="px-2 py-1 border-b">#</th>
+                <th className="px-2 py-1 border-b">Нік</th>
+                <th className="px-2 py-1 border-b">Підтверджено</th>
+                <th className="px-2 py-1 border-b">Зібрано</th>
+                <th className="px-2 py-1 border-b">Місце</th>
+              </tr>
+            </thead>
+            <tbody>
+              {progress.participants.map((p, i) => (
+                <tr key={p.tgId} className={p.place ? 'bg-amber-50' : ''}>
+                  <td className="px-2 py-1 border-b text-slate-400">{i + 1}</td>
+                  <td className="px-2 py-1 border-b">{p.displayName || p.tgId}</td>
+                  <td className="px-2 py-1 border-b">
+                    {p.confirmed}/{progress.total}
+                  </td>
+                  <td className="px-2 py-1 border-b">
+                    {p.collected}/{progress.total}
+                  </td>
+                  <td className="px-2 py-1 border-b">{p.place ? `🏅 ${p.place}` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
   );
 };
