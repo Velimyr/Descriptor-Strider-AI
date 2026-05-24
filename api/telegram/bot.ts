@@ -46,6 +46,19 @@ import {
   recomputeCaseSubmissionCount,
   selectNextCaseForUser,
 } from './scheduler.js';
+import {
+  evaluateBadges,
+  countEarnedInCatalog,
+  sendBadgesList,
+  sendBadgeCardById,
+} from './badges.js';
+import {
+  collectPuzzleWordsOnCreate,
+  onCollabCaseConfirmed,
+  sendPuzzleTask,
+  sendPuzzleRules,
+  sendPuzzleResults,
+} from './puzzle.js';
 
 const T = telegramBotConfig.texts;
 
@@ -366,6 +379,9 @@ async function handleMessage(msg: any) {
         pendingAction: '',
         createdAt: nowIsoUtc(),
         introShownAt: '',
+        // Новому юзеру одразу фіксуємо засів бейджів, щоб його справжні
+        // досягнення сповіщалися (тиха видача — лише для існуючих до фічі).
+        badgesSeededAt: nowIsoUtc(),
         source: 'tg',
         partnerId: null,
       };
@@ -673,6 +689,36 @@ async function handleCallback(cb: any) {
     return;
   }
 
+  // Досягнення — не залежать від сесії.
+  if (data === 'badges') {
+    await answerCallbackQuery(cb.id);
+    await sendBadgesList(chatId, tgId);
+    return;
+  }
+  if (data.startsWith('badge:')) {
+    const badgeId = data.slice('badge:'.length);
+    const ok = await sendBadgeCardById(chatId, tgId, badgeId);
+    await answerCallbackQuery(cb.id, ok ? undefined : T.badgeLockedToast);
+    return;
+  }
+
+  // Описовий пазл — не залежить від сесії.
+  if (data === 'puzzle') {
+    await answerCallbackQuery(cb.id);
+    await sendPuzzleTask(chatId);
+    return;
+  }
+  if (data === 'puzzle:rules') {
+    await answerCallbackQuery(cb.id);
+    await sendPuzzleRules(chatId);
+    return;
+  }
+  if (data === 'puzzle:me') {
+    await answerCallbackQuery(cb.id);
+    await sendPuzzleResults(chatId, tgId);
+    return;
+  }
+
   // ack + читання сесії і питань — паралельно
   const [, session, questions] = await Promise.all([
     answerCallbackQuery(cb.id),
@@ -886,24 +932,42 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
 
 async function cmdStats(chatId: number, tgId: string, user: BotUser) {
   const today = kyivDateString();
-  const [todayCount, allUsers] = await Promise.all([getDailyCount(tgId, today), getAllUsers()]);
+  const [todayCount, allUsers] = await Promise.all([
+    getDailyCount(tgId, today),
+    getAllUsers(),
+  ]);
+  // Догоняюча перевірка: видати бейджі, які користувач уже заслужив раніше
+  // (для існуючих до фічі — тихо). Робимо ДО підрахунку, щоб лічильник був свіжим.
+  await evaluateBadges({
+    chatId,
+    tgId,
+    totalPoints: user.totalPoints,
+    todayCount,
+    badgesSeededAt: user.badgesSeededAt,
+  });
+  const badges = await countEarnedInCatalog(tgId);
   const points = computePointsForToday(Math.max(todayCount, 1));
   const todayPoints = todayCount * points.multiplier * telegramBotConfig.points.base;
   const all = leaderboardSorted(allUsers);
   const rank = all.findIndex(u => u.tgId === tgId) + 1;
-  await sendMessage(
-    chatId,
-    fmt(T.statsLine, {
-      name: user.displayName,
-      total: user.totalPoints,
-      todayCount,
-      todayPoints: Math.round(todayPoints * 100) / 100,
-      multiplier: points.multiplier,
-      rank: rank || all.length + 1,
-      totalUsers: all.length,
-    }),
-    { reply_markup: mainMenuKeyboard(user) }
-  );
+  let body = fmt(T.statsLine, {
+    name: user.displayName,
+    total: user.totalPoints,
+    todayCount,
+    todayPoints: Math.round(todayPoints * 100) / 100,
+    multiplier: points.multiplier,
+    rank: rank || all.length + 1,
+    totalUsers: all.length,
+  });
+  // Inline-кнопки під «Мої бали»: досягнення (якщо є каталог) + «Мій Описовий пазл».
+  // Reply-меню внизу лишається (воно is_persistent), тож inline тут не конфліктує.
+  const rows: any[] = [];
+  if (badges.total > 0) {
+    body += '\n' + fmt(T.badgesStatsLine, { earned: badges.earned, total: badges.total });
+    rows.push([{ text: T.menuBadges, callback_data: 'badges' }]);
+  }
+  rows.push([{ text: T.puzzleResultsButton, callback_data: 'puzzle:me' }]);
+  await sendMessage(chatId, body, { reply_markup: { inline_keyboard: rows } });
 }
 
 async function cmdProgress(chatId: number, user: BotUser) {
@@ -935,34 +999,11 @@ async function cmdProgress(chatId: number, user: BotUser) {
       totalCases: d.totalCases,
     })
   );
-  // Прогноз завершення фонду — окремим блоком у кінці. Тягне getAllCases (важче,
-  // ніж SQL-агрегація), тому ловимо помилки локально, щоб не зламати /progress.
-  let etaBlock = '';
-  try {
-    const cases = await getAllCases();
-    const eta = computeFundEta(cases);
-    if (eta.remaining === 0) {
-      etaBlock = fmt(T.fundEtaDone, { fundNumber: eta.fundNumber });
-    } else if (eta.etaDateLocal) {
-      etaBlock = fmt(T.fundEtaLine, {
-        fundNumber: eta.fundNumber,
-        remaining: eta.remaining,
-        etaDate: eta.etaDateLocal,
-      });
-    } else {
-      etaBlock = fmt(T.fundEtaUnknown, {
-        fundNumber: eta.fundNumber,
-        remaining: eta.remaining,
-        windowDays: eta.windowDays,
-      });
-    }
-  } catch (e) {
-    console.error('[cmdProgress] computeFundEta failed', e);
-  }
-  const parts = [header, ...blocks];
-  if (etaBlock) parts.push(etaBlock);
-  const body = parts.join('\n\n') || header;
-  await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
+  const body = [header, ...blocks].join('\n\n') || header;
+  // Inline-кнопка гри «Описовий пазл». Reply-меню внизу лишається (is_persistent).
+  await sendMessage(chatId, body, {
+    reply_markup: { inline_keyboard: [[{ text: T.menuPuzzle, callback_data: 'puzzle' }]] },
+  });
 }
 
 async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
@@ -1321,6 +1362,14 @@ async function confirmAndSubmit(
   if (tierMsg) {
     await sendMessage(chatId, tierMsg);
   }
+
+  await evaluateBadges({
+    chatId,
+    tgId,
+    totalPoints: newTotal,
+    todayCount,
+    badgesSeededAt: user.badgesSeededAt,
+  });
 }
 
 // ----- Collaborative submit: спільна логіка для create і edit. -----
@@ -1353,6 +1402,8 @@ async function collabSubmit(
       setCaseCreated(cse.caseId, tgId, finalAnswers),
       recordCaseEvent(cse.caseId, tgId, 'create', finalAnswers),
     ]);
+    // Описовий пазл: збираємо слова заголовка для фрази дня (тільки на розпізнаванні).
+    await collectPuzzleWordsOnCreate(tgId, cse.caseId, questions, finalAnswers);
   }
 
   // Розпізнавання (create) — 3 бали база; редагування — 1 (це перевірка з правкою).
@@ -1382,6 +1433,9 @@ async function collabConfirm(
   // Перевірка — 1 бал база.
   await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1);
   await deleteSession(tgId);
+  // Описовий пазл: зараховуємо слова (для розпізнавача). Чи на кожне підтвердження,
+  // чи лише на повне закриття — вирішує config.puzzle.confirmMode.
+  await onCollabCaseConfirmed(caseId, closed);
 }
 
 // Спільна частина для collab create/edit/confirm: бали, повідомлення.
@@ -1421,6 +1475,14 @@ async function deliverCollabPoints(
   ]);
 
   if (tierMsg) await sendMessage(chatId, tierMsg);
+
+  await evaluateBadges({
+    chatId,
+    tgId,
+    totalPoints: newTotal,
+    todayCount,
+    badgesSeededAt: user.badgesSeededAt,
+  });
 }
 
 function buildSourceLink(cse: any): string {

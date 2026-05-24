@@ -6,10 +6,50 @@ import {
   getAllCases,
   getCandidateCasesForUser,
   getLastUserCaseKind,
+  getMeta,
+  getPuzzle,
   patchCase,
 } from './storage.js';
+import { collectibleWords, titleFieldIndex, wordsInText } from './puzzleWords.js';
 
 const cfg = telegramBotConfig;
+
+// Кеш контексту пазла на сьогодні (≤60с): слова фрази + індекс поля title.
+// Потрібен, щоб масова розсилка (cron по всіх юзерах) не смикала БД для кожного.
+let puzzleCtxCache: { date: string; words: Set<string>; titleIdx: number; expires: number } | null = null;
+
+async function getTodayPuzzleContext(): Promise<{ words: Set<string>; titleIdx: number }> {
+  const today = kyivDateString();
+  if (puzzleCtxCache && puzzleCtxCache.date === today && puzzleCtxCache.expires > Date.now()) {
+    return { words: puzzleCtxCache.words, titleIdx: puzzleCtxCache.titleIdx };
+  }
+  let words = new Set<string>();
+  let titleIdx = -1;
+  try {
+    const puzzle = await getPuzzle(today);
+    if (puzzle && puzzle.sentence.trim()) {
+      words = new Set(collectibleWords(puzzle.sentence, cfg.puzzle.stopwords));
+      const raw = await getMeta('questions');
+      let questions: any[] = [];
+      try {
+        questions = raw ? JSON.parse(raw) : [];
+        if (!Array.isArray(questions)) questions = [];
+      } catch {
+        questions = [];
+      }
+      titleIdx = titleFieldIndex(questions);
+    }
+  } catch (e) {
+    console.error('getTodayPuzzleContext failed', e);
+  }
+  puzzleCtxCache = { date: today, words, titleIdx, expires: Date.now() + 60_000 };
+  return { words, titleIdx };
+}
+
+function titleHasAnyWord(title: string, words: Set<string>): boolean {
+  for (const w of wordsInText(title)) if (words.has(w)) return true;
+  return false;
+}
 
 export function nowIsoUtc(): string {
   return new Date().toISOString();
@@ -57,6 +97,28 @@ export async function selectNextCaseForUser(
     getLastUserCaseKind(tgId),
   ]);
   if (candidates.length === 0) return null;
+
+  // Пріоритет «Описового пазла»: спершу віддаємо collab-справи НА ПІДТВЕРДЖЕННЯ
+  // (вже є розпізнана версія), чий поточний заголовок містить слово фрази дня —
+  // щоб такі справи закрились швидше й слова підтвердились того ж дня.
+  const { words: puzzleWords, titleIdx } = await getTodayPuzzleContext();
+  if (puzzleWords.size > 0 && titleIdx >= 0) {
+    const matching = candidates.filter(
+      c =>
+        c.mode === 'collaborative' &&
+        c.confirmationsCount > 0 &&
+        titleHasAnyWord(c.currentAnswers[titleIdx] || '', puzzleWords)
+    );
+    if (matching.length > 0) {
+      // Найближчі до закриття — першими (більший confirmationsCount), далі найстаріша.
+      matching.sort(
+        (a, b) =>
+          b.confirmationsCount - a.confirmationsCount || a.createdAt.localeCompare(b.createdAt)
+      );
+      return matching[0];
+    }
+  }
+
   const targetParallel = cfg.cases.targetSubmissions;
   const descOrder = buildDescriptionOrder(candidates);
   const progressOf = (c: BotCase): number =>

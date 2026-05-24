@@ -159,6 +159,13 @@ async function submitCollabConfirm(user: BotUser, cse: BotCase): Promise<SubmitR
   const min = await getMinConfirmations();
   await recordCaseEvent(cse.caseId, user.tgId, 'confirm', cse.currentAnswers || [], user.partnerId);
   const { closed } = await confirmCase(cse.caseId, min);
+  // Описовий пазл: підтвердження (можливо, web-користувачем) зараховує слова,
+  // що їх зібрав TG-розпізнавач. Режим (перше підтвердження / повне закриття) —
+  // у config.puzzle.confirmMode.
+  {
+    const { onCollabCaseConfirmed } = await import('../telegram/puzzle.js');
+    await onCollabCaseConfirmed(cse.caseId, closed);
+  }
   return deliverCollabPoints(user, closed, 1, 'collab-confirm');
 }
 

@@ -163,4 +163,43 @@ export const tgApi = {
     }),
   deletePartner: (partnerId: string) =>
     call(`/admin/partners/${encodeURIComponent(partnerId)}`, { method: 'DELETE' }),
+  // Описовий пазл
+  getPuzzle: (date?: string) =>
+    call(`/admin/puzzle${date ? `?date=${encodeURIComponent(date)}` : ''}`) as Promise<{
+      date: string;
+      sentence: string;
+    }>,
+  savePuzzle: (date: string, sentence: string) =>
+    call('/admin/puzzle', { method: 'POST', body: JSON.stringify({ date, sentence }) }),
+  puzzleWordAvailability: (sentence: string) =>
+    call(`/admin/puzzle/word-availability?sentence=${encodeURIComponent(sentence)}`) as Promise<{
+      sentence: string;
+      titleConfigured: boolean;
+      words: Array<{ word: string; count: number }>;
+    }>,
+  puzzleProgress: (date?: string) =>
+    call(`/admin/puzzle/progress${date ? `?date=${encodeURIComponent(date)}` : ''}`) as Promise<{
+      date: string;
+      sentence: string;
+      total: number;
+      participants: Array<{
+        tgId: string;
+        displayName: string;
+        collected: number;
+        confirmed: number;
+        place: number | null;
+      }>;
+      winners: Array<{ place: number; tgId: string; points: number; displayName: string }>;
+    }>,
+  listPuzzles: () =>
+    call('/admin/puzzles') as Promise<{ puzzles: Array<{ date: string; sentence: string }> }>,
+  bulkPuzzles: (phrases: string[], startDate?: string, dryRun = false) =>
+    call('/admin/puzzle/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ phrases, startDate, dryRun }),
+    }) as Promise<{
+      ok: boolean;
+      dryRun: boolean;
+      assignments: Array<{ date: string; sentence: string }>;
+    }>,
 };

@@ -19,10 +19,15 @@ export const T = {
   integrityReviews:  `${PREFIX}integrity_reviews`,
   partners:          `${PREFIX}partners`,
   linkCodes:         `${PREFIX}link_codes`,
+  userBadges:        `${PREFIX}user_badges`,
+  puzzles:           `${PREFIX}puzzles`,
+  puzzleProgress:    `${PREFIX}puzzle_progress`,
+  puzzleWinners:     `${PREFIX}puzzle_winners`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
 const RPC_CANDIDATE_CASES = `${PREFIX}candidate_cases`;
+const RPC_AWARD_PUZZLE_WINNER = `${PREFIX}award_puzzle_winner`;
 
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
@@ -53,6 +58,9 @@ export interface BotUser {
   pendingAction: '' | 'rename';
   createdAt: string;
   introShownAt: string; // ISO або '' якщо ще не показували
+  // Час "засіву" бейджів. '' (NULL у БД) = ще не засівали: на першій перевірці
+  // вже зароблені бейджі видаються тихо. Новим юзерам ставимо при /start.
+  badgesSeededAt: string;
   // Web-юзери: source='web', partnerId=<id>. Для TG — source='tg', partnerId=null.
   // Колонки додані міграцією schema-widget-*.sql.
   source: 'tg' | 'web';
@@ -110,6 +118,7 @@ function mapUser(r: any): BotUser {
     pendingAction: (r.pending_action || '') as '' | 'rename',
     createdAt: r.created_at || '',
     introShownAt: r.intro_shown_at || '',
+    badgesSeededAt: r.badges_seeded_at || '',
     source: (r.source || 'tg') as 'tg' | 'web',
     partnerId: r.partner_id || null,
   };
@@ -226,6 +235,7 @@ export async function upsertUser(
         status: u.status,
         pending_action: u.pendingAction || '',
         intro_shown_at: u.introShownAt || null,
+        badges_seeded_at: u.badgesSeededAt || null,
         // created_at — не оновлюємо при апдейті, але дамо при insert
         ...(u.createdAt ? { created_at: u.createdAt } : {}),
       },
@@ -284,6 +294,7 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.status !== undefined) dbPatch.status = patch.status;
   if (patch.pendingAction !== undefined) dbPatch.pending_action = patch.pendingAction;
   if (patch.introShownAt !== undefined) dbPatch.intro_shown_at = patch.introShownAt || null;
+  if (patch.badgesSeededAt !== undefined) dbPatch.badges_seeded_at = patch.badgesSeededAt || null;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;
@@ -1058,6 +1069,205 @@ export async function getAllIntegrityReviews(): Promise<
     from += pageSize;
   }
   return out;
+}
+
+// ---------- BADGES (досягнення) ----------
+// Перелік id бейджів, які користувач уже отримав.
+export async function getEarnedBadgeIds(tgId: string): Promise<string[]> {
+  const { data, error } = await db().from(T.userBadges).select('badge_id').eq('tg_id', tgId);
+  if (error) throw error;
+  return (data || []).map((r: any) => r.badge_id);
+}
+
+// Видати бейджі (ідемпотентно: PK (tg_id, badge_id) + ignoreDuplicates).
+export async function grantBadges(tgId: string, badgeIds: string[]): Promise<void> {
+  if (badgeIds.length === 0) return;
+  const rows = badgeIds.map(badge_id => ({ tg_id: tgId, badge_id }));
+  const { error } = await db()
+    .from(T.userBadges)
+    .upsert(rows, { onConflict: 'tg_id,badge_id', ignoreDuplicates: true });
+  if (error) throw error;
+}
+
+// Скільки справ користувач опрацював за весь час: parallel-сабміти + collab-події.
+// Різні режими не перетинаються по одній справі, тож сума без дедуплікації прийнятна.
+export async function countUserCases(tgId: string): Promise<number> {
+  const [subs, confs] = await Promise.all([
+    db().from(T.submissions).select('id', { count: 'exact', head: true }).eq('tg_id', tgId),
+    db().from(T.caseConfirmations).select('case_id', { count: 'exact', head: true }).eq('tg_id', tgId),
+  ]);
+  if (subs.error) throw subs.error;
+  if (confs.error) throw confs.error;
+  return (subs.count || 0) + (confs.count || 0);
+}
+
+// ---------- ОПИСОВИЙ ПАЗЛ ----------
+export interface PuzzleRow {
+  dateKyiv: string;
+  sentence: string;
+}
+
+export async function getPuzzle(dateKyiv: string): Promise<PuzzleRow | null> {
+  const { data, error } = await db()
+    .from(T.puzzles)
+    .select('date_kyiv, sentence')
+    .eq('date_kyiv', dateKyiv)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? { dateKyiv: (data as any).date_kyiv, sentence: (data as any).sentence || '' } : null;
+}
+
+// Усі пазли за зростанням дати (для списку та масового заповнення).
+export async function getAllPuzzles(): Promise<PuzzleRow[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: PuzzleRow[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.puzzles)
+      .select('date_kyiv, sentence')
+      .order('date_kyiv', { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) out.push({ dateKyiv: (r as any).date_kyiv, sentence: (r as any).sentence || '' });
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
+export async function upsertPuzzle(dateKyiv: string, sentence: string): Promise<void> {
+  const { error } = await db()
+    .from(T.puzzles)
+    .upsert(
+      { date_kyiv: dateKyiv, sentence, updated_at: new Date().toISOString() },
+      { onConflict: 'date_kyiv' }
+    );
+  if (error) throw error;
+}
+
+// Записати зібрані (непідтверджені) слова. ignoreDuplicates — не чіпаємо вже наявні
+// (зокрема не «понижуємо» підтверджені назад до unconfirmed).
+// Повертає слова, які були РЕАЛЬНО додані (нові) — для сповіщення «слово знайдено».
+export async function addPuzzleWords(
+  dateKyiv: string,
+  tgId: string,
+  words: string[],
+  caseId: string
+): Promise<string[]> {
+  if (words.length === 0) return [];
+  const now = new Date().toISOString();
+  const rows = words.map(word => ({
+    date_kyiv: dateKyiv,
+    tg_id: tgId,
+    word,
+    status: 'unconfirmed',
+    case_id: caseId,
+    collected_at: now,
+  }));
+  const { data, error } = await db()
+    .from(T.puzzleProgress)
+    .upsert(rows, { onConflict: 'date_kyiv,tg_id,word', ignoreDuplicates: true })
+    .select('word');
+  if (error) throw error;
+  return (data || []).map((r: any) => r.word);
+}
+
+// Підтвердити слова, зібрані з конкретної справи в конкретний день.
+// Повертає унікальні tg_id, чиї слова стали підтвердженими (для перевірки перемоги).
+export async function confirmPuzzleWordsByCase(
+  caseId: string,
+  dateKyiv: string
+): Promise<string[]> {
+  const { data, error } = await db()
+    .from(T.puzzleProgress)
+    .update({ status: 'confirmed', confirmed_at: new Date().toISOString() })
+    .eq('case_id', caseId)
+    .eq('date_kyiv', dateKyiv)
+    .eq('status', 'unconfirmed')
+    .select('tg_id');
+  if (error) throw error;
+  return [...new Set((data || []).map((r: any) => r.tg_id))];
+}
+
+// Прогрес одного користувача за день: word → status.
+export async function getPuzzleProgressForUser(
+  dateKyiv: string,
+  tgId: string
+): Promise<Array<{ word: string; status: 'unconfirmed' | 'confirmed' }>> {
+  const { data, error } = await db()
+    .from(T.puzzleProgress)
+    .select('word, status')
+    .eq('date_kyiv', dateKyiv)
+    .eq('tg_id', tgId);
+  if (error) throw error;
+  return (data || []).map((r: any) => ({ word: r.word, status: r.status }));
+}
+
+// Усі рядки прогресу за день (для адмін-зведення). День має небагато рядків.
+export async function getPuzzleProgressForDate(
+  dateKyiv: string
+): Promise<Array<{ tgId: string; word: string; status: 'unconfirmed' | 'confirmed' }>> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: any[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.puzzleProgress)
+      .select('tg_id, word, status')
+      .eq('date_kyiv', dateKyiv)
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) out.push({ tgId: (r as any).tg_id, word: (r as any).word, status: (r as any).status });
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
+// Атомарне присвоєння місця переможцю (через RPC з advisory-lock).
+// null — якщо юзер уже переможець або всі 3 місця зайняті.
+export async function awardPuzzleWinner(
+  dateKyiv: string,
+  tgId: string
+): Promise<{ place: number; points: number } | null> {
+  const { data, error } = await db().rpc(RPC_AWARD_PUZZLE_WINNER, {
+    p_date: dateKyiv,
+    p_tg_id: tgId,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return row ? { place: Number(row.place), points: Number(row.points) } : null;
+}
+
+export async function getPuzzleWinners(
+  dateKyiv: string
+): Promise<Array<{ place: number; tgId: string; points: number }>> {
+  const { data, error } = await db()
+    .from(T.puzzleWinners)
+    .select('place, tg_id, points')
+    .eq('date_kyiv', dateKyiv)
+    .order('place', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((r: any) => ({ place: r.place, tgId: r.tg_id, points: r.points }));
+}
+
+// current_answers уже розпізнаних колаб-справ (confirmations_count > 0) —
+// для адмін-індикатора наявності слів у заголовках.
+export async function getRecognizedCollabAnswers(limit = 2000): Promise<string[][]> {
+  const { data, error } = await db()
+    .from(T.cases)
+    .select('current_answers')
+    .eq('mode', 'collaborative')
+    .gt('confirmations_count', 0)
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map((r: any) => (Array.isArray(r.current_answers) ? r.current_answers.map(String) : []));
 }
 
 // Прострочені блокування — на випадок ручної очистки (бот і так враховує locked_until).

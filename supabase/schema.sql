@@ -19,6 +19,11 @@ alter table bot_users add column if not exists pending_action text not null defa
 -- Час, коли користувачу показали онбординг-підказку «З чого складається опис».
 -- NULL означає «ще не показували» — наступна дія тригерить показ.
 alter table bot_users add column if not exists intro_shown_at timestamptz;
+-- Час "засіву" бейджів. NULL = існуючий до фічі користувач: на першій перевірці
+-- вже зароблені бейджі видаються ТИХО (без вітань), щоб не спамити ретро-сповіщеннями.
+-- Новим користувачам бот ставить це поле одразу при /start, тож їхні справжні
+-- досягнення сповіщаються нормально.
+alter table bot_users add column if not exists badges_seeded_at timestamptz;
 
 -- Журнал рішень адміна по парах різночитань ("Перевірка доброчесності").
 -- Пара ідентифікується справою + двома tg_id у відсортованому порядку (щоб
@@ -153,6 +158,83 @@ create table if not exists bot_dispatch_log (
 );
 create index if not exists idx_dispatch_user on bot_dispatch_log(tg_id);
 
+-- Отримані користувачем бейджі (досягнення). PK (tg_id, badge_id) гарантує
+-- «один раз і назавжди»: повторний insert через on conflict do nothing — no-op.
+-- badge_id — стабільний ключ із config.badges, тут не валідуємо (каталог у коді).
+create table if not exists bot_user_badges (
+  tg_id      text        not null,
+  badge_id   text        not null,
+  earned_at  timestamptz not null default now(),
+  primary key (tg_id, badge_id)
+);
+create index if not exists idx_user_badges_user on bot_user_badges(tg_id);
+
+-- ===== Описовий пазл (гра «слово дня») =====
+-- Речення дня (одне на київську дату). Адмін редагує через вкладку «Пазл».
+create table if not exists bot_puzzles (
+  date_kyiv  date primary key,
+  sentence   text        not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- Зібрані користувачем слова пазла. status: unconfirmed (розпізнав) → confirmed
+-- (справу закрили того ж дня). PK не дає зібрати те саме слово двічі.
+create table if not exists bot_puzzle_progress (
+  date_kyiv    date        not null,
+  tg_id        text        not null,
+  word         text        not null,
+  status       text        not null default 'unconfirmed' check (status in ('unconfirmed','confirmed')),
+  case_id      text        not null default '',
+  collected_at timestamptz not null default now(),
+  confirmed_at timestamptz,
+  primary key (date_kyiv, tg_id, word)
+);
+create index if not exists idx_puzzle_progress_day  on bot_puzzle_progress(date_kyiv);
+create index if not exists idx_puzzle_progress_case on bot_puzzle_progress(case_id);
+
+-- Переможці пазла за день. PK(date,place) + unique(date,tg_id): максимум 3 місця,
+-- один юзер не може зайняти два.
+create table if not exists bot_puzzle_winners (
+  date_kyiv  date        not null,
+  place      int         not null check (place between 1 and 3),
+  tg_id      text        not null,
+  points     int         not null default 0,
+  awarded_at timestamptz not null default now(),
+  primary key (date_kyiv, place),
+  unique (date_kyiv, tg_id)
+);
+
+alter table bot_puzzles         enable row level security;
+alter table bot_puzzle_progress enable row level security;
+alter table bot_puzzle_winners  enable row level security;
+
+-- Атомарне присвоєння місця переможцю. Advisory-lock на дату серіалізує одночасні
+-- виклики (щоб двоє не отримали одне місце). Повертає place+points або порожньо
+-- (юзер уже переможець / усі 3 місця зайняті). Призи: 1→1000, 2→500, 3→300.
+create or replace function bot_award_puzzle_winner(p_date date, p_tg_id text)
+returns table(place int, points int) language plpgsql security definer as $$
+declare
+  v_count  int;
+  v_place  int;
+  v_points int;
+begin
+  perform pg_advisory_xact_lock(hashtext('bot_puzzle:' || p_date::text));
+  if exists (select 1 from bot_puzzle_winners w where w.date_kyiv = p_date and w.tg_id = p_tg_id) then
+    return;
+  end if;
+  select count(*) into v_count from bot_puzzle_winners w where w.date_kyiv = p_date;
+  if v_count >= 3 then
+    return;
+  end if;
+  v_place  := v_count + 1;
+  v_points := case v_place when 1 then 1000 when 2 then 500 when 3 then 300 else 0 end;
+  insert into bot_puzzle_winners(date_kyiv, place, tg_id, points)
+    values (p_date, v_place, p_tg_id, v_points);
+  return query select v_place, v_points;
+end $$;
+revoke all on function bot_award_puzzle_winner(date, text) from public, anon, authenticated;
+
 -- Справи, від яких користувач відмовився (натиснув "Скасувати" під час опитування).
 -- Виключаються при доборі наступної справи цьому користувачу.
 create table if not exists bot_skipped (
@@ -197,6 +279,7 @@ alter table bot_skipped      enable row level security;
 alter table bot_meta         enable row level security;
 alter table bot_case_confirmations enable row level security;
 alter table bot_integrity_reviews  enable row level security;
+alter table bot_user_badges        enable row level security;
 
 -- Заборонити виконання RPC від імені anon/authenticated.
 -- (security definer функція без явного grant не виконається сторонніми ролями.)
