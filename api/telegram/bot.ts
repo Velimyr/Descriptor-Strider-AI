@@ -13,6 +13,7 @@ import {
   getSession,
   getUser,
   incDailyCount,
+  incGlobalDailyDone,
   patchUser,
   recordSkippedCase,
   setSession,
@@ -1313,10 +1314,11 @@ async function confirmAndSubmit(
     sourcePdf: cse.sourcePdf,
     page: cse.page,
   });
-  const [, , todayCount] = await Promise.all([
+  const [, , todayCount, todayDone] = await Promise.all([
     deleteSession(tgId),
     recomputeCaseSubmissionCount(cse.caseId),
     incDailyCount(tgId, today),
+    incGlobalDailyDone(today),
   ]);
 
   const pts = computePointsForToday(todayCount);
@@ -1342,6 +1344,8 @@ async function confirmAndSubmit(
     points: pts.pointsEarned,
     todayCount,
     total: newTotal,
+    todayDone,
+    goal: telegramBotConfig.cases.dailyGoal,
   });
   await Promise.all([
     upsertUser(
@@ -1447,7 +1451,10 @@ async function deliverCollabPoints(
   actionBase: number
 ) {
   const today = kyivDateString();
-  const todayCount = await incDailyCount(tgId, today);
+  const [todayCount, todayDone] = await Promise.all([
+    incDailyCount(tgId, today),
+    incGlobalDailyDone(today),
+  ]);
   const pts = computePointsForToday(todayCount, actionBase);
   const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1, actionBase) : { multiplier: 1 };
   const newTotal = Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100;
@@ -1462,7 +1469,13 @@ async function deliverCollabPoints(
   else if (reachedTier1Now) tierMsg = pickRandom(tierMsgs.tier1);
 
   const finalText =
-    fmt(T.pointsEarned, { points: pts.pointsEarned, todayCount, total: newTotal }) +
+    fmt(T.pointsEarned, {
+      points: pts.pointsEarned,
+      todayCount,
+      total: newTotal,
+      todayDone,
+      goal: telegramBotConfig.cases.dailyGoal,
+    }) +
     (closed ? '\n\n✅ Справу зведено — дякую за допомогу!' : '');
 
   await Promise.all([
