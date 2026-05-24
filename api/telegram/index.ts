@@ -1001,15 +1001,24 @@ router.get('/admin/puzzle/progress', async (req, res) => {
       getPuzzleProgressForDate(date),
       getPuzzleWinners(date),
     ]);
-    const total = puzzle
-      ? collectibleWords(puzzle.sentence, telegramBotConfig.puzzle.stopwords).length
-      : 0;
+    const targets = puzzle
+      ? collectibleWords(puzzle.sentence, telegramBotConfig.puzzle.stopwords)
+      : [];
+    const targetSet = new Set(targets);
+    const total = targets.length;
     const agg = new Map<string, { collected: number; confirmed: number }>();
+    // Статус кожного слова фрази по кожному учаснику (для детальної таблиці).
+    const wordMap = new Map<string, Record<string, 'confirmed' | 'unconfirmed'>>();
     for (const r of rows) {
       const a = agg.get(r.tgId) || { collected: 0, confirmed: 0 };
       a.collected++;
       if (r.status === 'confirmed') a.confirmed++;
       agg.set(r.tgId, a);
+      if (targetSet.has(r.word)) {
+        const m = wordMap.get(r.tgId) || {};
+        m[r.word] = r.status as 'confirmed' | 'unconfirmed';
+        wordMap.set(r.tgId, m);
+      }
     }
     const tgIds = [...agg.keys()];
     const names = await getDisplayNamesMap(tgIds);
@@ -1021,12 +1030,14 @@ router.get('/admin/puzzle/progress', async (req, res) => {
         collected: agg.get(tgId)!.collected,
         confirmed: agg.get(tgId)!.confirmed,
         place: placeByTg.get(tgId) ?? null,
+        words: wordMap.get(tgId) || {},
       }))
       .sort((a, b) => b.confirmed - a.confirmed || b.collected - a.collected);
     res.json({
       date,
       sentence: puzzle?.sentence || '',
       total,
+      words: targets,
       participants,
       winners: winners.map(w => ({ ...w, displayName: names[w.tgId] || '' })),
     });

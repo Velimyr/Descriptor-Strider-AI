@@ -182,12 +182,14 @@ export const tgApi = {
       date: string;
       sentence: string;
       total: number;
+      words: string[];
       participants: Array<{
         tgId: string;
         displayName: string;
         collected: number;
         confirmed: number;
         place: number | null;
+        words: Record<string, 'confirmed' | 'unconfirmed'>;
       }>;
       winners: Array<{ place: number; tgId: string; points: number; displayName: string }>;
     }>,

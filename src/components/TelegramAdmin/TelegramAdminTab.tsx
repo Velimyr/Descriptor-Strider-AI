@@ -5958,12 +5958,14 @@ const PuzzleDayView: React.FC<{ date: string; setDate: (d: string) => void }> = 
   } | null>(null);
   const [progress, setProgress] = useState<{
     total: number;
+    words: string[];
     participants: Array<{
       tgId: string;
       displayName: string;
       collected: number;
       confirmed: number;
       place: number | null;
+      words: Record<string, 'confirmed' | 'unconfirmed'>;
     }>;
     winners: Array<{ place: number; tgId: string; points: number; displayName: string }>;
   } | null>(null);
@@ -6127,32 +6129,59 @@ const PuzzleDayView: React.FC<{ date: string; setDate: (d: string) => void }> = 
         {!progress || progress.participants.length === 0 ? (
           <div className="text-sm text-slate-400">Поки що ніхто не збирає цю фразу.</div>
         ) : (
-          <table className="w-full text-sm border">
-            <thead>
-              <tr className="bg-slate-50 text-left">
-                <th className="px-2 py-1 border-b">#</th>
-                <th className="px-2 py-1 border-b">Нік</th>
-                <th className="px-2 py-1 border-b">Підтверджено</th>
-                <th className="px-2 py-1 border-b">Зібрано</th>
-                <th className="px-2 py-1 border-b">Місце</th>
-              </tr>
-            </thead>
-            <tbody>
-              {progress.participants.map((p, i) => (
-                <tr key={p.tgId} className={p.place ? 'bg-amber-50' : ''}>
-                  <td className="px-2 py-1 border-b text-slate-400">{i + 1}</td>
-                  <td className="px-2 py-1 border-b">{p.displayName || p.tgId}</td>
-                  <td className="px-2 py-1 border-b">
-                    {p.confirmed}/{progress.total}
-                  </td>
-                  <td className="px-2 py-1 border-b">
-                    {p.collected}/{progress.total}
-                  </td>
-                  <td className="px-2 py-1 border-b">{p.place ? `🏅 ${p.place}` : '—'}</td>
+          <>
+            <div className="text-xs text-slate-500 mb-1">
+              Слова:{' '}
+              <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">підтверджене</span>{' '}
+              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">зібране</span>{' '}
+              <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-400">не зібране</span>
+            </div>
+            <table className="w-full text-sm border">
+              <thead>
+                <tr className="bg-slate-50 text-left">
+                  <th className="px-2 py-1 border-b">#</th>
+                  <th className="px-2 py-1 border-b">Нік</th>
+                  <th className="px-2 py-1 border-b">Підтв.</th>
+                  <th className="px-2 py-1 border-b">Зібр.</th>
+                  <th className="px-2 py-1 border-b">Місце</th>
+                  <th className="px-2 py-1 border-b">Слова фрази</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {progress.participants.map((p, i) => (
+                  <tr key={p.tgId} className={p.place ? 'bg-amber-50' : ''}>
+                    <td className="px-2 py-1 border-b text-slate-400">{i + 1}</td>
+                    <td className="px-2 py-1 border-b whitespace-nowrap">{p.displayName || p.tgId}</td>
+                    <td className="px-2 py-1 border-b">
+                      {p.confirmed}/{progress.total}
+                    </td>
+                    <td className="px-2 py-1 border-b">
+                      {p.collected}/{progress.total}
+                    </td>
+                    <td className="px-2 py-1 border-b">{p.place ? `🏅 ${p.place}` : '—'}</td>
+                    <td className="px-2 py-1 border-b">
+                      <div className="flex flex-wrap gap-1">
+                        {progress.words.map(w => {
+                          const st = p.words[w];
+                          const cls =
+                            st === 'confirmed'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : st === 'unconfirmed'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-slate-100 text-slate-400';
+                          return (
+                            <span key={w} className={`text-xs px-1.5 py-0.5 rounded ${cls}`}>
+                              {w}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         )}
       </div>
     </div>
