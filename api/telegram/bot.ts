@@ -972,9 +972,28 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
 }
 
 async function cmdProgress(chatId: number, user: BotUser) {
-  // SQL-агрегація: один запит замість витягувати всі справи в код.
+  // SQL-агрегація для списку описів + усі справи для прогнозу завершення фонду
+  // (той самий computeFundEta, що й в адмінці — щоб цифри збігались).
   const target = telegramBotConfig.cases.targetSubmissions;
-  const rawDescriptions = await getDescriptionProgressViaRpc(target);
+  const [rawDescriptions, allCases] = await Promise.all([
+    getDescriptionProgressViaRpc(target),
+    getAllCases(),
+  ]);
+  const eta = computeFundEta(allCases);
+  const etaLine =
+    eta.remaining <= 0
+      ? fmt(T.fundEtaDone, { fundNumber: eta.fundNumber })
+      : eta.etaDateLocal
+      ? fmt(T.fundEtaLine, {
+          fundNumber: eta.fundNumber,
+          remaining: eta.remaining,
+          etaDate: eta.etaDateLocal,
+        })
+      : fmt(T.fundEtaUnknown, {
+          fundNumber: eta.fundNumber,
+          remaining: eta.remaining,
+          windowDays: eta.windowDays,
+        });
   // Перетворюємо у формат для відображення: name + donePct.
   const descriptions = rawDescriptions
     .map(d => ({
@@ -1000,7 +1019,7 @@ async function cmdProgress(chatId: number, user: BotUser) {
       totalCases: d.totalCases,
     })
   );
-  const body = [header, ...blocks].join('\n\n') || header;
+  const body = [etaLine, header, ...blocks].join('\n\n');
   // Inline-кнопка гри «Описовий пазл». Reply-меню внизу лишається (is_persistent).
   await sendMessage(chatId, body, {
     reply_markup: { inline_keyboard: [[{ text: T.menuPuzzle, callback_data: 'puzzle' }]] },
