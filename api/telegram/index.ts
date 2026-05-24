@@ -16,6 +16,7 @@ import { handleUpdate, dispatchCaseToUser, sendScheduledGreeting } from './bot.j
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
 import { detectCaseBoxes } from './slicer.js';
 import {
+  computeFundEta,
   kyivDateString,
   nowIsoUtc,
   progressByDescription,
