@@ -424,6 +424,17 @@ export async function getDailyCount(tgId: string, dateKyiv: string): Promise<num
   return data?.count || 0;
 }
 
+// Глобальний денний лічильник опрацьованих справ (усі дії бота за день).
+// Зберігаємо як службовий рядок у bot_daily_scores із зарезервованим tg_id —
+// без зміни схеми. У рейтингах/списках він не фігурує (ті читають bot_users).
+const GLOBAL_DAILY_TG_ID = '__global__';
+export async function incGlobalDailyDone(dateKyiv: string): Promise<number> {
+  return incDailyCount(GLOBAL_DAILY_TG_ID, dateKyiv);
+}
+export async function getGlobalDailyDone(dateKyiv: string): Promise<number> {
+  return getDailyCount(GLOBAL_DAILY_TG_ID, dateKyiv);
+}
+
 // ---------- SUBMISSIONS (Results) ----------
 export interface SubmissionInput {
   caseId: string;

@@ -30,6 +30,7 @@ export interface TelegramBotConfig {
   cases: {
     targetSubmissions: number;   // мін. кількість підтверджень для "done"
     allowExtraAfterTarget: boolean;
+    dailyGoal: number;           // денний план опрацьованих справ (для повідомлення подяки)
   };
 
   // Загальна мета — для відображення прогнозу завершення фонду на сторінці «Результати».
@@ -144,6 +145,7 @@ export const telegramBotConfig: TelegramBotConfig = {
   cases: {
     targetSubmissions: 3,
     allowExtraAfterTarget: true,
+    dailyGoal: 1000,
   },
 
   fund: {
@@ -249,7 +251,8 @@ export const telegramBotConfig: TelegramBotConfig = {
     paused: 'Розсилку зупинено. /resume — продовжити.',
     resumed: 'Розсилку відновлено.',
     pointsEarned:
-      '✅ Збережено! +{points} балів. Сьогодні: {todayCount} справ. Всього: {total} балів.',
+      '✅ Збережено! +{points} балів. Сьогодні: {todayCount} справ. Всього: {total} балів.\n' +
+      '🎯 Оброблено сьогодні: {todayDone} з {goal} справ.',
     confirmHeader: 'Перевірте відповіді:',
     questionPrefix: 'Питання {n}/{total}',
     helpText:
