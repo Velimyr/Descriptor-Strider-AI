@@ -1033,15 +1033,19 @@ async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
     (u, i) => `${i + 1}. ${escapeHtml(u.displayName || '—')} — ${u.totalPoints}`
   );
   let body = `${T.leaderboardHeader}\n${lines.join('\n') || '—'}`;
-  // Якщо користувач НЕ в топ-10 — показуємо "..." і його позицію окремим рядком.
+  // Якщо користувач НЕ в топ-10 — показуємо "..." і його оточення:
+  // один над ним, він сам, один під ним (пропускаємо тих, хто вже у топ-10, і межі списку).
   const myRank = all.findIndex(u => u.tgId === tgId);
   if (myRank >= 10) {
-    body +=
-      '\n...' +
-      fmt(T.leaderboardYou, {
-        rank: myRank + 1,
-        points: all[myRank].totalPoints,
-      });
+    body += '\n...';
+    for (let i = myRank - 1; i <= myRank + 1; i++) {
+      if (i < 10 || i >= all.length) continue;
+      const u = all[i];
+      body +=
+        i === myRank
+          ? fmt(T.leaderboardYou, { rank: i + 1, points: u.totalPoints })
+          : `\n${i + 1}. ${escapeHtml(u.displayName || '—')} — ${u.totalPoints}`;
+    }
   }
   await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
 }
