@@ -188,7 +188,7 @@ export async function sendPuzzleResults(chatId: number | string, tgId: string): 
       const st = statusByWord.get(norm);
       if (st === 'confirmed') return `<b>${esc(raw.toUpperCase())}</b>`; // зібране й підтверджене
       if (st === 'unconfirmed') return `<u>${esc(raw)}</u>`;             // зібране, очікує підтвердження
-      return esc(raw);                                                   // ще не зібране
+      return `<i>${esc(raw)}</i>`;                                       // треба зібрати (ще не зібране)
     })
     .join(' ');
 
