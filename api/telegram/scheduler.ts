@@ -88,6 +88,18 @@ export function kyivDateString(date: Date = new Date()): string {
   return fmt.format(date);
 }
 
+// 'YYYY-MM' у Europe/Kyiv (ключ місяця для рейтингу).
+export function kyivMonthString(date: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: cfg.dispatch.timezone,
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(date);
+  const y = parts.find(p => p.type === 'year')?.value ?? '';
+  const m = parts.find(p => p.type === 'month')?.value ?? '';
+  return `${y}-${m}`;
+}
+
 // Ключ опису = archive|fund|opys. Одна "опис" = всі справи з одного завантаженого PDF.
 export function descriptionKey(c: { archive: string; fund: string; opys: string }): string {
   return `${c.archive}|${c.fund}|${c.opys}`;

@@ -23,11 +23,14 @@ export const T = {
   puzzles:           `${PREFIX}puzzles`,
   puzzleProgress:    `${PREFIX}puzzle_progress`,
   puzzleWinners:     `${PREFIX}puzzle_winners`,
+  monthlyPoints:     `${PREFIX}monthly_points`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
 const RPC_CANDIDATE_CASES = `${PREFIX}candidate_cases`;
 const RPC_AWARD_PUZZLE_WINNER = `${PREFIX}award_puzzle_winner`;
+const RPC_INC_MONTHLY = `${PREFIX}inc_monthly`;
+const RPC_MONTHLY_MONTHS = `${PREFIX}monthly_months`;
 
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
@@ -422,6 +425,72 @@ export async function getDailyCount(tgId: string, dateKyiv: string): Promise<num
     .maybeSingle();
   if (error) throw error;
   return data?.count || 0;
+}
+
+// Глобальний денний лічильник опрацьованих справ (усі дії бота за день).
+// Зберігаємо як службовий рядок у bot_daily_scores із зарезервованим tg_id —
+// без зміни схеми. У рейтингах/списках він не фігурує (ті читають bot_users).
+const GLOBAL_DAILY_TG_ID = '__global__';
+export async function incGlobalDailyDone(dateKyiv: string): Promise<number> {
+  return incDailyCount(GLOBAL_DAILY_TG_ID, dateKyiv);
+}
+export async function getGlobalDailyDone(dateKyiv: string): Promise<number> {
+  return getDailyCount(GLOBAL_DAILY_TG_ID, dateKyiv);
+}
+
+// ---------- MONTHLY POINTS (рейтинг по місяцях) ----------
+// Атомарний інкремент місячних балів (повертає нове значення); оновлює display_name.
+export async function incMonthlyPoints(
+  month: string,
+  tgId: string,
+  delta: number,
+  displayName: string
+): Promise<number> {
+  const { data, error } = await db().rpc(RPC_INC_MONTHLY, {
+    p_month: month,
+    p_tg_id: tgId,
+    p_delta: delta,
+    p_name: displayName || '',
+  });
+  if (error) throw error;
+  return Number(data || 0);
+}
+
+// Усі учасники місяця за спаданням балів (для Топ-10 + місця + сусідів).
+export async function getMonthlyLeaderboard(
+  month: string
+): Promise<Array<{ tgId: string; points: number; displayName: string }>> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: Array<{ tgId: string; points: number; displayName: string }> = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.monthlyPoints)
+      .select('tg_id, points, display_name')
+      .eq('month', month)
+      .order('points', { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) {
+      out.push({
+        tgId: (r as any).tg_id,
+        points: Number((r as any).points || 0),
+        displayName: (r as any).display_name || '',
+      });
+    }
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
+// Місяці, для яких є дані (новіші — першими).
+export async function getMonthlyMonths(): Promise<string[]> {
+  const { data, error } = await db().rpc(RPC_MONTHLY_MONTHS);
+  if (error) throw error;
+  return ((data as any[]) || []).map(r => r.month);
 }
 
 // ---------- SUBMISSIONS (Results) ----------

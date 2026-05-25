@@ -337,14 +337,20 @@ export const telegramBotConfig: TelegramBotConfig = {
     nothingToCancel: 'Немає активної справи.',
     statsLine:
       '👤 {name}\n' +
-      '🏆 Всього балів: {total}\n' +
+      '🏆 Балів цього місяця: {monthPoints}\n' +
       '📅 Сьогодні: {todayCount} справ ({todayPoints} балів, множник ×{multiplier})\n' +
-      '📊 Місце в рейтингу: {rank} з {totalUsers}',
+      '📊 Місце цього місяця: {rank} з {totalUsers}',
     progressTotalDescriptions: 'Всього розпізнано описів: {count}',
     progressDescriptionLine:
       'Опис {name}:\n📈 Оброблено: {donePct}% ({doneCases} з {totalCases} справ повністю перевірено)',
     leaderboardHeader: '🏆 Топ-10:',
+    // Заголовок місячного рейтингу. {month} — напр. «травень 2026».
+    leaderboardMonthHeader: '🏆 Топ-10 за {month}:',
     leaderboardYou: '\n{rank}. Ви — {points}',
+    // Кнопка/розділ архіву місяців.
+    menuHallOfFame: '🏅 Працівники місяця',
+    hallOfFamePick: '🏅 <b>Працівники місяця</b>\n\nОберіть місяць:',
+    hallOfFameEmpty: '🏅 Архіву поки немає — він зʼявиться, щойно назбираються бали.',
     backButton: '⬅ Назад',
     cancelButton: '❌ Скасувати',
     confirmButton: '✅ Підтвердити',

@@ -13,6 +13,8 @@ import {
   getSession,
   getUser,
   incDailyCount,
+  incGlobalDailyDone,
+  incMonthlyPoints,
   patchUser,
   recordSkippedCase,
   setSession,
@@ -21,6 +23,8 @@ import {
   getResultsTotals,
   getAllCases,
   getDescriptionProgressViaRpc,
+  getMonthlyLeaderboard,
+  getMonthlyMonths,
   // Collab helpers
   lockCase,
   unlockCase,
@@ -41,7 +45,7 @@ import {
   computePointsForToday,
   getTodayProcessedCases,
   kyivDateString,
-  leaderboardSorted,
+  kyivMonthString,
   nowIsoUtc,
   progressByDescription,
   recomputeCaseSubmissionCount,
@@ -180,8 +184,8 @@ function mainMenuKeyboard(user: BotUser | null): any {
     keyboard: [
       [{ text: T.menuNext }],
       [{ text: T.menuStats }, { text: T.menuProgress }],
-      [{ text: T.menuLeaderboard }, { text: T.menuHelp }],
-      [{ text: T.menuSettings }],
+      [{ text: T.menuLeaderboard }, { text: T.menuHallOfFame }],
+      [{ text: T.menuHelp }, { text: T.menuSettings }],
       pauseRow,
     ],
     resize_keyboard: true,
@@ -344,6 +348,7 @@ function normalizeCommand(text: string): string {
   if (trimmed === T.menuStats) return '/stats';
   if (trimmed === T.menuProgress) return '/progress';
   if (trimmed === T.menuLeaderboard) return '/leaderboard';
+  if (trimmed === T.menuHallOfFame) return '/halloffame';
   if (trimmed === T.menuHelp) return '/help';
   if (trimmed === T.menuSettings) return '/settings';
   if (trimmed === T.menuPause) return '/stop';
@@ -488,7 +493,7 @@ async function handleMessage(msg: any) {
     }
     // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
     const menuTexts = new Set([
-      T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard,
+      T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard, T.menuHallOfFame,
       T.menuPause, T.menuResume, T.menuHelp, T.menuSettings,
     ]);
     if (menuTexts.has(rawText.trim())) {
@@ -583,6 +588,7 @@ async function handleMessage(msg: any) {
   if (text === '/stats') return void (await cmdStats(chatId, tgId, user));
   if (text === '/progress') return void (await cmdProgress(chatId, user));
   if (text === '/leaderboard') return void (await cmdLeaderboard(chatId, tgId, user));
+  if (text === '/halloffame') return void (await cmdHallOfFame(chatId));
   if (text === '/next') return void (await cmdNext(chatId, tgId, session));
 
   // якщо є відкрита сесія — це відповідь на питання
@@ -700,6 +706,14 @@ async function handleCallback(cb: any) {
     const badgeId = data.slice('badge:'.length);
     const ok = await sendBadgeCardById(chatId, tgId, badgeId);
     await answerCallbackQuery(cb.id, ok ? undefined : T.badgeLockedToast);
+    return;
+  }
+
+  // Найкращі працівники: рейтинг обраного місяця (місце + сусіди).
+  if (data.startsWith('hof:')) {
+    await answerCallbackQuery(cb.id);
+    const month = data.slice('hof:'.length);
+    await sendMessage(chatId, await buildMonthlyLeaderboardText(month, tgId));
     return;
   }
 
@@ -933,12 +947,13 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
 
 async function cmdStats(chatId: number, tgId: string, user: BotUser) {
   const today = kyivDateString();
-  const [todayCount, allUsers] = await Promise.all([
+  const month = kyivMonthString();
+  const [todayCount, monthly] = await Promise.all([
     getDailyCount(tgId, today),
-    getAllUsers(),
+    getMonthlyLeaderboard(month),
   ]);
   // Догоняюча перевірка: видати бейджі, які користувач уже заслужив раніше
-  // (для існуючих до фічі — тихо). Робимо ДО підрахунку, щоб лічильник був свіжим.
+  // (для існуючих до фічі — тихо). Бейджі рахуються від lifetime total_points.
   await evaluateBadges({
     chatId,
     tgId,
@@ -949,16 +964,18 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
   const badges = await countEarnedInCatalog(tgId);
   const points = computePointsForToday(Math.max(todayCount, 1));
   const todayPoints = todayCount * points.multiplier * telegramBotConfig.points.base;
-  const all = leaderboardSorted(allUsers);
-  const rank = all.findIndex(u => u.tgId === tgId) + 1;
+  // Місце й бали — за поточний місяць.
+  const myIdx = monthly.findIndex(u => u.tgId === tgId);
+  const monthPoints = myIdx >= 0 ? pts2(monthly[myIdx].points) : 0;
+  const rank = myIdx >= 0 ? myIdx + 1 : monthly.length + 1;
   let body = fmt(T.statsLine, {
     name: user.displayName,
-    total: user.totalPoints,
+    monthPoints,
     todayCount,
     todayPoints: Math.round(todayPoints * 100) / 100,
     multiplier: points.multiplier,
-    rank: rank || all.length + 1,
-    totalUsers: all.length,
+    rank,
+    totalUsers: monthly.length,
   });
   // Inline-кнопки під «Мої бали»: досягнення (якщо є каталог) + «Мій Описовий пазл».
   // Reply-меню внизу лишається (воно is_persistent), тож inline тут не конфліктує.
@@ -1026,15 +1043,25 @@ async function cmdProgress(chatId: number, user: BotUser) {
   });
 }
 
-async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
-  const all = leaderboardSorted(await getAllUsers());
+// 'YYYY-MM' → «травень 2026».
+function formatMonthUk(month: string): string {
+  const d = new Date(`${month}-01T12:00:00Z`);
+  return new Intl.DateTimeFormat('uk-UA', { timeZone: 'UTC', month: 'long', year: 'numeric' }).format(d);
+}
+
+function pts2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+// Текст місячного Топ-10: топ-10 + (якщо поза десяткою) сусіди — один над, сам, один під.
+async function buildMonthlyLeaderboardText(month: string, tgId: string): Promise<string> {
+  const all = await getMonthlyLeaderboard(month);
+  const header = fmt(T.leaderboardMonthHeader, { month: formatMonthUk(month) });
   const top = all.slice(0, 10);
   const lines = top.map(
-    (u, i) => `${i + 1}. ${escapeHtml(u.displayName || '—')} — ${u.totalPoints}`
+    (u, i) => `${i + 1}. ${escapeHtml(u.displayName || '—')} — ${pts2(u.points)}`
   );
-  let body = `${T.leaderboardHeader}\n${lines.join('\n') || '—'}`;
-  // Якщо користувач НЕ в топ-10 — показуємо "..." і його оточення:
-  // один над ним, він сам, один під ним (пропускаємо тих, хто вже у топ-10, і межі списку).
+  let body = `${header}\n${lines.join('\n') || '—'}`;
   const myRank = all.findIndex(u => u.tgId === tgId);
   if (myRank >= 10) {
     body += '\n...';
@@ -1043,11 +1070,30 @@ async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
       const u = all[i];
       body +=
         i === myRank
-          ? fmt(T.leaderboardYou, { rank: i + 1, points: u.totalPoints })
-          : `\n${i + 1}. ${escapeHtml(u.displayName || '—')} — ${u.totalPoints}`;
+          ? fmt(T.leaderboardYou, { rank: i + 1, points: pts2(u.points) })
+          : `\n${i + 1}. ${escapeHtml(u.displayName || '—')} — ${pts2(u.points)}`;
     }
   }
+  return body;
+}
+
+async function cmdLeaderboard(chatId: number, tgId: string, user: BotUser) {
+  const body = await buildMonthlyLeaderboardText(kyivMonthString(), tgId);
   await sendMessage(chatId, body, { reply_markup: mainMenuKeyboard(user) });
+}
+
+// «Найкращі працівники»: список доступних місяців (кнопками). Вибір місяця → hof:<month>.
+async function cmdHallOfFame(chatId: number) {
+  const months = await getMonthlyMonths();
+  if (months.length === 0) {
+    await sendMessage(chatId, T.hallOfFameEmpty);
+    return;
+  }
+  // Показуємо до 24 останніх місяців (новіші — першими).
+  const rows = months
+    .slice(0, 24)
+    .map(m => [{ text: formatMonthUk(m), callback_data: `hof:${m}` }]);
+  await sendMessage(chatId, T.hallOfFamePick, { reply_markup: { inline_keyboard: rows } });
 }
 
 async function cmdSettings(chatId: number, user: BotUser) {
@@ -1376,6 +1422,8 @@ async function confirmAndSubmit(
       { ...user, totalPoints: newTotal, consecutiveMisses: 0 },
       user.rowIndex
     ),
+    // Місячний рейтинг: ті самі бали — у рядок поточного київського місяця.
+    incMonthlyPoints(kyivMonthString(), tgId, pts.pointsEarned, user.displayName),
     // Редагуємо ack-повідомлення на фінальний текст замість надсилання нового.
     // ВАЖЛИВО: editMessageText дозволяє тільки inline_keyboard у reply_markup.
     // mainMenuKeyboard — це reply keyboard (постійна, унизу екрана), її не треба
@@ -1504,6 +1552,8 @@ async function deliverCollabPoints(
 
   await Promise.all([
     upsertUser({ ...user, totalPoints: newTotal, consecutiveMisses: 0 }, user.rowIndex),
+    // Місячний рейтинг: ті самі бали — у поточний київський місяць.
+    incMonthlyPoints(kyivMonthString(), tgId, pts.pointsEarned, user.displayName),
     ackMessageId
       ? editMessageText(chatId, ackMessageId, finalText)
           .catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))

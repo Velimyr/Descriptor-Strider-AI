@@ -12,8 +12,9 @@ import {
   awardPuzzleWinner,
   getUser,
   patchUser,
+  incMonthlyPoints,
 } from './storage.js';
-import { kyivDateString } from './scheduler.js';
+import { kyivDateString, kyivMonthString } from './scheduler.js';
 import { sendMessage } from './tg-api.js';
 import {
   collectibleWords,
@@ -132,7 +133,11 @@ async function checkPuzzleCompletion(tgId: string, dateKyiv: string): Promise<vo
     const user = await getUser(tgId);
     if (user) {
       const newTotal = Math.round((user.totalPoints + award.points) * 100) / 100;
-      await patchUser(tgId, { totalPoints: newTotal });
+      await Promise.all([
+        patchUser(tgId, { totalPoints: newTotal }),
+        // Призові бали також ідуть у місячний рейтинг поточного місяця.
+        incMonthlyPoints(kyivMonthString(), tgId, award.points, user.displayName),
+      ]);
     }
   } catch (e) {
     console.error('puzzle prize points failed', e);
