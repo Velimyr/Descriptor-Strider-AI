@@ -13,7 +13,6 @@ import {
   getSession,
   getUser,
   incDailyCount,
-  incGlobalDailyDone,
   patchUser,
   recordSkippedCase,
   setSession,
@@ -40,6 +39,7 @@ import {
 import {
   computeFundEta,
   computePointsForToday,
+  getTodayProcessedCases,
   kyivDateString,
   leaderboardSorted,
   nowIsoUtc,
@@ -1338,7 +1338,7 @@ async function confirmAndSubmit(
     deleteSession(tgId),
     recomputeCaseSubmissionCount(cse.caseId),
     incDailyCount(tgId, today),
-    incGlobalDailyDone(today),
+    getTodayProcessedCases(),
   ]);
 
   const pts = computePointsForToday(todayCount);
@@ -1473,7 +1473,7 @@ async function deliverCollabPoints(
   const today = kyivDateString();
   const [todayCount, todayDone] = await Promise.all([
     incDailyCount(tgId, today),
-    incGlobalDailyDone(today),
+    getTodayProcessedCases(),
   ]);
   const pts = computePointsForToday(todayCount, actionBase);
   const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1, actionBase) : { multiplier: 1 };

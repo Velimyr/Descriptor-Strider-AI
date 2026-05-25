@@ -172,11 +172,15 @@ create index if not exists idx_user_badges_user on bot_user_badges(tg_id);
 -- ===== Описовий пазл (гра «слово дня») =====
 -- Речення дня (одне на київську дату). Адмін редагує через вкладку «Пазл».
 create table if not exists bot_puzzles (
-  date_kyiv  date primary key,
-  sentence   text        not null default '',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  date_kyiv   date primary key,
+  sentence    text        not null default '',
+  -- Слова, що автоматично вважаються «виданими» (підтвердженими) для цієї фрази:
+  -- ті, яких немає в розпізнаних колаб-заголовках на момент збереження.
+  given_words jsonb       not null default '[]'::jsonb,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
 );
+alter table bot_puzzles add column if not exists given_words jsonb not null default '[]'::jsonb;
 
 -- Зібрані користувачем слова пазла. status: unconfirmed (розпізнав) → confirmed
 -- (справу закрили того ж дня). PK не дає зібрати те саме слово двічі.

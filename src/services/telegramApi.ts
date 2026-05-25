@@ -183,6 +183,7 @@ export const tgApi = {
       sentence: string;
       total: number;
       words: string[];
+      givenWords: string[];
       participants: Array<{
         tgId: string;
         displayName: string;

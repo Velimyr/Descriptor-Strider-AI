@@ -152,11 +152,13 @@ create index if not exists idx_botdev_user_badges_user on botdev_user_badges(tg_
 
 -- ===== Описовий пазл (гра «слово дня») — staging =====
 create table if not exists botdev_puzzles (
-  date_kyiv  date primary key,
-  sentence   text        not null default '',
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  date_kyiv   date primary key,
+  sentence    text        not null default '',
+  given_words jsonb       not null default '[]'::jsonb,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
 );
+alter table botdev_puzzles add column if not exists given_words jsonb not null default '[]'::jsonb;
 
 create table if not exists botdev_puzzle_progress (
   date_kyiv    date        not null,

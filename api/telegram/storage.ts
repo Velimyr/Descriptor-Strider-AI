@@ -424,17 +424,6 @@ export async function getDailyCount(tgId: string, dateKyiv: string): Promise<num
   return data?.count || 0;
 }
 
-// Глобальний денний лічильник опрацьованих справ (усі дії бота за день).
-// Зберігаємо як службовий рядок у bot_daily_scores із зарезервованим tg_id —
-// без зміни схеми. У рейтингах/списках він не фігурує (ті читають bot_users).
-const GLOBAL_DAILY_TG_ID = '__global__';
-export async function incGlobalDailyDone(dateKyiv: string): Promise<number> {
-  return incDailyCount(GLOBAL_DAILY_TG_ID, dateKyiv);
-}
-export async function getGlobalDailyDone(dateKyiv: string): Promise<number> {
-  return getDailyCount(GLOBAL_DAILY_TG_ID, dateKyiv);
-}
-
 // ---------- SUBMISSIONS (Results) ----------
 export interface SubmissionInput {
   caseId: string;
@@ -1116,16 +1105,26 @@ export async function countUserCases(tgId: string): Promise<number> {
 export interface PuzzleRow {
   dateKyiv: string;
   sentence: string;
+  givenWords: string[]; // слова, видані як підтверджені для цієї фрази
+}
+
+function mapPuzzle(r: any): PuzzleRow {
+  const gw = r.given_words;
+  return {
+    dateKyiv: r.date_kyiv,
+    sentence: r.sentence || '',
+    givenWords: Array.isArray(gw) ? gw.map(String) : [],
+  };
 }
 
 export async function getPuzzle(dateKyiv: string): Promise<PuzzleRow | null> {
   const { data, error } = await db()
     .from(T.puzzles)
-    .select('date_kyiv, sentence')
+    .select('date_kyiv, sentence, given_words')
     .eq('date_kyiv', dateKyiv)
     .maybeSingle();
   if (error) throw error;
-  return data ? { dateKyiv: (data as any).date_kyiv, sentence: (data as any).sentence || '' } : null;
+  return data ? mapPuzzle(data) : null;
 }
 
 // Усі пазли за зростанням дати (для списку та масового заповнення).
@@ -1137,23 +1136,27 @@ export async function getAllPuzzles(): Promise<PuzzleRow[]> {
   while (true) {
     const { data, error } = await db()
       .from(T.puzzles)
-      .select('date_kyiv, sentence')
+      .select('date_kyiv, sentence, given_words')
       .order('date_kyiv', { ascending: true })
       .range(from, from + pageSize - 1);
     if (error) throw error;
     const rows = data || [];
-    for (const r of rows) out.push({ dateKyiv: (r as any).date_kyiv, sentence: (r as any).sentence || '' });
+    for (const r of rows) out.push(mapPuzzle(r));
     if (rows.length < pageSize) break;
     from += pageSize;
   }
   return out;
 }
 
-export async function upsertPuzzle(dateKyiv: string, sentence: string): Promise<void> {
+export async function upsertPuzzle(
+  dateKyiv: string,
+  sentence: string,
+  givenWords: string[] = []
+): Promise<void> {
   const { error } = await db()
     .from(T.puzzles)
     .upsert(
-      { date_kyiv: dateKyiv, sentence, updated_at: new Date().toISOString() },
+      { date_kyiv: dateKyiv, sentence, given_words: givenWords, updated_at: new Date().toISOString() },
       { onConflict: 'date_kyiv' }
     );
   if (error) throw error;

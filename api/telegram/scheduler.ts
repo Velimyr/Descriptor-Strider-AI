@@ -8,6 +8,7 @@ import {
   getLastUserCaseKind,
   getMeta,
   getPuzzle,
+  getTodayActivity,
   patchCase,
 } from './storage.js';
 import { collectibleWords, titleFieldIndex, wordsInText } from './puzzleWords.js';
@@ -49,6 +50,27 @@ async function getTodayPuzzleContext(): Promise<{ words: Set<string>; titleIdx: 
 function titleHasAnyWord(title: string, words: Set<string>): boolean {
   for (const w of wordsInText(title)) if (words.has(w)) return true;
   return false;
+}
+
+// Кеш «опрацьовано справ сьогодні» — унікальні справи з активністю за сьогодні
+// (та сама цифра, що в адмінці «Сьогодні опрацьовано справ»). TTL 30с, щоб не
+// робити повний скан БД на кожне повідомлення подяки в боті.
+let todayCasesCache: { date: string; cases: number; expires: number } | null = null;
+export async function getTodayProcessedCases(): Promise<number> {
+  const today = kyivDateString();
+  const now = Date.now();
+  if (todayCasesCache && todayCasesCache.date === today && todayCasesCache.expires > now) {
+    return todayCasesCache.cases;
+  }
+  let cases = 0;
+  try {
+    const r = await getTodayActivity(cfg.dispatch.timezone || 'Europe/Kyiv');
+    cases = r.cases;
+  } catch (e) {
+    console.error('getTodayProcessedCases failed', e);
+  }
+  todayCasesCache = { date: today, cases, expires: now + 30_000 };
+  return cases;
 }
 
 export function nowIsoUtc(): string {

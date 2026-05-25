@@ -914,6 +914,45 @@ router.post('/admin/recompute-case', async (req, res) => {
 });
 
 // ===================== ОПИСОВИЙ ПАЗЛ =====================
+// Корпус нормалізованих слів із розпізнаних колаб-заголовків — для визначення
+// «виданих» слів (тих, яких у базі ще немає на момент збереження фрази).
+async function buildRecognizedWordCorpus(): Promise<{ corpus: Set<string>; titleConfigured: boolean }> {
+  const { getRecognizedCollabAnswers } = await import('./storage.js');
+  const { titleFieldIndex, wordsInText } = await import('./puzzle.js');
+  const qRaw = await getMeta('questions');
+  let questions: any[] = [];
+  try {
+    questions = qRaw ? JSON.parse(qRaw) : [];
+    if (!Array.isArray(questions)) questions = [];
+  } catch {
+    questions = [];
+  }
+  const titleIdx = titleFieldIndex(questions);
+  const corpus = new Set<string>();
+  if (titleIdx >= 0) {
+    const answersList = await getRecognizedCollabAnswers(3000);
+    for (const ans of answersList) {
+      const title = String(ans[titleIdx] ?? '');
+      if (!title) continue;
+      for (const w of wordsInText(title)) corpus.add(w);
+    }
+  }
+  return { corpus, titleConfigured: titleIdx >= 0 };
+}
+
+// «Видані» слова фрази: collectible-слова, яких немає в корпусі. Якщо поле title
+// не налаштоване — нічого не видаємо (визначити неможливо).
+async function computeGivenForSentence(
+  sentence: string,
+  ctx: { corpus: Set<string>; titleConfigured: boolean }
+): Promise<string[]> {
+  if (!ctx.titleConfigured) return [];
+  const { collectibleWords } = await import('./puzzle.js');
+  return collectibleWords(sentence, telegramBotConfig.puzzle.stopwords).filter(
+    w => !ctx.corpus.has(w)
+  );
+}
+
 // Речення дня (read).
 router.get('/admin/puzzle', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
@@ -937,8 +976,10 @@ router.post('/admin/puzzle', async (req, res) => {
   }
   try {
     const { upsertPuzzle } = await import('./storage.js');
-    await upsertPuzzle(d, String(sentence || ''));
-    res.json({ ok: true, date: d });
+    const ctx = await buildRecognizedWordCorpus();
+    const given = await computeGivenForSentence(String(sentence || ''), ctx);
+    await upsertPuzzle(d, String(sentence || ''), given);
+    res.json({ ok: true, date: d, given });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1005,14 +1046,21 @@ router.get('/admin/puzzle/progress', async (req, res) => {
       ? collectibleWords(puzzle.sentence, telegramBotConfig.puzzle.stopwords)
       : [];
     const targetSet = new Set(targets);
-    const total = targets.length;
+    const givenWords = (puzzle?.givenWords || []).filter(w => targetSet.has(w));
+    const givenSet = new Set(givenWords);
+    // «Ціль» = слова, які треба зібрати (без виданих).
+    const mustSet = new Set(targets.filter(w => !givenSet.has(w)));
+    const total = mustSet.size;
     const agg = new Map<string, { collected: number; confirmed: number }>();
     // Статус кожного слова фрази по кожному учаснику (для детальної таблиці).
     const wordMap = new Map<string, Record<string, 'confirmed' | 'unconfirmed'>>();
     for (const r of rows) {
       const a = agg.get(r.tgId) || { collected: 0, confirmed: 0 };
-      a.collected++;
-      if (r.status === 'confirmed') a.confirmed++;
+      // Лічильники — лише по словах, які треба зібрати (видані не рахуємо).
+      if (mustSet.has(r.word)) {
+        a.collected++;
+        if (r.status === 'confirmed') a.confirmed++;
+      }
       agg.set(r.tgId, a);
       if (targetSet.has(r.word)) {
         const m = wordMap.get(r.tgId) || {};
@@ -1038,6 +1086,7 @@ router.get('/admin/puzzle/progress', async (req, res) => {
       sentence: puzzle?.sentence || '',
       total,
       words: targets,
+      givenWords,
       participants,
       winners: winners.map(w => ({ ...w, displayName: names[w.tgId] || '' })),
     });
@@ -1097,7 +1146,11 @@ router.post('/admin/puzzle/bulk', async (req, res) => {
       cursor = addDaysIso(cursor, 1);
     }
     if (!dryRun) {
-      for (const a of assignments) await upsertPuzzle(a.date, a.sentence);
+      const ctx = await buildRecognizedWordCorpus();
+      for (const a of assignments) {
+        const given = await computeGivenForSentence(a.sentence, ctx);
+        await upsertPuzzle(a.date, a.sentence, given);
+      }
     }
     res.json({ ok: true, dryRun, assignments });
   } catch (e: any) {

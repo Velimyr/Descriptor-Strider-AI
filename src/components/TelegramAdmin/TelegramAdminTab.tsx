@@ -5959,6 +5959,7 @@ const PuzzleDayView: React.FC<{ date: string; setDate: (d: string) => void }> = 
   const [progress, setProgress] = useState<{
     total: number;
     words: string[];
+    givenWords: string[];
     participants: Array<{
       tgId: string;
       displayName: string;
@@ -6134,6 +6135,7 @@ const PuzzleDayView: React.FC<{ date: string; setDate: (d: string) => void }> = 
               Слова:{' '}
               <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">підтверджене</span>{' '}
               <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">зібране</span>{' '}
+              <span className="px-1.5 py-0.5 rounded bg-violet-100 text-violet-800">видане</span>{' '}
               <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-400">не зібране</span>
             </div>
             <table className="w-full text-sm border">
@@ -6162,13 +6164,15 @@ const PuzzleDayView: React.FC<{ date: string; setDate: (d: string) => void }> = 
                     <td className="px-2 py-1 border-b">
                       <div className="flex flex-wrap gap-1">
                         {progress.words.map(w => {
+                          const given = progress.givenWords.includes(w);
                           const st = p.words[w];
-                          const cls =
-                            st === 'confirmed'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : st === 'unconfirmed'
-                              ? 'bg-amber-100 text-amber-800'
-                              : 'bg-slate-100 text-slate-400';
+                          const cls = given
+                            ? 'bg-violet-100 text-violet-800 italic'
+                            : st === 'confirmed'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : st === 'unconfirmed'
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-slate-100 text-slate-400';
                           return (
                             <span key={w} className={`text-xs px-1.5 py-0.5 rounded ${cls}`}>
                               {w}

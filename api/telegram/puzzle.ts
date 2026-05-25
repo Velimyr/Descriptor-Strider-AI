@@ -56,7 +56,10 @@ export async function collectPuzzleWordsOnCreate(
     if (!puzzle || !puzzle.sentence.trim()) return;
     const title = titleAnswer(questions, answers);
     if (!title.trim()) return;
-    const words = matchedPuzzleWords(title, puzzle.sentence, telegramBotConfig.puzzle.stopwords);
+    // Видані слова не збираємо (вони вже залічені для цієї фрази).
+    const given = new Set(puzzle.givenWords);
+    const words = matchedPuzzleWords(title, puzzle.sentence, telegramBotConfig.puzzle.stopwords)
+      .filter(w => !given.has(w));
     if (words.length === 0) return;
     const added = await addPuzzleWords(today, tgId, words, caseId);
     if (added.length === 0) return;
@@ -98,11 +101,15 @@ export async function onCollabCaseConfirmed(caseId: string, closed: boolean): Pr
 async function checkPuzzleCompletion(tgId: string, dateKyiv: string): Promise<void> {
   const puzzle = await getPuzzle(dateKyiv);
   if (!puzzle || !puzzle.sentence.trim()) return;
-  const targets = collectibleWords(puzzle.sentence, telegramBotConfig.puzzle.stopwords);
-  if (targets.length === 0) return;
+  const given = new Set(puzzle.givenWords);
+  // Збирати треба лише слова, які НЕ видані (видані вже залічені).
+  const mustCollect = collectibleWords(puzzle.sentence, telegramBotConfig.puzzle.stopwords).filter(
+    w => !given.has(w)
+  );
+  if (mustCollect.length === 0) return; // нема чого збирати — переможців не визначаємо
   const progress = await getPuzzleProgressForUser(dateKyiv, tgId);
   const confirmed = new Set(progress.filter(p => p.status === 'confirmed').map(p => p.word));
-  if (!targets.every(w => confirmed.has(w))) return;
+  if (!mustCollect.every(w => confirmed.has(w))) return;
 
   const award = await awardPuzzleWinner(dateKyiv, tgId);
   if (!award) return; // вже переможець або всі 3 місця зайняті
@@ -165,28 +172,34 @@ export async function sendPuzzleResults(chatId: number | string, tgId: string): 
     return;
   }
   const stopwords = telegramBotConfig.puzzle.stopwords;
-  const targets = new Set(collectibleWords(puzzle.sentence, stopwords));
   const stopSet = new Set(stopwords.map(w => normalizeWord(w)).filter(Boolean));
+  const targets = new Set(collectibleWords(puzzle.sentence, stopwords));
+  const givenSet = new Set(puzzle.givenWords.filter(w => targets.has(w)));
   const progress = await getPuzzleProgressForUser(today, tgId);
   const statusByWord = new Map(progress.map(p => [p.word, p.status]));
 
   const rendered = tokenizeSentence(puzzle.sentence)
     .map(({ raw, norm }) => {
-      if (!norm) return esc(raw); // суто пунктуація
-      // Стоп-слова показуємо одразу як підтверджені — їх не треба збирати.
-      if (stopSet.has(norm)) return `<b>${esc(raw.toUpperCase())}</b>`;
+      if (!norm) return esc(raw); // пунктуація — звичайний текст
+      // Службові (стоп-слова) і видані слова — звичайний текст: у грі участі не беруть.
+      if (stopSet.has(norm)) return esc(raw);
       if (!targets.has(norm)) return esc(raw); // запобіжник (не має статись)
+      if (givenSet.has(norm)) return esc(raw);
+      // Моноширинний = слово, яке треба зібрати.
       const st = statusByWord.get(norm);
-      if (st === 'confirmed') return `<b>${esc(raw.toUpperCase())}</b>`;
-      if (st === 'unconfirmed') return `<u>${esc(raw)}</u>`;
-      return esc(raw);
+      if (st === 'confirmed') return `<code>${esc(raw.toUpperCase())}</code>`; // + ВЕЛИКІ
+      if (st === 'unconfirmed') return `<u><code>${esc(raw)}</code></u>`;       // + підкреслене
+      return `<code>${esc(raw)}</code>`;                                         // ще не зібране
     })
     .join(' ');
 
-  const total = targets.size;
+  // Лічильники — лише по «цілі» (слова, які треба зібрати; видані не входять).
+  let total = 0;
   let confirmed = 0;
   let collected = 0;
   for (const w of targets) {
+    if (givenSet.has(w)) continue;
+    total++;
     const st = statusByWord.get(w);
     if (st) collected++;
     if (st === 'confirmed') confirmed++;
