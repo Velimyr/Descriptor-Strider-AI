@@ -150,6 +150,35 @@ function esc(s: string): string {
   return s.replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] || ch));
 }
 
+// Рендер фрази дня з виділенням стану кожного слова.
+// Слова, які ТРЕБА зібрати, беремо у квадратні дужки [] (незалежно від стану);
+// усередині: ВЕЛИКИМИ+жирним — підтверджене, підкреслене — зібране-непідтверджене,
+// звичайне — ще не зібране. Службові/видані/пунктуація — звичайний текст без дужок.
+function renderPhrase(
+  puzzle: { sentence: string; givenWords: string[] },
+  statusByWord: Map<string, 'confirmed' | 'unconfirmed'>
+): string {
+  const stopwords = telegramBotConfig.puzzle.stopwords;
+  const stopSet = new Set(stopwords.map(w => normalizeWord(w)).filter(Boolean));
+  const targets = new Set(collectibleWords(puzzle.sentence, stopwords));
+  const givenSet = new Set(puzzle.givenWords.filter(w => targets.has(w)));
+  return tokenizeSentence(puzzle.sentence)
+    .map(({ raw, norm }) => {
+      if (!norm) return esc(raw); // пунктуація
+      // Службові, видані, нецільові — звичайний текст без дужок (участі не беруть).
+      if (stopSet.has(norm) || !targets.has(norm) || givenSet.has(norm)) return esc(raw);
+      const st = statusByWord.get(norm);
+      const inner =
+        st === 'confirmed'
+          ? `<b>${esc(raw.toUpperCase())}</b>`
+          : st === 'unconfirmed'
+          ? `<u>${esc(raw)}</u>`
+          : esc(raw);
+      return `[${inner}]`;
+    })
+    .join(' ');
+}
+
 function puzzleTaskKeyboard(): any {
   return {
     inline_keyboard: [
@@ -160,15 +189,18 @@ function puzzleTaskKeyboard(): any {
 }
 
 // Задача дня + кнопки «Правила» / «Мої результати».
-export async function sendPuzzleTask(chatId: number | string): Promise<void> {
-  const puzzle = await getPuzzle(kyivDateString());
+export async function sendPuzzleTask(chatId: number | string, tgId: string): Promise<void> {
+  const today = kyivDateString();
+  const puzzle = await getPuzzle(today);
   if (!puzzle || !puzzle.sentence.trim()) {
     await sendMessage(chatId, T.puzzleNoToday);
     return;
   }
-  await sendMessage(chatId, fmt(T.puzzleTaskHeader, { sentence: esc(puzzle.sentence) }), {
-    reply_markup: puzzleTaskKeyboard(),
-  });
+  const progress = await getPuzzleProgressForUser(today, tgId);
+  const statusByWord = new Map(progress.map(p => [p.word, p.status]));
+  const rendered = renderPhrase(puzzle, statusByWord);
+  const body = `${fmt(T.puzzleTaskHeader, { sentence: rendered })}\n\n${T.puzzleLegend}`;
+  await sendMessage(chatId, body, { reply_markup: puzzleTaskKeyboard() });
 }
 
 export async function sendPuzzleRules(chatId: number | string): Promise<void> {
@@ -185,25 +217,11 @@ export async function sendPuzzleResults(chatId: number | string, tgId: string): 
     return;
   }
   const stopwords = telegramBotConfig.puzzle.stopwords;
-  const stopSet = new Set(stopwords.map(w => normalizeWord(w)).filter(Boolean));
   const targets = new Set(collectibleWords(puzzle.sentence, stopwords));
   const givenSet = new Set(puzzle.givenWords.filter(w => targets.has(w)));
   const progress = await getPuzzleProgressForUser(today, tgId);
   const statusByWord = new Map(progress.map(p => [p.word, p.status]));
-
-  const rendered = tokenizeSentence(puzzle.sentence)
-    .map(({ raw, norm }) => {
-      if (!norm) return esc(raw); // пунктуація — звичайний текст
-      // Службові і видані слова — звичайний текст: у грі участі не беруть.
-      if (stopSet.has(norm)) return esc(raw);
-      if (!targets.has(norm)) return esc(raw); // запобіжник (не має статись)
-      if (givenSet.has(norm)) return esc(raw);
-      const st = statusByWord.get(norm);
-      if (st === 'confirmed') return `<b>${esc(raw.toUpperCase())}</b>`; // зібране й підтверджене
-      if (st === 'unconfirmed') return `<u>${esc(raw)}</u>`;             // зібране, очікує підтвердження
-      return `<i>${esc(raw)}</i>`;                                       // треба зібрати (ще не зібране)
-    })
-    .join(' ');
+  const rendered = renderPhrase(puzzle, statusByWord);
 
   // Лічильники — лише по «цілі» (слова, які треба зібрати; видані не входять).
   let total = 0;

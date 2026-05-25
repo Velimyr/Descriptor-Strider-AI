@@ -706,7 +706,7 @@ async function handleCallback(cb: any) {
   // Описовий пазл — не залежить від сесії.
   if (data === 'puzzle') {
     await answerCallbackQuery(cb.id);
-    await sendPuzzleTask(chatId);
+    await sendPuzzleTask(chatId, tgId);
     return;
   }
   if (data === 'puzzle:rules') {
