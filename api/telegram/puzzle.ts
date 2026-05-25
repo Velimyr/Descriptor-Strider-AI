@@ -181,15 +181,14 @@ export async function sendPuzzleResults(chatId: number | string, tgId: string): 
   const rendered = tokenizeSentence(puzzle.sentence)
     .map(({ raw, norm }) => {
       if (!norm) return esc(raw); // пунктуація — звичайний текст
-      // Службові (стоп-слова) і видані слова — звичайний текст: у грі участі не беруть.
+      // Службові і видані слова — звичайний текст: у грі участі не беруть.
       if (stopSet.has(norm)) return esc(raw);
       if (!targets.has(norm)) return esc(raw); // запобіжник (не має статись)
       if (givenSet.has(norm)) return esc(raw);
-      // Моноширинний = слово, яке треба зібрати.
       const st = statusByWord.get(norm);
-      if (st === 'confirmed') return `<code>${esc(raw.toUpperCase())}</code>`; // + ВЕЛИКІ
-      if (st === 'unconfirmed') return `<u><code>${esc(raw)}</code></u>`;       // + підкреслене
-      return `<code>${esc(raw)}</code>`;                                         // ще не зібране
+      if (st === 'confirmed') return `<b>${esc(raw.toUpperCase())}</b>`; // зібране й підтверджене
+      if (st === 'unconfirmed') return `<u>${esc(raw)}</u>`;             // зібране, очікує підтвердження
+      return esc(raw);                                                   // ще не зібране
     })
     .join(' ');
 
