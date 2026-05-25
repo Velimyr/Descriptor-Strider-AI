@@ -9,6 +9,7 @@ import {
   getCase,
   hasUserTouchedCase,
   incDailyCount,
+  incMonthlyPoints,
   recordCaseEvent,
   setCaseCreated,
   setCaseEdited,
@@ -17,6 +18,7 @@ import {
 import {
   computePointsForToday,
   kyivDateString,
+  kyivMonthString,
   recomputeCaseSubmissionCount,
 } from '../telegram/scheduler.js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
@@ -191,6 +193,10 @@ async function deliverCollabPoints(
 
 async function applyUserPoints(user: BotUser, delta: number): Promise<number> {
   const newTotal = Math.round((user.totalPoints + delta) * 100) / 100;
-  await upsertUser({ ...user, totalPoints: newTotal, consecutiveMisses: 0 });
+  await Promise.all([
+    upsertUser({ ...user, totalPoints: newTotal, consecutiveMisses: 0 }),
+    // Місячний рейтинг: ті самі бали — у поточний київський місяць.
+    incMonthlyPoints(kyivMonthString(), user.tgId, delta, user.displayName),
+  ]);
   return newTotal;
 }

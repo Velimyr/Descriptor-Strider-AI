@@ -133,6 +133,16 @@ create table if not exists botdev_daily_scores (
   primary key (tg_id, date_kyiv)
 );
 
+-- Місячний рейтинг (staging).
+create table if not exists botdev_monthly_points (
+  month        text    not null,
+  tg_id        text    not null,
+  points       numeric not null default 0,
+  display_name text    not null default '',
+  primary key (month, tg_id)
+);
+create index if not exists idx_botdev_monthly_points on botdev_monthly_points(month, points desc);
+
 create table if not exists botdev_dispatch_log (
   id       bigserial primary key,
   tg_id    text        not null,
@@ -244,8 +254,29 @@ alter table botdev_meta         enable row level security;
 alter table botdev_case_confirmations enable row level security;
 alter table botdev_integrity_reviews  enable row level security;
 alter table botdev_user_badges        enable row level security;
+alter table botdev_monthly_points     enable row level security;
 
 revoke all on function botdev_inc_daily(text, date) from public, anon, authenticated;
+
+create or replace function botdev_inc_monthly(p_month text, p_tg_id text, p_delta numeric, p_name text)
+returns numeric language plpgsql security definer as $$
+declare v numeric;
+begin
+  insert into botdev_monthly_points (month, tg_id, points, display_name)
+  values (p_month, p_tg_id, p_delta, coalesce(p_name, ''))
+  on conflict (month, tg_id) do update
+    set points = botdev_monthly_points.points + p_delta,
+        display_name = excluded.display_name
+  returning points into v;
+  return v;
+end $$;
+revoke all on function botdev_inc_monthly(text, text, numeric, text) from public, anon, authenticated;
+
+create or replace function botdev_monthly_months()
+returns table (month text) language sql security definer as $$
+  select distinct month from botdev_monthly_points order by month desc;
+$$;
+revoke all on function botdev_monthly_months() from public, anon, authenticated;
 
 -- Агрегований прогрес опису. Уникає підкачки всіх справ у код.
 create or replace function botdev_description_progress(p_target int)

@@ -150,6 +150,19 @@ create table if not exists bot_daily_scores (
   primary key (tg_id, date_kyiv)
 );
 
+-- Місячний рейтинг. month = 'YYYY-MM' (Europe/Kyiv). Бали накопичуються в рядок
+-- поточного місяця; новий місяць → новий рядок (рейтинг «сам» обнуляється).
+-- display_name денормалізовано для відображення без join. total_points у bot_users
+-- лишається накопичувальним (lifetime) — для бейджів і «за весь час».
+create table if not exists bot_monthly_points (
+  month        text    not null,
+  tg_id        text    not null,
+  points       numeric not null default 0,
+  display_name text    not null default '',
+  primary key (month, tg_id)
+);
+create index if not exists idx_monthly_points on bot_monthly_points(month, points desc);
+
 create table if not exists bot_dispatch_log (
   id       bigserial primary key,
   tg_id    text        not null,
@@ -280,10 +293,33 @@ alter table bot_meta         enable row level security;
 alter table bot_case_confirmations enable row level security;
 alter table bot_integrity_reviews  enable row level security;
 alter table bot_user_badges        enable row level security;
+alter table bot_monthly_points     enable row level security;
 
 -- Заборонити виконання RPC від імені anon/authenticated.
 -- (security definer функція без явного grant не виконається сторонніми ролями.)
 revoke all on function bot_inc_daily(text, date) from public, anon, authenticated;
+
+-- Атомарний інкремент місячних балів (повертає нове значення). Оновлює й display_name.
+create or replace function bot_inc_monthly(p_month text, p_tg_id text, p_delta numeric, p_name text)
+returns numeric language plpgsql security definer as $$
+declare v numeric;
+begin
+  insert into bot_monthly_points (month, tg_id, points, display_name)
+  values (p_month, p_tg_id, p_delta, coalesce(p_name, ''))
+  on conflict (month, tg_id) do update
+    set points = bot_monthly_points.points + p_delta,
+        display_name = excluded.display_name
+  returning points into v;
+  return v;
+end $$;
+revoke all on function bot_inc_monthly(text, text, numeric, text) from public, anon, authenticated;
+
+-- Список місяців, для яких є дані (новіші — першими).
+create or replace function bot_monthly_months()
+returns table (month text) language sql security definer as $$
+  select distinct month from bot_monthly_points order by month desc;
+$$;
+revoke all on function bot_monthly_months() from public, anon, authenticated;
 
 -- Агрегований прогрес опису. Уникає підкачки всіх справ у код.
 create or replace function bot_description_progress(p_target int)
