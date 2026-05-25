@@ -6086,38 +6086,69 @@ const PuzzleDayView: React.FC<{ date: string; setDate: (d: string) => void }> = 
       {/* Індикатор наявності слів */}
       {avail && (
         <div className="rounded border p-3 space-y-2">
-          <div className="text-sm font-medium">Наявність слів у вже розпізнаних заголовках</div>
+          <div className="text-sm font-medium">Які слова цієї фрази збираються?</div>
           {!avail.titleConfigured && (
             <div className="text-xs text-amber-700">
               ⚠ Поле «Заголовок справи» (роль title) не налаштоване у вкладці «Питання» — індикатор
               не працюватиме.
             </div>
           )}
-          <div className="flex flex-wrap gap-1.5">
-            {avail.words.length === 0 && (
-              <span className="text-xs text-slate-400">
-                немає слів для збору (усе — стоп-слова)
-              </span>
-            )}
-            {avail.words.map(w => (
-              <span
-                key={w.word}
-                className={`text-xs px-2 py-0.5 rounded ${
-                  w.count > 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                }`}
-                title={
-                  w.count > 0
-                    ? `Трапляється у ${w.count} заголовках`
-                    : 'Не зустрічалося в розпізнаних заголовках'
-                }
-              >
-                {w.word} · {w.count}
-              </span>
-            ))}
-          </div>
+          {avail.words.length === 0 ? (
+            <span className="text-xs text-slate-400">
+              немає слів для збору (усе — стоп-слова)
+            </span>
+          ) : (
+            (() => {
+              const yes = avail.words.filter(w => w.count > 0);
+              const no = avail.words.filter(w => w.count === 0);
+              return (
+                <>
+                  <div>
+                    <div className="text-xs text-emerald-700 mb-1">
+                      ✅ Збираються ({yes.length}) — трапляються в розпізнаних заголовках:
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {yes.length === 0 ? (
+                        <span className="text-xs text-slate-400">—</span>
+                      ) : (
+                        yes.map(w => (
+                          <span
+                            key={w.word}
+                            className="text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-800"
+                            title={`Трапляється у ${w.count} заголовках`}
+                          >
+                            {w.word} · {w.count}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-rose-700 mb-1">
+                      🚫 Не збираються ({no.length}) — немає в базі, будуть видані гравцям автоматично:
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {no.length === 0 ? (
+                        <span className="text-xs text-slate-400">—</span>
+                      ) : (
+                        no.map(w => (
+                          <span
+                            key={w.word}
+                            className="text-xs px-2 py-0.5 rounded bg-rose-100 text-rose-800"
+                          >
+                            {w.word}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </>
+              );
+            })()
+          )}
           <div className="text-xs text-slate-500">
-            Зелене — слово вже траплялось у заголовках (орієнтир, не гарантія на сьогодні); червоне —
-            не зустрічалось.
+            Орієнтир за вже розпізнаними колаб-заголовками (не гарантія на сьогодні). «Не збираються»
+            видаються гравцям як уже зараховані.
           </div>
         </div>
       )}

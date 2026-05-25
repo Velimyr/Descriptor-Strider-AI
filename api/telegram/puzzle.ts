@@ -112,7 +112,20 @@ async function checkPuzzleCompletion(tgId: string, dateKyiv: string): Promise<vo
   if (!mustCollect.every(w => confirmed.has(w))) return;
 
   const award = await awardPuzzleWinner(dateKyiv, tgId);
-  if (!award) return; // вже переможець або всі 3 місця зайняті
+  if (!award) {
+    // Місць немає (або вже переможець). Якщо користувач НЕ в переможцях — він
+    // зібрав фразу 4-м+ і призу немає: надсилаємо підбадьорливе повідомлення.
+    // (checkPuzzleCompletion для гравця спрацьовує раз — у момент повного збору.)
+    try {
+      const winners = await getPuzzleWinners(dateKyiv);
+      if (!winners.some(w => w.tgId === tgId)) {
+        await sendMessage(tgId, telegramBotConfig.texts.puzzleNoPrize);
+      }
+    } catch (e) {
+      console.error('puzzle no-prize notice failed', e);
+    }
+    return;
+  }
 
   // Призові бали додаємо до загального рахунку (не в денний множник).
   try {
