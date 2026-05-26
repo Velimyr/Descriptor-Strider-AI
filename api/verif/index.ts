@@ -37,6 +37,9 @@ import {
   VERIF_PARTNER_ID,
   TelegramLoginData,
 } from '../core/verifAuth.js';
+import { createLoginCode, getLoginCode } from '../core/verifLogin.js';
+
+const TG_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || 'descriptorstriderbot';
 
 const router = express.Router();
 
@@ -183,6 +186,54 @@ router.get('/auth/telegram/callback', async (req, res) => {
   } catch (e: any) {
     console.error('verif/auth/telegram/callback failed', e?.message || e);
     res.status(500).send(htmlFinishLogin(null, 'internal'));
+  }
+});
+
+// ---------- ВХІД ЧЕРЕЗ БОТА (надійна альтернатива Login Widget) ----------
+// Сайт створює код → відкриває t.me/<bot>?start=login_<code> → юзер тисне Старт →
+// бот фіксує tg_id → сайт опитує /login/status і отримує сесію.
+router.post('/login/start', async (_req, res) => {
+  try {
+    const { code, expiresAt } = await createLoginCode();
+    res.json({
+      code,
+      deep_link: `https://t.me/${TG_BOT_USERNAME}?start=login_${code}`,
+      expires_at: expiresAt,
+    });
+  } catch (e: any) {
+    console.error('verif/login/start failed', e?.message || e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+router.get('/login/status', async (req, res) => {
+  const code = String(req.query.code || '');
+  if (!code) return res.status(400).json({ error: 'code required' });
+  try {
+    const lc = await getLoginCode(code);
+    if (!lc) return res.json({ status: 'unknown' });
+    if (lc.usedAt && lc.tgId) {
+      // Опційний мерж балів анонімної сесії в підтверджений TG-акаунт.
+      const anon = String(req.query.anon || '');
+      if (anon) {
+        const payload = verifySessionToken(anon);
+        if (payload && payload.tgId.startsWith('web:')) {
+          try {
+            await mergeWebUserIntoTelegram(payload.tgId, lc.tgId);
+          } catch (e: any) {
+            console.error('verif login merge failed', e?.message || e);
+          }
+        }
+      }
+      const token = issueSessionToken(lc.tgId, VERIF_PARTNER_ID);
+      const user = await getUser(lc.tgId);
+      return res.json({ status: 'completed', session_token: token, nickname: user?.displayName || '' });
+    }
+    if (new Date(lc.expiresAt).getTime() < Date.now()) return res.json({ status: 'expired' });
+    return res.json({ status: 'pending' });
+  } catch (e: any) {
+    console.error('verif/login/status failed', e?.message || e);
+    res.status(500).json({ error: 'internal' });
   }
 });
 

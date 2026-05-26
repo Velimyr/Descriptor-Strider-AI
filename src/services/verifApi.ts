@@ -81,6 +81,22 @@ export async function authDev(tgId?: string, displayName?: string): Promise<Veri
   return r.user;
 }
 
+export async function loginStart(): Promise<{ code: string; deep_link: string; expires_at: string }> {
+  return call('/login/start', { method: 'POST', body: '{}' });
+}
+
+export async function loginStatus(
+  code: string
+): Promise<{ status: 'pending' | 'completed' | 'expired' | 'unknown'; nickname?: string }> {
+  const anon = getToken();
+  const r = await call<{ status: any; session_token?: string; nickname?: string }>(
+    `/login/status?code=${encodeURIComponent(code)}${anon ? `&anon=${encodeURIComponent(anon)}` : ''}`,
+    { method: 'GET' }
+  );
+  if (r.session_token) setToken(r.session_token);
+  return r;
+}
+
 export async function getMe(): Promise<VerifProfile> {
   return call<VerifProfile>('/me', { method: 'GET' });
 }

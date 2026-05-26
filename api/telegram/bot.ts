@@ -368,6 +368,7 @@ async function handleMessage(msg: any) {
     // payload приходить як другий "токен" у тексті (Telegram передає його тут же).
     const startPayload = rawText.replace(/^\/start(@\S+)?\s*/, '').trim();
     const linkCode = startPayload.startsWith('link_') ? startPayload.slice(5) : null;
+    const loginCode = startPayload.startsWith('login_') ? startPayload.slice(6) : null;
 
     // Завжди гарантуємо існування TG-юзера до мерджу.
     let currentUser = user;
@@ -418,6 +419,27 @@ async function handleMessage(msg: any) {
       } catch (e: any) {
         console.error('link consume failed', e?.message || e);
         await sendMessage(chatId, '⚠ Помилка прив\'язки. Спробуйте пізніше.', {
+          reply_markup: mainMenuKeyboard(currentUser),
+        });
+      }
+      return;
+    }
+
+    // /start login_XXXX — підтвердження «Вхід через бота» на сайті перевірки.
+    if (loginCode) {
+      try {
+        const { consumeLoginCode } = await import('../core/verifLogin.js');
+        const ok = await consumeLoginCode(loginCode, tgId);
+        await sendMessage(
+          chatId,
+          ok
+            ? '✅ Вхід підтверджено! Поверніться на сайт — перевірка відкриється автоматично за кілька секунд.'
+            : '⚠ Код входу невідомий або прострочений (10 хв). Згенеруйте новий на сайті.',
+          { reply_markup: mainMenuKeyboard(currentUser) }
+        );
+      } catch (e: any) {
+        console.error('verif login consume failed', e?.message || e);
+        await sendMessage(chatId, '⚠ Помилка підтвердження входу. Спробуйте пізніше.', {
           reply_markup: mainMenuKeyboard(currentUser),
         });
       }

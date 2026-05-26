@@ -537,3 +537,15 @@ returns table (
   group by c.archive, c.fund, c.opys;
 $$;
 revoke all on function bot_verif_description_progress() from public, anon, authenticated;
+
+-- Одноразові коди «Вхід через бота» для сайту перевірки. Сайт створює код →
+-- юзер тисне /start login_<code> у боті → бот пише tg_id+used_at → сайт опитує статус.
+create table if not exists bot_verif_login_codes (
+  code        text primary key,
+  tg_id       text        not null default '',
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz not null,
+  used_at     timestamptz
+);
+create index if not exists idx_verif_login_codes_exp on bot_verif_login_codes(expires_at);
+alter table bot_verif_login_codes enable row level security;

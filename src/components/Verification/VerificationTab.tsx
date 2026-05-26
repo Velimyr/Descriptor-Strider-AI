@@ -1,39 +1,91 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Loader2, LogOut, User as UserIcon, Award, Pencil, X, Check } from 'lucide-react';
+import { Loader2, LogOut, User as UserIcon, Award, Pencil, X, Check, Send } from 'lucide-react';
 import * as verifApi from '../../services/verifApi';
 import type { VerifProfile, VerifConfig } from '../../services/verifApi';
 import { VerificationWorkspace } from './VerificationWorkspace';
 
-// Кнопка офіційного Telegram Login Widget у REDIRECT-режимі (data-auth-url):
-// Telegram робить повний top-level перехід на наш серверний колбек із параметрами
-// профілю — без popup/iframe/сторонніх cookies (надійніше за callback-режим).
-// `anon` — токен поточної анонімної сесії (для мержу балів при привʼязці).
-const TelegramLoginButton: React.FC<{ botUsername: string }> = ({ botUsername }) => {
-  const ref = useRef<HTMLDivElement>(null);
+// Вхід через бота: створюємо одноразовий код, відкриваємо t.me/<bot>?start=login_<code>,
+// опитуємо статус, поки користувач не натисне Старт у боті. Надійніше за Login Widget
+// (не залежить від oauth.telegram.org / cookies / підтвердження телефоном).
+const BotLoginButton: React.FC<{ onLoggedIn: () => void }> = ({ onLoggedIn }) => {
+  const [waiting, setWaiting] = useState(false);
+  const [deepLink, setDeepLink] = useState('');
+  const [err, setErr] = useState('');
+  const pollRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    const container = ref.current;
-    if (!container) return;
-    container.innerHTML = '';
-    const anon = verifApi.getToken();
-    const authUrl =
-      `${window.location.origin}/api/verif/auth/telegram/callback` +
-      (anon ? `?anon=${encodeURIComponent(anon)}` : '');
-    const s = document.createElement('script');
-    s.src = 'https://telegram.org/js/telegram-widget.js?22';
-    s.async = true;
-    s.setAttribute('data-telegram-login', botUsername);
-    s.setAttribute('data-size', 'large');
-    s.setAttribute('data-radius', '8');
-    s.setAttribute('data-auth-url', authUrl);
-    s.setAttribute('data-request-access', 'write');
-    container.appendChild(s);
-    return () => {
-      if (container) container.innerHTML = '';
-    };
-  }, [botUsername]);
+  const stop = () => {
+    if (pollRef.current) {
+      window.clearTimeout(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+  useEffect(() => () => stop(), []);
 
-  return <div ref={ref} />;
+  const start = async () => {
+    setErr('');
+    try {
+      const r = await verifApi.loginStart();
+      setDeepLink(r.deep_link);
+      window.open(r.deep_link, '_blank');
+      setWaiting(true);
+      const deadline = Date.now() + 3 * 60 * 1000;
+      const tick = async () => {
+        try {
+          const s = await verifApi.loginStatus(r.code);
+          if (s.status === 'completed') {
+            stop();
+            setWaiting(false);
+            onLoggedIn();
+            return;
+          }
+          if (s.status === 'expired' || s.status === 'unknown') {
+            stop();
+            setWaiting(false);
+            setErr('Код входу прострочено. Спробуйте ще раз.');
+            return;
+          }
+        } catch {
+          /* мережева похибка — продовжуємо опитування */
+        }
+        if (Date.now() > deadline) {
+          stop();
+          setWaiting(false);
+          setErr('Час очікування вийшов. Спробуйте ще раз.');
+          return;
+        }
+        pollRef.current = window.setTimeout(tick, 2000);
+      };
+      pollRef.current = window.setTimeout(tick, 2000);
+    } catch {
+      setErr('Не вдалося почати вхід. Спробуйте ще раз.');
+    }
+  };
+
+  if (waiting) {
+    return (
+      <div className="flex flex-col items-center gap-2 text-sm text-slate-600">
+        <span className="flex items-center gap-2">
+          <Loader2 size={16} className="animate-spin" /> Очікуємо підтвердження в боті…
+        </span>
+        <a href={deepLink} target="_blank" rel="noreferrer" className="text-[#229ED9] hover:underline">
+          Відкрити бота ще раз
+        </a>
+        {err && <span className="text-red-600">{err}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <button
+        onClick={start}
+        className="flex items-center justify-center gap-2 px-5 py-2.5 bg-[#229ED9] hover:bg-[#1d8bbf] text-white rounded-lg font-bold shadow-sm"
+      >
+        <Send size={18} /> Увійти через Telegram
+      </button>
+      {err && <span className="text-sm text-red-600">{err}</span>}
+    </div>
+  );
 };
 
 const errText = (code?: string): string => {
@@ -190,12 +242,10 @@ const AuthGate: React.FC<{ config: VerifConfig | null; onLoggedIn: () => void }>
           </p>
         </div>
 
-        {config?.tg_bot_username && (
-          <div className="flex flex-col items-center gap-2">
-            <TelegramLoginButton botUsername={config.tg_bot_username} />
-            <span className="text-[11px] text-slate-400">Бали зберігаються у спільному рейтингу з ботом</span>
-          </div>
-        )}
+        <div className="flex flex-col items-center gap-2">
+          <BotLoginButton onLoggedIn={onLoggedIn} />
+          <span className="text-[11px] text-slate-400">Бали зберігаються у спільному рейтингу з ботом</span>
+        </div>
 
         <div className="flex items-center gap-3 text-xs text-slate-400">
           <div className="flex-1 h-px bg-slate-200" />
@@ -328,9 +378,7 @@ const CabinetModal: React.FC<{
           ) : (
             <div className="space-y-2">
               <div className="text-sm text-slate-600">Привʼяжіть Telegram, щоб не втратити бали:</div>
-              {config?.tg_bot_username && (
-                <TelegramLoginButton botUsername={config.tg_bot_username} />
-              )}
+              <BotLoginButton onLoggedIn={onRelinked} />
             </div>
           )}
         </div>
