@@ -12,6 +12,13 @@ interface ImportedProject {
   results: Array<{ data?: Record<string, unknown>; fragmentImage?: string; pdfUrl?: string; pageNumber?: number }>;
 }
 
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+// Анти-flood: пауза між завантаженнями + ретрай на лімітах/мережевих збоях.
+const UPLOAD_PACING_MS = 400;
+const MAX_ATTEMPTS = 3;
+const isTransientError = (msg: string) =>
+  /\b429\b|flood|too many|rate.?limit|timeout|ETIMEDOUT|ECONNRESET|socket|network|503|502|504/i.test(msg || '');
+
 export const VerifUploadView: React.FC = () => {
   const [archive, setArchive] = useState('');
   const [fund, setFund] = useState('');
@@ -48,23 +55,26 @@ export const VerifUploadView: React.FC = () => {
 
   const upload = async () => {
     if (!project || !metaValid) return;
-    const { columns, results } = project;
+    const { columns } = project;
     const questions = columns.map(c => ({ label: c.label || '', role: c.role || 'none' }));
-    const withImg = results.filter(r => typeof r.fragmentImage === 'string' && r.fragmentImage.includes(','));
-    if (withImg.length === 0) {
+    // pending — лише справи із зображеннями; беремо знімок на початок проходу.
+    const pending = project.results.filter(r => typeof r.fragmentImage === 'string' && r.fragmentImage.includes(','));
+    const total = pending.length;
+    if (total === 0) {
       setMsg('❌ У файлі немає справ із зображеннями (fragmentImage). Експортуйте проєкт із результатами розпізнавання.');
       return;
     }
     setBusy(true);
     setMsg('');
-    setProgress({ done: 0, total: withImg.length });
+    setProgress({ done: 0, total });
     let done = 0;
     try {
-      for (const r of withImg) {
+      for (let idx = 0; idx < pending.length; idx++) {
+        const r = pending[idx];
         const aiAnswers = columns.map(c => String((r.data || {})[c.id] ?? ''));
         const [meta, b64] = String(r.fragmentImage).split(',');
         const mime = meta.match(/data:([^;]+)/)?.[1] || 'image/png';
-        await tgApi.uploadVerifCase({
+        const payload = {
           imageBase64: b64,
           mime,
           sourcePdf: r.pdfUrl || '',
@@ -75,14 +85,39 @@ export const VerifUploadView: React.FC = () => {
           opys: opys.trim(),
           questions,
           aiAnswers,
-        });
+        };
+
+        // Ретрай на тимчасових збоях (ліміти Telegram / мережа). На «постійних»
+        // помилках (напр. немає таблиці) — кидаємо одразу, щоб не довбати марно.
+        let attempt = 0;
+        for (;;) {
+          try {
+            await tgApi.uploadVerifCase(payload);
+            break;
+          } catch (e: any) {
+            attempt++;
+            const m = e?.message || '';
+            if (attempt >= MAX_ATTEMPTS || !isTransientError(m)) throw e;
+            setMsg(`⏳ Тимчасова помилка на справі ${done + 1}/${total} — повтор (${attempt}/${MAX_ATTEMPTS - 1})…`);
+            await sleep(1500 * attempt);
+          }
+        }
+
         done++;
-        setProgress({ done, total: withImg.length });
+        setProgress({ done, total });
+        // Прибираємо вже завантажену справу зі списку — щоб повторний клік
+        // продовжив із решти, без дублювання (як у бот-завантаженні).
+        setProject(prev => (prev ? { ...prev, results: prev.results.filter(x => x !== r) } : prev));
+        // Пауза між відправками, щоб не впертись у flood-ліміт Telegram.
+        if (idx < pending.length - 1) await sleep(UPLOAD_PACING_MS);
       }
       setMsg(`✅ Завантажено ${done} справ на перевірку.`);
       setProject(null);
     } catch (e: any) {
-      setMsg(`❌ ${e.message}. Завантажено ${done}/${withImg.length}.`);
+      setMsg(
+        `❌ ${e.message}\nЗавантажено: ${done}/${total}. Невідправлені справи лишилися — ` +
+          `натисніть «Завантажити» ще раз, продовжимо з того ж місця.`
+      );
     } finally {
       setBusy(false);
       setTimeout(() => setProgress(null), 1000);

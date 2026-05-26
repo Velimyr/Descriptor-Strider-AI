@@ -47,6 +47,7 @@ import { config } from './config';
 import { TelegramAdminTab } from './components/TelegramAdmin/TelegramAdminTab';
 import { CasesPreparationPage } from './components/CasesPreparation/CasesPreparationPage';
 import { VerificationTab } from './components/Verification/VerificationTab';
+import { RecoverFragmentsModal } from './components/Recognition/RecoverFragmentsModal';
 
 // PDF.js worker setup
 import * as pdfjs from 'pdfjs-dist';
@@ -272,6 +273,7 @@ export default function App() {
     return saved === 'verification' ? 'verification' : 'recognition';
   });
   const [showRecognitionSettings, setShowRecognitionSettings] = useState(false);
+  const [showRecover, setShowRecover] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [activeStatusTab, setActiveStatusTab] = useState<number>(0);
   const [showTelegramAdmin, setShowTelegramAdmin] = useState(
@@ -1621,6 +1623,15 @@ export default function App() {
                     <FileSpreadsheet size={16} />
                     Експорт CSV
                   </button>
+                  {activeProject.results.length > 0 && (
+                    <button
+                      onClick={() => setShowRecover(true)}
+                      title="Експеримент: відновити hi-res фрагменти з оригінального PDF"
+                      className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-sm font-medium shadow-sm"
+                    >
+                      🧪 Hi-res фрагменти
+                    </button>
+                  )}
                   <button 
                     disabled={isProcessing || isIndexing}
                     onClick={() => startProcessing('continue')}
@@ -2221,8 +2232,20 @@ export default function App() {
         </>
         )}
 
+        {showRecover && activeProject && (
+          <RecoverFragmentsModal
+            results={activeProject.results}
+            onApply={(updated) => {
+              updateProject(activeProject.id, { results: updated });
+              pdfStorage.saveResults(activeProject.id, updated);
+              addLog(`🧪 Відновлено hi-res фрагменти: оновлено ${updated.filter((r, i) => r.fragmentImage !== activeProject.results[i]?.fragmentImage).length} справ.`);
+            }}
+            onClose={() => setShowRecover(false)}
+          />
+        )}
+
         {selectedImage && (
-          <div 
+          <div
             className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-8 cursor-zoom-out"
             onClick={() => setSelectedImage(null)}
           >
