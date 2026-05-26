@@ -424,6 +424,67 @@ router.post('/admin/upload-case', async (req, res) => {
   }
 });
 
+// Завантаження розпізнаної справи на ВЕБ-перевірку (вкладка «Веб» у Підготовці справ).
+// Картинка → група (як для бота), текст + питання + ai-відповіді → verif_cases.
+router.post('/admin/upload-verif-case', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { imageBase64, sourcePdf, page, bbox, archive, fund, opys, questions, aiAnswers } = req.body || {};
+  if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
+  for (const [k, v] of [['archive', archive], ['fund', fund], ['opys', opys]] as const) {
+    if (!v || !String(v).trim()) return res.status(400).json({ error: `Field "${k}" is required` });
+  }
+  const channelId = process.env[telegramBotConfig.tg.channelIdEnv];
+  if (!channelId) return res.status(400).json({ error: `Missing ${telegramBotConfig.tg.channelIdEnv}` });
+  try {
+    const { appendVerifCase } = await import('../core/verifCases.js');
+    const buf = Buffer.from(imageBase64, 'base64');
+    const result = await sendPhotoByBuffer(channelId, buf, 'verif-case.jpg');
+    const photoArr = result?.photo || [];
+    const fileId = photoArr.length ? photoArr[photoArr.length - 1].file_id : '';
+    const caseId = await appendVerifCase({
+      tgFileId: fileId,
+      tgChatId: String(channelId),
+      tgMessageId: String(result?.message_id || ''),
+      sourcePdf: sourcePdf || '',
+      page: String(page || ''),
+      bbox: bbox ? JSON.stringify(bbox) : '',
+      archive: String(archive).trim(),
+      fund: String(fund).trim(),
+      opys: String(opys).trim(),
+      questions: Array.isArray(questions) ? questions : [],
+      aiAnswers: Array.isArray(aiAnswers) ? aiAnswers.map((x: any) => String(x ?? '')) : [],
+    });
+    res.json({ ok: true, caseId, fileId, messageId: result?.message_id });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/admin/verif-descriptions', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { getVerifDescriptions } = await import('../core/verifCases.js');
+    res.json({ descriptions: await getVerifDescriptions() });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/admin/verif-submissions-by-description', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const archive = String(req.query.archive || '');
+  const fund = String(req.query.fund || '');
+  const opys = String(req.query.opys || '');
+  if (!archive || !fund || !opys) return res.status(400).json({ error: 'archive, fund, opys required' });
+  try {
+    const { getVerifSubmissionsByDescription } = await import('../core/verifCases.js');
+    const { questions, submissions } = await getVerifSubmissionsByDescription(archive, fund, opys);
+    res.json({ ok: true, questions, submissions });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Авто-нарізка: фронт шле картинку сторінки → ми просимо Gemini bbox-и.
 router.post('/admin/detect-bboxes', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
@@ -885,8 +946,10 @@ router.get('/admin/daily-activity', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const tz = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
   const days = Math.max(1, Math.min(365, parseInt(String(req.query.days || '30'), 10) || 30));
-  const series = await getDailyActivity(tz, days);
-  res.json({ timezone: tz, days: series });
+  const sourceRaw = String(req.query.source || 'all');
+  const source = (sourceRaw === 'telegram' || sourceRaw === 'web') ? sourceRaw : 'all';
+  const series = await getDailyActivity(tz, days, source);
+  res.json({ timezone: tz, days: series, source });
 });
 
 router.post('/admin/recompute-case', async (req, res) => {

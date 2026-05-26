@@ -123,6 +123,19 @@ export async function consumeLinkCode(code: string, telegramTgId: string): Promi
   };
 }
 
+// Публічний мерж для «Вхід через Telegram» на сайті перевірки: переносить бали й
+// історію анонімного web-юзера в Telegram-акаунт. TG-юзер має вже існувати.
+// Повертає к-сть перенесених балів (0 якщо web-юзера нема / не web).
+export async function mergeWebUserIntoTelegram(
+  webTgId: string,
+  telegramTgId: string
+): Promise<number> {
+  if (!webTgId.startsWith('web:') || webTgId === telegramTgId) return 0;
+  const webUser = await getUser(webTgId);
+  if (!webUser) return 0;
+  return (await mergeWebIntoTg(webUser, telegramTgId)).transferredPoints;
+}
+
 // Внутрішній мерж: атомарно через SQL-функцію bot_merge_users.
 // Переносить ВСЕ: бали, submissions (з апдейтом display_name), skipped,
 // case_confirmations, daily_scores, dispatch_log, locks/authors у cases,

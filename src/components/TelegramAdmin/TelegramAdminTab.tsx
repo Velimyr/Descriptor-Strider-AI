@@ -5,6 +5,7 @@ import { TableColumn } from '../../types';
 import { tgApi, getAdminSecret, clearAdminSecret, adminLogin } from '../../services/telegramApi';
 import { createDefaultColumns, createColumn, COLUMN_ROLE_LABELS, COLUMN_ROLE_OPTIONS, inferColumnRole } from '../../lib/tableColumns';
 import { detectViaGemini } from '../../lib/sliceDetection';
+import { VerifUploadView } from '../CasesPreparation/VerifUploadView';
 
 interface Props {
   onClose: () => void;
@@ -71,7 +72,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
       <div className="flex-1 overflow-y-auto p-6">
         {tab === 'setup' && <SetupView />}
         {tab === 'questions' && <QuestionsView initialQuestions={initialQuestions} />}
-        {tab === 'cases' && <CasesView geminiKey={geminiKey} mode="admin" />}
+        {tab === 'cases' && <CasesPrepAdmin geminiKey={geminiKey} />}
         {tab === 'results' && <ResultsView />}
         {tab === 'process' && <ProcessDescriptionView geminiKey={geminiKey} />}
         {tab === 'overview' && <OverviewView />}
@@ -85,6 +86,29 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
 };
 
 // ==================== LOGIN GATE ====================
+
+// Вкладка «Підготовка справ» в адмінці: під-вкладки Телеграм (нарізка→бот) і Веб (імпорт→перевірка).
+const CasesPrepAdmin: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
+  const [sub, setSub] = useState<'telegram' | 'web'>('telegram');
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-1 border-b">
+        {([['telegram', 'Телеграм'], ['web', 'Веб']] as [typeof sub, string][]).map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setSub(k)}
+            className={`px-4 py-2 text-sm font-medium ${
+              sub === k ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-600'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {sub === 'telegram' ? <CasesView geminiKey={geminiKey} mode="admin" /> : <VerifUploadView />}
+    </div>
+  );
+};
 
 const LoginGate: React.FC<{ onSuccess: () => void; onClose: () => void }> = ({ onSuccess, onClose }) => {
   const [login, setLogin] = useState('');
@@ -3339,6 +3363,7 @@ type ChartPoint = { date: string; cases: number; users: number };
 
 const ChartView: React.FC = () => {
   const [days, setDays] = useState(30);
+  const [source, setSource] = useState<'all' | 'telegram' | 'web'>('all');
   const [data, setData] = useState<ChartPoint[] | null>(null);
   const [tz, setTz] = useState('');
   const [busy, setBusy] = useState(false);
@@ -3349,7 +3374,7 @@ const ChartView: React.FC = () => {
     setBusy(true);
     setErr('');
     try {
-      const r = await tgApi.dailyActivity(d);
+      const r = await tgApi.dailyActivity(d, source);
       setData(r.days || []);
       setTz(r.timezone || '');
     } catch (e: any) {
@@ -3362,7 +3387,7 @@ const ChartView: React.FC = () => {
   useEffect(() => {
     load(days);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days]);
+  }, [days, source]);
 
   // Геометрія SVG.
   const width = 900;
@@ -3409,6 +3434,16 @@ const ChartView: React.FC = () => {
           <option value={30}>30 днів</option>
           <option value={60}>60 днів</option>
           <option value={90}>90 днів</option>
+        </select>
+        <label className="text-sm text-slate-600 ml-2">Джерело:</label>
+        <select
+          value={source}
+          onChange={e => setSource(e.target.value as 'all' | 'telegram' | 'web')}
+          className="border rounded px-2 py-1 text-sm"
+        >
+          <option value="all">Все</option>
+          <option value="telegram">Телеграм</option>
+          <option value="web">Веб</option>
         </select>
         <button
           onClick={() => load(days)}
@@ -3785,10 +3820,13 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [questions, setQuestions] = useState<any[]>([]);
+  const [tgQuestions, setTgQuestions] = useState<any[]>([]);
   const [descriptions, setDescriptions] = useState<
-    { key: string; name: string; donePct: number; doneCases: number; totalCases: number }[]
+    { key: string; name: string; donePct: number; doneCases: number; totalCases: number; source: 'tg' | 'web' }[]
   >([]);
   const [descKey, setDescKey] = useState('');
+  const [descSource, setDescSource] = useState<'tg' | 'web'>('tg');
+  const [webCache, setWebCache] = useState<{ key: string; submissions: any[] } | null>(null);
   const [numberColIdx, setNumberColIdx] = useState<number>(0);
   const [groups, setGroups] = useState<ProcessGroup[]>([]);
   const [step2Rows, setStep2Rows] = useState<Step2Row[]>([]);
@@ -3797,31 +3835,79 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const [bulkLLM, setBulkLLM] = useState<{ done: number; total: number; current: number | null } | null>(null);
   const bulkCancelRef = useRef(false);
 
-  const descName = descriptions.find(d => d.key === descKey)?.name || '';
+  const descName =
+    descriptions.find(d => d.key === descKey && d.source === descSource)?.name || '';
 
   const refresh = async () => {
     setBusy(true);
     setMsg('');
     try {
-      const [q, ov] = await Promise.all([tgApi.getQuestions(), tgApi.overview()]);
+      const [q, ov, verif] = await Promise.all([
+        tgApi.getQuestions(),
+        tgApi.overview(),
+        tgApi.verifDescriptions().catch(() => ({ descriptions: [] as any[] })),
+      ]);
       const qs = Array.isArray(q.questions) ? q.questions : [];
-      setQuestions(qs);
-      setDescriptions(
-        ((ov.descriptions || []) as any[])
-          .map(d => ({
-            key: d.key,
-            name: d.name,
-            donePct: Number(d.donePct) || 0,
-            doneCases: Number(d.doneCases) || 0,
-            totalCases: Number(d.totalCases) || 0,
-          }))
-          .sort((a, b) => a.name.localeCompare(b.name))
-      );
-      if (numberColIdx >= qs.length) setNumberColIdx(qs.length > 0 ? 0 : -1);
+      setTgQuestions(qs);
+      setQuestions(prev => (descSource === 'web' ? prev : qs));
+      const tgDescs = ((ov.descriptions || []) as any[]).map(d => ({
+        key: d.key,
+        name: `${d.name} (телеграм)`,
+        donePct: Number(d.donePct) || 0,
+        doneCases: Number(d.doneCases) || 0,
+        totalCases: Number(d.totalCases) || 0,
+        source: 'tg' as const,
+      }));
+      const webDescs = ((verif.descriptions || []) as any[]).map(d => ({
+        key: d.key,
+        name: `${d.name} (веб)`,
+        donePct: Number(d.donePct) || 0,
+        doneCases: Number(d.doneCases) || 0,
+        totalCases: Number(d.totalCases) || 0,
+        source: 'web' as const,
+      }));
+      setDescriptions([...tgDescs, ...webDescs].sort((a, b) => a.name.localeCompare(b.name)));
+      if (descSource === 'tg' && numberColIdx >= qs.length) setNumberColIdx(qs.length > 0 ? 0 : -1);
     } catch (e: any) {
       setMsg('❌ ' + e.message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const onSelectDescription = async (value: string) => {
+    setMsg('');
+    if (!value) {
+      setDescKey('');
+      setDescSource('tg');
+      setQuestions(tgQuestions);
+      setNumberColIdx(tgQuestions.length > 0 ? 0 : -1);
+      setWebCache(null);
+      return;
+    }
+    const sep = value.indexOf('::');
+    const src = (value.slice(0, sep) as 'tg' | 'web');
+    const key = value.slice(sep + 2);
+    setDescKey(key);
+    setDescSource(src);
+    if (src === 'web') {
+      const [a, f, o] = key.split('|');
+      setBusy(true);
+      try {
+        const r = await tgApi.verifSubmissionsByDescription(a, f, o);
+        const qs = Array.isArray(r.questions) ? r.questions : [];
+        setQuestions(qs);
+        setNumberColIdx(qs.length > 0 ? 0 : -1);
+        setWebCache({ key, submissions: Array.isArray(r.submissions) ? r.submissions : [] });
+      } catch (e: any) {
+        setMsg('❌ ' + e.message);
+      } finally {
+        setBusy(false);
+      }
+    } else {
+      setQuestions(tgQuestions);
+      setNumberColIdx(tgQuestions.length > 0 ? 0 : -1);
+      setWebCache(null);
     }
   };
 
@@ -3837,8 +3923,17 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     let subs: any[] = [];
     try {
       const [archive, fund, opys] = descKey.split('|');
-      const r = await tgApi.submissionsByDescription(archive, fund, opys);
-      subs = Array.isArray(r.submissions) ? r.submissions : [];
+      if (descSource === 'web') {
+        if (webCache && webCache.key === descKey) {
+          subs = webCache.submissions;
+        } else {
+          const r = await tgApi.verifSubmissionsByDescription(archive, fund, opys);
+          subs = Array.isArray(r.submissions) ? r.submissions : [];
+        }
+      } else {
+        const r = await tgApi.submissionsByDescription(archive, fund, opys);
+        subs = Array.isArray(r.submissions) ? r.submissions : [];
+      }
       setLoadedCount(subs.length);
     } catch (e: any) {
       setMsg('❌ ' + e.message);
@@ -4353,13 +4448,13 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
           <div>
             <label className="block text-xs text-slate-500 mb-1">Опис</label>
             <select
-              value={descKey}
-              onChange={e => setDescKey(e.target.value)}
+              value={descKey ? `${descSource}::${descKey}` : ''}
+              onChange={e => onSelectDescription(e.target.value)}
               className="border rounded px-2 py-1.5 text-sm w-full"
             >
               <option value="">— оберіть опис —</option>
               {descriptions.map(d => (
-                <option key={d.key} value={d.key}>
+                <option key={`${d.source}::${d.key}`} value={`${d.source}::${d.key}`}>
                   {d.name} — {d.donePct}% ({d.doneCases}/{d.totalCases})
                 </option>
               ))}

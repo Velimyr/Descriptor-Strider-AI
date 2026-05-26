@@ -327,3 +327,147 @@ returns setof botdev_cases language sql security definer as $$
   order by c.created_at, c.case_id;
 $$;
 revoke all on function botdev_candidate_cases(text) from public, anon, authenticated;
+
+-- =====================================================================
+-- ВЕБ-ПЕРЕВІРКА справ (staging, префікс botdev_). Дзеркало verif-секції з schema.sql.
+-- =====================================================================
+
+create table if not exists botdev_verif_cases (
+  case_id              text primary key,
+  tg_file_id           text        not null default '',
+  tg_chat_id           text        not null default '',
+  tg_message_id        text        not null default '',
+  source_pdf           text        not null default '',
+  page                 text        not null default '',
+  bbox                 text        not null default '',
+  archive              text        not null default '',
+  fund                 text        not null default '',
+  opys                 text        not null default '',
+  sprava               text        not null default '',
+  questions            jsonb       not null default '[]'::jsonb,
+  ai_answers           jsonb       not null default '[]'::jsonb,
+  current_answers      jsonb       not null default '[]'::jsonb,
+  confirmations_count  int         not null default 0,
+  status               text        not null default 'open' check (status in ('open','done')),
+  locked_by            text        not null default '',
+  locked_until         timestamptz,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now()
+);
+create index if not exists idx_dev_verif_cases_status on botdev_verif_cases(status);
+create index if not exists idx_dev_verif_cases_lock   on botdev_verif_cases(locked_until);
+create index if not exists idx_dev_verif_cases_desc   on botdev_verif_cases(archive, fund, opys);
+
+create table if not exists botdev_verif_confirmations (
+  case_id         text        not null,
+  verifier_id     text        not null,
+  kind            text        not null check (kind in ('confirm','edit')),
+  answers         jsonb       not null default '[]'::jsonb,
+  corrected_words int         not null default 0,
+  at              timestamptz not null default now(),
+  primary key (case_id, verifier_id)
+);
+create index if not exists idx_dev_verif_confirms_case on botdev_verif_confirmations(case_id);
+create index if not exists idx_dev_verif_confirms_user on botdev_verif_confirmations(verifier_id);
+
+create table if not exists botdev_verif_skips (
+  case_id     text        not null,
+  verifier_id text        not null,
+  at          timestamptz not null default now(),
+  primary key (case_id, verifier_id)
+);
+create index if not exists idx_dev_verif_skips_user on botdev_verif_skips(verifier_id);
+
+alter table botdev_submissions add column if not exists source text not null default 'telegram';
+create index if not exists idx_dev_subs_source on botdev_submissions(source);
+
+alter table botdev_verif_cases         enable row level security;
+alter table botdev_verif_confirmations enable row level security;
+alter table botdev_verif_skips         enable row level security;
+
+create or replace function botdev_inc_total_points(p_tg_id text, p_delta numeric)
+returns numeric language plpgsql security definer as $$
+declare v numeric;
+begin
+  update botdev_users set total_points = total_points + p_delta
+   where tg_id = p_tg_id
+   returning total_points into v;
+  return v;
+end $$;
+revoke all on function botdev_inc_total_points(text, numeric) from public, anon, authenticated;
+
+create or replace function botdev_verif_candidate_cases(p_verifier_id text)
+returns setof botdev_verif_cases language sql security definer as $$
+  select c.* from botdev_verif_cases c
+  where c.status = 'open'
+    and not exists (select 1 from botdev_verif_confirmations cc where cc.case_id = c.case_id and cc.verifier_id = p_verifier_id)
+    and not exists (select 1 from botdev_verif_skips sk where sk.case_id = c.case_id and sk.verifier_id = p_verifier_id)
+    and (c.locked_until is null or c.locked_until < now() or c.locked_by = p_verifier_id)
+  order by c.created_at, c.case_id;
+$$;
+revoke all on function botdev_verif_candidate_cases(text) from public, anon, authenticated;
+
+create or replace function botdev_verif_lock(p_case_id text, p_verifier_id text, p_minutes int)
+returns boolean language plpgsql security definer as $$
+declare ok boolean;
+begin
+  update botdev_verif_cases
+     set locked_by = p_verifier_id,
+         locked_until = now() + (p_minutes || ' minutes')::interval,
+         updated_at = now()
+   where case_id = p_case_id
+     and status = 'open'
+     and (locked_until is null or locked_until < now() or locked_by = p_verifier_id)
+   returning true into ok;
+  return coalesce(ok, false);
+end $$;
+revoke all on function botdev_verif_lock(text, text, int) from public, anon, authenticated;
+
+create or replace function botdev_verif_record(
+  p_case_id       text,
+  p_verifier_id   text,
+  p_kind          text,
+  p_answers       jsonb,
+  p_corrected     int,
+  p_threshold     int
+) returns table (new_count int, new_status text) language plpgsql security definer as $$
+declare v_count int; v_status text;
+begin
+  perform pg_advisory_xact_lock(hashtext('verifdev:' || p_case_id));
+  insert into botdev_verif_confirmations(case_id, verifier_id, kind, answers, corrected_words)
+    values (p_case_id, p_verifier_id, p_kind, coalesce(p_answers, '[]'::jsonb), greatest(coalesce(p_corrected, 0), 0))
+    on conflict (case_id, verifier_id) do nothing;
+  if p_kind = 'edit' then
+    update botdev_verif_cases
+       set current_answers = coalesce(p_answers, '[]'::jsonb), updated_at = now()
+     where case_id = p_case_id;
+  end if;
+  select count(distinct verifier_id) into v_count from botdev_verif_confirmations where case_id = p_case_id;
+  update botdev_verif_cases
+     set confirmations_count = v_count,
+         status = case when v_count >= p_threshold then 'done' else status end,
+         locked_by = '', locked_until = null,
+         updated_at = now()
+   where case_id = p_case_id
+   returning status into v_status;
+  return query select v_count, v_status;
+end $$;
+revoke all on function botdev_verif_record(text, text, text, jsonb, int, int) from public, anon, authenticated;
+
+create or replace function botdev_verif_description_progress()
+returns table (
+  archive text,
+  fund text,
+  opys text,
+  earliest_created_at timestamptz,
+  total_cases bigint,
+  done_cases bigint
+) language sql security definer as $$
+  select c.archive, c.fund, c.opys,
+    min(c.created_at) as earliest_created_at,
+    count(*) as total_cases,
+    count(*) filter (where c.status = 'done') as done_cases
+  from botdev_verif_cases c
+  group by c.archive, c.fund, c.opys;
+$$;
+revoke all on function botdev_verif_description_progress() from public, anon, authenticated;

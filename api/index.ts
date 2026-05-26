@@ -6,6 +6,7 @@ import cors from "cors";
 import path from "path";
 import telegramRouter from "./telegram/index.js";
 import publicRouter from "./public/index.js";
+import verifRouter from "./verif/index.js";
 
 dotenv.config({
   path: [
@@ -28,6 +29,9 @@ app.use('/api/telegram', telegramRouter);
 // Public widget API для партнерських сайтів. Усі ендпоінти під /api/public/v1.
 // Авторизація через X-Partner-Key + (для більшості) Authorization: Bearer <session>.
 app.use('/api/public/v1', publicRouter);
+
+// Першосторонній API сайту перевірки справ. Сесія через Bearer-токен (без партнер-ключа).
+app.use('/api/verif', verifRouter);
 
 // Proxy for PDF files to avoid CORS
 app.get("/api/proxy-pdf", async (req, res) => {

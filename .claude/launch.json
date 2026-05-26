@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "VERIF_DEV_LOGIN=1 npm run dev"],
+      "port": 3000
+    }
+  ]
+}

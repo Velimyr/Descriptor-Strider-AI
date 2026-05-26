@@ -61,6 +61,27 @@ export const tgApi = {
     opys: string;
     mode?: 'parallel' | 'collaborative';
   }) => call('/admin/upload-case', { method: 'POST', body: JSON.stringify(payload) }),
+  uploadVerifCase: (payload: {
+    imageBase64: string;
+    mime: string;
+    sourcePdf?: string;
+    page?: number | string;
+    bbox?: any;
+    archive: string;
+    fund: string;
+    opys: string;
+    questions: Array<{ label: string; role: string }>;
+    aiAnswers: string[];
+  }) => call('/admin/upload-verif-case', { method: 'POST', body: JSON.stringify(payload) }),
+  verifDescriptions: () =>
+    call('/admin/verif-descriptions') as Promise<{
+      descriptions: Array<{ key: string; name: string; donePct: number; doneCases: number; totalCases: number }>;
+    }>,
+  verifSubmissionsByDescription: (archive: string, fund: string, opys: string) =>
+    call(
+      `/admin/verif-submissions-by-description?archive=${encodeURIComponent(archive)}` +
+        `&fund=${encodeURIComponent(fund)}&opys=${encodeURIComponent(opys)}`
+    ),
   getMeta: () => call('/admin/meta'),
   setMeta: (key: string, value: string) =>
     call('/admin/meta', { method: 'POST', body: JSON.stringify({ key, value }) }),
@@ -72,9 +93,10 @@ export const tgApi = {
   overview: () => call('/admin/overview'),
   results: (limit = 500) => call(`/admin/results?limit=${limit}`),
   todayStats: () => call('/admin/today-stats') as Promise<{ cases: number; users: number; timezone: string }>,
-  dailyActivity: (days = 30) =>
-    call(`/admin/daily-activity?days=${days}`) as Promise<{
+  dailyActivity: (days = 30, source: 'all' | 'telegram' | 'web' = 'all') =>
+    call(`/admin/daily-activity?days=${days}&source=${source}`) as Promise<{
       timezone: string;
+      source: 'all' | 'telegram' | 'web';
       days: Array<{ date: string; cases: number; users: number }>;
     }>,
   integrity: (threshold = 5, includeResolved = false) =>

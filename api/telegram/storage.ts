@@ -31,6 +31,7 @@ const RPC_CANDIDATE_CASES = `${PREFIX}candidate_cases`;
 const RPC_AWARD_PUZZLE_WINNER = `${PREFIX}award_puzzle_winner`;
 const RPC_INC_MONTHLY = `${PREFIX}inc_monthly`;
 const RPC_MONTHLY_MONTHS = `${PREFIX}monthly_months`;
+const RPC_INC_TOTAL_POINTS = `${PREFIX}inc_total_points`;
 
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
@@ -456,6 +457,13 @@ export async function incMonthlyPoints(
   return Number(data || 0);
 }
 
+// Атомарний інкремент накопичувальних (lifetime) балів. Для дробових веб-балів (0.1×слово).
+export async function incTotalPoints(tgId: string, delta: number): Promise<number> {
+  const { data, error } = await db().rpc(RPC_INC_TOTAL_POINTS, { p_tg_id: tgId, p_delta: delta });
+  if (error) throw error;
+  return Number(data || 0);
+}
+
 // Усі учасники місяця за спаданням балів (для Топ-10 + місця + сусідів).
 export async function getMonthlyLeaderboard(
   month: string
@@ -630,7 +638,8 @@ export async function getTodayActivity(timeZone: string): Promise<{ cases: numbe
 // що брали участь (parallel-сабміти + collab-події).
 export async function getDailyActivity(
   timeZone: string,
-  days: number
+  days: number,
+  source: 'all' | 'telegram' | 'web' = 'all'
 ): Promise<Array<{ date: string; cases: number; users: number }>> {
   if (days <= 0) return [];
   const safeDays = Math.min(days, 365);
@@ -669,13 +678,14 @@ export async function getDailyActivity(
   const ingest = async (
     table: string,
     timeCol: string,
-    extra: (r: any) => { caseId: string; tgId: string; ts: string }
+    extra: (r: any) => { caseId: string; tgId: string; ts: string },
+    idCol: string = 'tg_id'
   ) => {
     const pageSize = 1000;
     for (let from = 0; ; from += pageSize) {
       const { data, error } = await db()
         .from(table)
-        .select(`case_id, tg_id, ${timeCol}`)
+        .select(`case_id, ${idCol}, ${timeCol}`)
         .gte(timeCol, startUtc)
         .lt(timeCol, endUtc)
         .range(from, from + pageSize - 1);
@@ -694,16 +704,32 @@ export async function getDailyActivity(
     }
   };
 
-  await ingest(T.submissions, 'submitted_at', (r: any) => ({
-    caseId: String(r.case_id || ''),
-    tgId: String(r.tg_id || ''),
-    ts: r.submitted_at,
-  }));
-  await ingest(T.caseConfirmations, 'at', (r: any) => ({
-    caseId: String(r.case_id || ''),
-    tgId: String(r.tg_id || ''),
-    ts: r.at,
-  }));
+  if (source !== 'web') {
+    await ingest(T.submissions, 'submitted_at', (r: any) => ({
+      caseId: String(r.case_id || ''),
+      tgId: String(r.tg_id || ''),
+      ts: r.submitted_at,
+    }));
+    await ingest(T.caseConfirmations, 'at', (r: any) => ({
+      caseId: String(r.case_id || ''),
+      tgId: String(r.tg_id || ''),
+      ts: r.at,
+    }));
+  }
+  if (source !== 'telegram') {
+    // Веб-перевірки: одна дія = один рядок у verif_confirmations (verifier_id, at).
+    // Захищено try/catch: якщо verif-схему ще не прогнали, існуючий графік
+    // телеграму (source='all' за замовчуванням) не має падати через відсутню таблицю.
+    try {
+      await ingest(`${PREFIX}verif_confirmations`, 'at', (r: any) => ({
+        caseId: String(r.case_id || ''),
+        tgId: String(r.verifier_id || ''),
+        ts: r.at,
+      }), 'verifier_id');
+    } catch (e: any) {
+      console.warn('getDailyActivity: verif_confirmations ingest skipped:', e?.message || e);
+    }
+  }
 
   const out: Array<{ date: string; cases: number; users: number }> = [];
   for (const [date, b] of buckets) {
