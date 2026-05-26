@@ -255,7 +255,7 @@ export async function upsertUser(
 export async function createWebUser(input: {
   tgId: string;
   displayName: string;
-  partnerId: string;
+  partnerId: string | null;
 }): Promise<BotUser> {
   const { data, error } = await db()
     .from(T.users)
@@ -268,7 +268,8 @@ export async function createWebUser(input: {
       status: 'active',
       pending_action: '',
       source: 'web',
-      partner_id: input.partnerId,
+      // NULL якщо без партнера (напр. реєстрація на сайті перевірки) — інакше FK на partners падає.
+      partner_id: input.partnerId || null,
     })
     .select()
     .single();

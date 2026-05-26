@@ -107,7 +107,8 @@ router.post('/register', async (req, res) => {
   try {
     if (await userExistsByDisplayName(nick)) return res.status(409).json({ error: 'nickname_taken' });
     const tgId = `web:${randomUUID()}`;
-    const user = await createWebUser({ tgId, displayName: nick, partnerId: VERIF_PARTNER_ID });
+    // Без партнера (partner_id = NULL) — на сайті перевірки немає партнерського неймспейсу.
+    const user = await createWebUser({ tgId, displayName: nick, partnerId: null });
     const token = issueSessionToken(user.tgId, VERIF_PARTNER_ID);
     res.json({
       session_token: token,
