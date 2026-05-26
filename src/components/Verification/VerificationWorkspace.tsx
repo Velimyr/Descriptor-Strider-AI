@@ -100,6 +100,56 @@ const FieldEditor: React.FC<{ value: string; onChange: (v: string) => void }> = 
   );
 };
 
+// Символи, яких немає на українській розкладці: російські (ъ ы э ё) + дореформені
+// (ѣ і ѳ ѵ). Кожен — у нижньому й верхньому регістрі.
+const VK_KEYS = ['ё', 'ъ', 'ы', 'э', 'ѣ', 'і', 'ѳ', 'ѵ', 'Ё', 'Ъ', 'Ы', 'Э', 'Ѣ', 'І', 'Ѳ', 'Ѵ'];
+
+// Вставляє символ у поле, що зараз у фокусі (input/textarea), через нативний сеттер +
+// подію input — щоб React (контрольований інпут) підхопив зміну.
+function insertIntoActive(ch: string): boolean {
+  const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
+  if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return false;
+  const start = el.selectionStart ?? el.value.length;
+  const end = el.selectionEnd ?? el.value.length;
+  const next = el.value.slice(0, start) + ch + el.value.slice(end);
+  const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+  setter?.call(el, next);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  const pos = start + ch.length;
+  el.setSelectionRange(pos, pos);
+  return true;
+}
+
+const VirtualKeyboard: React.FC = () => {
+  const [hint, setHint] = useState(false);
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap gap-1">
+        {VK_KEYS.map(ch => (
+          <button
+            key={ch}
+            // mousedown + preventDefault: не даємо полю втратити фокус (інакше слово
+            // «закоммітиться» і інпут зникне до вставки).
+            onMouseDown={e => {
+              e.preventDefault();
+              if (!insertIntoActive(ch)) setHint(true);
+              else setHint(false);
+            }}
+            className="w-8 h-8 flex items-center justify-center bg-white border border-slate-200 rounded hover:bg-indigo-50 hover:border-indigo-300 text-sm text-slate-700"
+            title={`Вставити «${ch}»`}
+          >
+            {ch}
+          </button>
+        ))}
+      </div>
+      <div className="text-[10px] text-slate-400 mt-1">
+        {hint ? 'Спочатку клацніть у поле (або слово), потім — символ.' : 'Спецсимволи (рос. / дореформені) — для відсутніх на укр. розкладці.'}
+      </div>
+    </div>
+  );
+};
+
 export const VerificationWorkspace: React.FC = () => {
   const [orientation, setOrientation] = useState<Orientation>(() =>
     (localStorage.getItem(ORIENT_KEY) as Orientation) === 'vertical' ? 'vertical' : 'horizontal'
@@ -112,6 +162,7 @@ export const VerificationWorkspace: React.FC = () => {
   const [noMore, setNoMore] = useState(false);
   const [toast, setToast] = useState<string>('');
   const [zoom, setZoom] = useState(false);
+  const [celebrate, setCelebrate] = useState<{ id: string; title: string; text: string; media: 'image' | 'video' }[]>([]);
   const [err, setErr] = useState('');
 
   // Тримаємо id «своєї» (взятої, ще не зданої) справи, щоб звільнити лок при виході.
@@ -190,6 +241,7 @@ export const VerificationWorkspace: React.FC = () => {
       if (r.done) parts.push('справу перевірено повністю ✓');
       else parts.push(`підтверджень: ${r.confirmationsCount}/3`);
       flashToast(parts.join(' · '));
+      if (r.earnedBadges && r.earnedBadges.length > 0) setCelebrate(r.earnedBadges);
       await loadNext();
     } catch (e: any) {
       setErr(e?.message || 'Не вдалося зберегти');
@@ -306,6 +358,7 @@ export const VerificationWorkspace: React.FC = () => {
                   referrerPolicy="no-referrer"
                 />
               </div>
+              <VirtualKeyboard />
             </div>
 
             {/* Поля по питаннях */}
@@ -377,6 +430,45 @@ export const VerificationWorkspace: React.FC = () => {
           onClick={() => setZoom(false)}
         >
           <img src={cse.imageUrl} alt="Справа" className="max-w-full max-h-full rounded-lg" referrerPolicy="no-referrer" />
+        </div>
+      )}
+
+      {celebrate.length > 0 && (
+        <div className="fixed inset-0 z-[60] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-6" onClick={() => setCelebrate([])}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 text-center space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="text-sm font-bold text-amber-600 uppercase tracking-wider">🏅 Нове досягнення!</div>
+            <div className="space-y-5">
+              {celebrate.map(b => (
+                <div key={b.id} className="space-y-2">
+                  {b.media === 'video' ? (
+                    <video
+                      src={`/api/verif/badge/${encodeURIComponent(b.id)}/image`}
+                      className="w-28 h-28 object-contain mx-auto rounded-xl"
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                    />
+                  ) : (
+                    <img
+                      src={`/api/verif/badge/${encodeURIComponent(b.id)}/image`}
+                      alt={b.title}
+                      className="w-28 h-28 object-contain mx-auto rounded-xl"
+                      referrerPolicy="no-referrer"
+                    />
+                  )}
+                  <div className="text-lg font-bold text-slate-800">{b.title}</div>
+                  <div className="text-sm text-slate-500">{b.text}</div>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => setCelebrate([])}
+              className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold"
+            >
+              Клас!
+            </button>
+          </div>
         </div>
       )}
     </div>

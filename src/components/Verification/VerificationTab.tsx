@@ -299,6 +299,14 @@ const CabinetModal: React.FC<{
   const [nick, setNick] = useState(user.nickname);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // Завжди тягнемо свіжий профіль при відкритті — щоб бали/місце були актуальні
+  // (інакше показувало б стан на момент логіну, доки не оновиш сторінку).
+  const [profile, setProfile] = useState<VerifProfile>(user);
+  useEffect(() => {
+    let alive = true;
+    verifApi.getMe().then(p => { if (alive) setProfile(p); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   const save = async () => {
     setBusy(true);
@@ -306,6 +314,7 @@ const CabinetModal: React.FC<{
     try {
       await verifApi.rename(nick.trim());
       await onChanged();
+      try { setProfile(await verifApi.getMe()); } catch {/* ignore */}
       setEditing(false);
     } catch (e: any) {
       setErr(errText(e?.code));
@@ -338,14 +347,14 @@ const CabinetModal: React.FC<{
                 className="p-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white rounded-lg">
                 {busy ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
               </button>
-              <button onClick={() => { setEditing(false); setNick(user.nickname); setErr(''); }}
+              <button onClick={() => { setEditing(false); setNick(profile.nickname); setErr(''); }}
                 className="p-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-600">
                 <X size={16} />
               </button>
             </div>
           ) : (
             <div className="flex items-center justify-between">
-              <span className="text-base font-semibold text-slate-800">{user.nickname}</span>
+              <span className="text-base font-semibold text-slate-800">{profile.nickname}</span>
               <button onClick={() => setEditing(true)} className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700">
                 <Pencil size={14} /> Змінити
               </button>
@@ -355,23 +364,23 @@ const CabinetModal: React.FC<{
 
         <div className="grid grid-cols-3 gap-3 text-center">
           <div className="bg-slate-50 rounded-xl p-3">
-            <div className="text-lg font-bold text-slate-800">{user.total}</div>
+            <div className="text-lg font-bold text-slate-800">{profile.total}</div>
             <div className="text-[10px] text-slate-400 uppercase tracking-wider">Балів</div>
           </div>
           <div className="bg-slate-50 rounded-xl p-3">
-            <div className="text-lg font-bold text-slate-800">#{user.rank}</div>
+            <div className="text-lg font-bold text-slate-800">#{profile.rank}</div>
             <div className="text-[10px] text-slate-400 uppercase tracking-wider">Місце</div>
           </div>
           <div className="bg-slate-50 rounded-xl p-3">
             <div className="text-lg font-bold text-slate-800 flex items-center justify-center gap-1">
-              <Award size={16} className="text-amber-500" />{user.badges.length}
+              <Award size={16} className="text-amber-500" />{profile.badges.length}
             </div>
             <div className="text-[10px] text-slate-400 uppercase tracking-wider">Бейджів</div>
           </div>
         </div>
 
         <div className="pt-2 border-t border-slate-100">
-          {user.linked_telegram ? (
+          {profile.linked_telegram ? (
             <div className="flex items-center gap-2 text-sm text-emerald-600">
               <Check size={16} /> Звʼязано з Telegram
             </div>

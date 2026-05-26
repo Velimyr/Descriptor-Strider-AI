@@ -60,6 +60,7 @@ export interface VerifSubmitResult {
   done: boolean;
   pointsEarned: number;
   correctedWords: number;
+  earnedBadges: { id: string; title: string; text: string; media: 'image' | 'video' }[];
 }
 
 interface VerifCaseRow {
@@ -188,12 +189,17 @@ export async function getNextForVerifier(verifierId: string): Promise<VerifNext 
 }
 
 // ---------- submit (confirm / edit) ----------
-async function awardPoints(verifierId: string, displayName: string, delta: number): Promise<void> {
-  await Promise.all([
+async function awardPoints(
+  verifierId: string,
+  displayName: string,
+  delta: number
+): Promise<{ total: number; todayCount: number }> {
+  const [total, , todayCount] = await Promise.all([
     incTotalPoints(verifierId, delta),
     incMonthlyPoints(kyivMonthString(), verifierId, delta, displayName),
     incDailyCount(verifierId, kyivDateString()),
   ]);
+  return { total, todayCount };
 }
 
 export async function submitVerification(opts: {
@@ -231,9 +237,24 @@ export async function submitVerification(opts: {
   const done = String(row?.new_status ?? 'open') === 'done';
 
   const pts = Math.round((POINTS_BASE + POINTS_PER_WORD * corrected) * 100) / 100;
-  await awardPoints(opts.verifierId, opts.displayName, pts);
+  const { total, todayCount } = await awardPoints(opts.verifierId, opts.displayName, pts);
 
-  return { confirmationsCount: count, done, pointsEarned: pts, correctedWords: corrected };
+  // Бейджі — тихо (без Telegram-картки); помилка тут не має ламати підтвердження.
+  let earnedBadges: { id: string; title: string; text: string; media: 'image' | 'video' }[] = [];
+  try {
+    const { evaluateWebBadges } = await import('../telegram/badges.js');
+    const newly = await evaluateWebBadges({ tgId: opts.verifierId, totalPoints: total, todayCount });
+    earnedBadges = newly.map(b => ({
+      id: b.id,
+      title: b.title,
+      text: b.text,
+      media: /\.mp4$/i.test(b.image) ? 'video' : 'image',
+    }));
+  } catch (e: any) {
+    console.error('verif badge eval failed', e?.message || e);
+  }
+
+  return { confirmationsCount: count, done, pointsEarned: pts, correctedWords: corrected, earnedBadges };
 }
 
 // ---------- skip ----------

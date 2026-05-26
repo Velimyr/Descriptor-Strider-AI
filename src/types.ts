@@ -21,7 +21,9 @@ export interface TableColumn {
 export type BadgeCriteria =
   | { type: 'total_points'; threshold: number } // накопичені бали ≥ threshold
   | { type: 'cases_total'; threshold: number }   // опрацьовано справ за весь час ≥ threshold
-  | { type: 'day_count'; threshold: number };     // справ за один день ≥ threshold
+  | { type: 'day_count'; threshold: number }      // справ за один день ≥ threshold
+  | { type: 'verifications_total'; threshold: number }   // веб: перевірено справ ≥ threshold
+  | { type: 'corrected_words_total'; threshold: number }; // веб: виправлено слів ≥ threshold
 
 export interface BadgeDef {
   id: string;          // стабільний ключ — НЕ змінювати після релізу (зберігається в БД)

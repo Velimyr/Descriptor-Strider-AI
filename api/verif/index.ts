@@ -31,6 +31,7 @@ import {
   VerifError,
 } from '../core/verifCases.js';
 import { proxyVerifImage } from './image.js';
+import { serveBadgeImage } from './badge.js';
 import {
   verifyTelegramLogin,
   telegramDisplayName,
@@ -354,5 +355,8 @@ router.get('/stats', requireSession, async (_req, res) => {
 
 // Проксі зображення — без сесії (HMAC-токен на caseId сам авторизує, для <img src>).
 router.get('/case/:id/image', proxyVerifImage);
+
+// Картинка бейджа за id (для картки-привітання). Не секретна → без сесії.
+router.get('/badge/:id/image', serveBadgeImage);
 
 export default router;

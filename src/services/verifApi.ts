@@ -138,6 +138,7 @@ export interface VerifSubmitResult {
   done: boolean;
   pointsEarned: number;
   correctedWords: number;
+  earnedBadges?: { id: string; title: string; text: string; media: 'image' | 'video' }[];
 }
 
 export async function getNext(): Promise<VerifCase | null> {

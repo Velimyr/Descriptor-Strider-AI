@@ -1197,6 +1197,35 @@ export async function countUserCases(tgId: string): Promise<number> {
   return (subs.count || 0) + (confs.count || 0);
 }
 
+// Веб-перевірка: к-сть перевірених справ цим юзером (для бейджів verifications_total).
+export async function countUserVerifications(tgId: string): Promise<number> {
+  const { count, error } = await db()
+    .from(`${PREFIX}verif_confirmations`)
+    .select('case_id', { count: 'exact', head: true })
+    .eq('verifier_id', tgId);
+  if (error) throw error;
+  return count || 0;
+}
+
+// Веб-перевірка: сума виправлених слів цим юзером (для бейджів corrected_words_total).
+// Без SUM-RPC: тягнемо колонку посторінково й сумуємо в коді.
+export async function sumUserCorrectedWords(tgId: string): Promise<number> {
+  const pageSize = 1000;
+  let total = 0;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await db()
+      .from(`${PREFIX}verif_confirmations`)
+      .select('corrected_words')
+      .eq('verifier_id', tgId)
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) total += Number((r as any).corrected_words || 0);
+    if (rows.length < pageSize) break;
+  }
+  return total;
+}
+
 // ---------- ОПИСОВИЙ ПАЗЛ ----------
 export interface PuzzleRow {
   dateKyiv: string;

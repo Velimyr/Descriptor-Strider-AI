@@ -527,6 +527,59 @@ export const telegramBotConfig: TelegramBotConfig = {
       image: 'points_10000.png',
       criteria: { type: 'total_points', threshold: 10000 },
     },
+    // --- Веб-перевірка: за кількістю перевірених справ ---
+    // image — власний файл на майбутнє; поки немає реальної графіки, движок робить
+    // fallback на sample.png (див. getBadgeFileId / serveBadgeImage).
+    {
+      id: 'verify_10',
+      title: 'Пильне око',
+      text: 'Десять справ перевірено. Око вже вихоплює помилку з-поміж завитків старого почерку.',
+      image: 'verify_10.png',
+      criteria: { type: 'verifications_total', threshold: 10 },
+    },
+    {
+      id: 'verify_100',
+      title: 'Архівна блискавка',
+      text: 'Сотня перевірених справ — і все блискавично. Помилки не встигають утекти.',
+      image: 'verify_100.png',
+      criteria: { type: 'verifications_total', threshold: 100 },
+    },
+    {
+      id: 'verify_500',
+      title: 'Дослідник опису',
+      text: 'П\'ятсот перевірених справ. Ти знаєш описи зсередини — як справжній дослідник.',
+      image: 'verify_500.mp4',
+      criteria: { type: 'verifications_total', threshold: 500 },
+    },
+    {
+      id: 'verify_1000',
+      title: 'Хранитель точності',
+      text: 'Тисяча перевірених справ! Точність архіву тримається на тобі.',
+      image: 'verify_1000.png',
+      criteria: { type: 'verifications_total', threshold: 1000 },
+    },
+    {
+      id: 'verify_5000',
+      title: 'Архівний дракон',
+      text: 'П\'ять тисяч справ під твоїм крилом. Архівний дракон, що стереже скарби описів.',
+      image: 'verify_5000.mp4',
+      criteria: { type: 'verifications_total', threshold: 5000 },
+    },
+    // --- Веб-перевірка: за кількістю виправлених слів ---
+    {
+      id: 'corrected_100',
+      title: 'Шукач привидів минулих помилок',
+      text: 'Сто виправлених слів — стільки ж привидів давніх помилок ти відправив на спочинок.',
+      image: 'corrected_100.mp4',
+      criteria: { type: 'corrected_words_total', threshold: 100 },
+    },
+    {
+      id: 'corrected_1000',
+      title: 'Майстер коректури',
+      text: 'Тисяча виправлених слів! Кожна літера тепер на своєму місці.',
+      image: 'corrected_1000.mp4',
+      criteria: { type: 'corrected_words_total', threshold: 1000 },
+    },
   ],
 
   puzzle: {
