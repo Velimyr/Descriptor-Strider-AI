@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { Upload, Loader2 } from 'lucide-react';
+import { Upload, Loader2, Wand2 } from 'lucide-react';
 import { tgApi } from '../../services/telegramApi';
+import { ArchivalRecord } from '../../types';
+import { RecoverFragmentsModal } from '../Recognition/RecoverFragmentsModal';
 
 // Вкладка «Веб» у Підготовці справ: завантаження справ на ВЕБ-перевірку з файлу,
 // експортованого зі сторінки розпізнавання (.json проєкту: tableStructure + results[]).
@@ -9,7 +11,7 @@ import { tgApi } from '../../services/telegramApi';
 interface ImportedProject {
   name: string;
   columns: Array<{ id: string; label?: string; role?: string }>;
-  results: Array<{ data?: Record<string, unknown>; fragmentImage?: string; pdfUrl?: string; pageNumber?: number }>;
+  results: ArchivalRecord[];
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -27,6 +29,7 @@ export const VerifUploadView: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [msg, setMsg] = useState('');
+  const [showRecover, setShowRecover] = useState(false);
 
   const metaValid = !!(archive.trim() && fund.trim() && opys.trim());
   const withImageCount = project ? project.results.filter(r => typeof r.fragmentImage === 'string' && r.fragmentImage.includes(',')).length : 0;
@@ -152,14 +155,24 @@ export const VerifUploadView: React.FC = () => {
       </label>
 
       {project && (
-        <button
-          onClick={upload}
-          disabled={busy || !metaValid || withImageCount === 0}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white rounded text-sm font-bold"
-        >
-          {busy ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
-          Завантажити {withImageCount} справ на перевірку
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={upload}
+            disabled={busy || !metaValid || withImageCount === 0}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white rounded text-sm font-bold"
+          >
+            {busy ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+            Завантажити {withImageCount} справ на перевірку
+          </button>
+          <button
+            onClick={() => setShowRecover(true)}
+            disabled={busy}
+            title="Відновити hi-res фрагменти з оригінального PDF (для старих експортів)"
+            className="flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded hover:bg-slate-50 text-sm font-medium"
+          >
+            <Wand2 size={15} className="text-indigo-600" /> 🧪 Покращити якість (hi-res)
+          </button>
+        </div>
       )}
 
       {progress && (
@@ -172,6 +185,17 @@ export const VerifUploadView: React.FC = () => {
       )}
 
       {msg && <div className="text-sm whitespace-pre-wrap">{msg}</div>}
+
+      {showRecover && project && (
+        <RecoverFragmentsModal
+          results={project.results}
+          onApply={(updated) => {
+            setProject(prev => (prev ? { ...prev, results: updated } : prev));
+            setMsg('🧪 Hi-res фрагменти застосовано. Тепер натисніть «Завантажити».');
+          }}
+          onClose={() => setShowRecover(false)}
+        />
+      )}
     </div>
   );
 };

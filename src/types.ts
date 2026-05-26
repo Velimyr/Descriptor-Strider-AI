@@ -75,6 +75,7 @@ export interface ArchivalRecord {
   data: Record<string, string>;
   tags?: string[];
   fragmentImage?: string; // Base64 fragment
+  boundingBox?: number[]; // [ymin, xmin, ymax, xmax] нормалізовано 0..1000 (для перекропу з оригіналу)
 }
 
 export interface PageStatus {

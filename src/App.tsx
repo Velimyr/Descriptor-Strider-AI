@@ -47,7 +47,6 @@ import { config } from './config';
 import { TelegramAdminTab } from './components/TelegramAdmin/TelegramAdminTab';
 import { CasesPreparationPage } from './components/CasesPreparation/CasesPreparationPage';
 import { VerificationTab } from './components/Verification/VerificationTab';
-import { RecoverFragmentsModal } from './components/Recognition/RecoverFragmentsModal';
 
 // PDF.js worker setup
 import * as pdfjs from 'pdfjs-dist';
@@ -273,7 +272,6 @@ export default function App() {
     return saved === 'verification' ? 'verification' : 'recognition';
   });
   const [showRecognitionSettings, setShowRecognitionSettings] = useState(false);
-  const [showRecover, setShowRecover] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [activeStatusTab, setActiveStatusTab] = useState<number>(0);
   const [showTelegramAdmin, setShowTelegramAdmin] = useState(
@@ -720,21 +718,33 @@ export default function App() {
     const pdfPageStartedAt = performance.now();
     const page = await pdf.getPage(pageNum);
     logDuration(`Сторінка ${pageNum} (${url}): PDF-сторінку отримано`, pdfPageStartedAt, 5000);
-    const viewport = page.getViewport({ scale: config.pdfRenderScale });
+    // Рендеримо в hi-res (cropRenderScale) — щоб кропи фрагментів були чіткими.
+    const viewport = page.getViewport({ scale: config.cropRenderScale });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     canvas.height = viewport.height;
     canvas.width = viewport.width;
-    
+
     const renderStartedAt = performance.now();
-    await page.render({ 
-      canvasContext: context!, 
-      viewport 
+    await page.render({
+      canvasContext: context!,
+      viewport
     } as any).promise;
     logDuration(`Сторінка ${pageNum} (${url}): canvas render завершено`, renderStartedAt, 10000);
 
+    // Для Gemini зменшуємо зображення (щоб не зростала вартість/час). Кропи беремо
+    // з hi-res полотна, бо bbox нормалізований (0..1000) і від масштабу не залежить.
     const imageEncodeStartedAt = performance.now();
-    const imageBase64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+    const aiScale = config.cropRenderScale > 0 ? config.pdfRenderScale / config.cropRenderScale : 1;
+    let aiSource: HTMLCanvasElement = canvas;
+    if (aiScale < 1) {
+      const aiCanvas = document.createElement('canvas');
+      aiCanvas.width = Math.max(1, Math.round(canvas.width * aiScale));
+      aiCanvas.height = Math.max(1, Math.round(canvas.height * aiScale));
+      aiCanvas.getContext('2d')?.drawImage(canvas, 0, 0, aiCanvas.width, aiCanvas.height);
+      aiSource = aiCanvas;
+    }
+    const imageBase64 = aiSource.toDataURL('image/jpeg', 0.85).split(',')[1];
     logDuration(`Сторінка ${pageNum} (${url}): JPEG/base64 підготовлено`, imageEncodeStartedAt, 7000);
 
     updatePageStatus(url, pageNum, { progress: 40 });
@@ -786,7 +796,8 @@ export default function App() {
         pageNumber: pageNum,
         data: res.data,
         tags: res.tags,
-        fragmentImage: fragmentCanvas.toDataURL('image/png')
+        boundingBox,
+        fragmentImage: fragmentCanvas.toDataURL('image/jpeg', 0.9)
       };
     });
     logDuration(`Сторінка ${pageNum} (${url}): вирізання фрагментів завершено`, fragmentsStartedAt, 10000);
@@ -1623,15 +1634,6 @@ export default function App() {
                     <FileSpreadsheet size={16} />
                     Експорт CSV
                   </button>
-                  {activeProject.results.length > 0 && (
-                    <button
-                      onClick={() => setShowRecover(true)}
-                      title="Експеримент: відновити hi-res фрагменти з оригінального PDF"
-                      className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-sm font-medium shadow-sm"
-                    >
-                      🧪 Hi-res фрагменти
-                    </button>
-                  )}
                   <button 
                     disabled={isProcessing || isIndexing}
                     onClick={() => startProcessing('continue')}
@@ -2230,18 +2232,6 @@ export default function App() {
           )}
         </AnimatePresence>
         </>
-        )}
-
-        {showRecover && activeProject && (
-          <RecoverFragmentsModal
-            results={activeProject.results}
-            onApply={(updated) => {
-              updateProject(activeProject.id, { results: updated });
-              pdfStorage.saveResults(activeProject.id, updated);
-              addLog(`🧪 Відновлено hi-res фрагменти: оновлено ${updated.filter((r, i) => r.fragmentImage !== activeProject.results[i]?.fragmentImage).length} справ.`);
-            }}
-            onClose={() => setShowRecover(false)}
-          />
         )}
 
         {selectedImage && (
