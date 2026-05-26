@@ -40,6 +40,19 @@ import {
 
 const router = express.Router();
 
+// HTML-відповідь, що кладе токен у localStorage і повертає користувача в SPA.
+// (Через redirect не можна напряму записати localStorage — робимо це коротким скриптом.)
+function htmlFinishLogin(token: string | null, error: string | null): string {
+  const back = '/';
+  const setToken = token
+    ? `try{localStorage.setItem('verif_session_token',${JSON.stringify(token)});localStorage.setItem('main_active_tab','verification');}catch(e){}`
+    : '';
+  const setErr = error
+    ? `try{sessionStorage.setItem('verif_login_error',${JSON.stringify(error)});localStorage.setItem('main_active_tab','verification');}catch(e){}`
+    : '';
+  return `<!doctype html><html lang="uk"><head><meta charset="utf-8"><title>Вхід…</title></head><body style="font-family:sans-serif;color:#475569;padding:2rem">Вхід…<script>${setToken}${setErr}location.replace(${JSON.stringify(back)});</script></body></html>`;
+}
+
 function sanitizeNick(s: unknown): string {
   return String(s ?? '').trim().replace(/\s+/g, ' ').slice(0, 40);
 }
@@ -130,6 +143,46 @@ router.post('/auth/telegram', async (req, res) => {
   } catch (e: any) {
     console.error('verif/auth/telegram failed', e?.message || e);
     res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Telegram Login Widget у REDIRECT-режимі (data-auth-url). Telegram робить повний
+// top-level редірект сюди з параметрами профілю в query — без popup/iframe/сторонніх
+// cookies. Власний параметр `anon` (токен анонімної сесії) — для мержу балів; у звірку
+// hash НЕ входить (беремо лише поля Telegram).
+router.get('/auth/telegram/callback', async (req, res) => {
+  const q = req.query as Record<string, string>;
+  const tgFields = ['id', 'first_name', 'last_name', 'username', 'photo_url', 'auth_date', 'hash'];
+  const data: any = {};
+  for (const f of tgFields) if (q[f] !== undefined) data[f] = q[f];
+
+  let ok = false;
+  try {
+    ok = verifyTelegramLogin(data as TelegramLoginData);
+  } catch {
+    return res.status(500).send(htmlFinishLogin(null, 'bot_token_missing'));
+  }
+  if (!ok) return res.status(401).send(htmlFinishLogin(null, 'invalid_telegram_signature'));
+
+  const tgId = String(data.id);
+  try {
+    await ensureTelegramUser(tgId, telegramDisplayName(data as TelegramLoginData));
+    const anon = String(q.anon || '');
+    if (anon) {
+      const payload = verifySessionToken(anon);
+      if (payload && payload.tgId.startsWith('web:')) {
+        try {
+          await mergeWebUserIntoTelegram(payload.tgId, tgId);
+        } catch (e: any) {
+          console.error('verif callback merge failed', e?.message || e);
+        }
+      }
+    }
+    const token = issueSessionToken(tgId, VERIF_PARTNER_ID);
+    res.send(htmlFinishLogin(token, null));
+  } catch (e: any) {
+    console.error('verif/auth/telegram/callback failed', e?.message || e);
+    res.status(500).send(htmlFinishLogin(null, 'internal'));
   }
 });
 

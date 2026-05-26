@@ -4,28 +4,28 @@ import * as verifApi from '../../services/verifApi';
 import type { VerifProfile, VerifConfig } from '../../services/verifApi';
 import { VerificationWorkspace } from './VerificationWorkspace';
 
-// Кнопка офіційного Telegram Login Widget. Інжектить скрипт telegram.org у контейнер.
-// onAuth викликається з даними профілю (id, first_name, username, auth_date, hash...).
-const TelegramLoginButton: React.FC<{
-  botUsername: string;
-  onAuth: (data: Record<string, unknown>) => void;
-}> = ({ botUsername, onAuth }) => {
+// Кнопка офіційного Telegram Login Widget у REDIRECT-режимі (data-auth-url):
+// Telegram робить повний top-level перехід на наш серверний колбек із параметрами
+// профілю — без popup/iframe/сторонніх cookies (надійніше за callback-режим).
+// `anon` — токен поточної анонімної сесії (для мержу балів при привʼязці).
+const TelegramLoginButton: React.FC<{ botUsername: string }> = ({ botUsername }) => {
   const ref = useRef<HTMLDivElement>(null);
-  const onAuthRef = useRef(onAuth);
-  onAuthRef.current = onAuth;
 
   useEffect(() => {
-    (window as any).__onTelegramVerifAuth = (user: Record<string, unknown>) => onAuthRef.current(user);
     const container = ref.current;
     if (!container) return;
     container.innerHTML = '';
+    const anon = verifApi.getToken();
+    const authUrl =
+      `${window.location.origin}/api/verif/auth/telegram/callback` +
+      (anon ? `?anon=${encodeURIComponent(anon)}` : '');
     const s = document.createElement('script');
     s.src = 'https://telegram.org/js/telegram-widget.js?22';
     s.async = true;
     s.setAttribute('data-telegram-login', botUsername);
     s.setAttribute('data-size', 'large');
     s.setAttribute('data-radius', '8');
-    s.setAttribute('data-onauth', '__onTelegramVerifAuth(user)');
+    s.setAttribute('data-auth-url', authUrl);
     s.setAttribute('data-request-access', 'write');
     container.appendChild(s);
     return () => {
@@ -146,24 +146,19 @@ const AuthGate: React.FC<{ config: VerifConfig | null; onLoggedIn: () => void }>
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
+  useEffect(() => {
+    const e = sessionStorage.getItem('verif_login_error');
+    if (e) {
+      setErr(errText(e));
+      sessionStorage.removeItem('verif_login_error');
+    }
+  }, []);
+
   const doRegister = async () => {
     setBusy(true);
     setErr('');
     try {
       await verifApi.register(nick.trim());
-      await onLoggedIn();
-    } catch (e: any) {
-      setErr(errText(e?.code));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onTelegram = async (data: Record<string, unknown>) => {
-    setBusy(true);
-    setErr('');
-    try {
-      await verifApi.authTelegram(data);
       await onLoggedIn();
     } catch (e: any) {
       setErr(errText(e?.code));
@@ -197,7 +192,7 @@ const AuthGate: React.FC<{ config: VerifConfig | null; onLoggedIn: () => void }>
 
         {config?.tg_bot_username && (
           <div className="flex flex-col items-center gap-2">
-            <TelegramLoginButton botUsername={config.tg_bot_username} onAuth={onTelegram} />
+            <TelegramLoginButton botUsername={config.tg_bot_username} />
             <span className="text-[11px] text-slate-400">Бали зберігаються у спільному рейтингу з ботом</span>
           </div>
         )}
@@ -262,20 +257,6 @@ const CabinetModal: React.FC<{
       await verifApi.rename(nick.trim());
       await onChanged();
       setEditing(false);
-    } catch (e: any) {
-      setErr(errText(e?.code));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onTelegram = async (data: Record<string, unknown>) => {
-    setBusy(true);
-    setErr('');
-    try {
-      await verifApi.authTelegram(data);
-      onRelinked();
-      onClose();
     } catch (e: any) {
       setErr(errText(e?.code));
     } finally {
@@ -348,7 +329,7 @@ const CabinetModal: React.FC<{
             <div className="space-y-2">
               <div className="text-sm text-slate-600">Привʼяжіть Telegram, щоб не втратити бали:</div>
               {config?.tg_bot_username && (
-                <TelegramLoginButton botUsername={config.tg_bot_username} onAuth={onTelegram} />
+                <TelegramLoginButton botUsername={config.tg_bot_username} />
               )}
             </div>
           )}
