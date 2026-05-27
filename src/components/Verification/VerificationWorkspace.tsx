@@ -150,13 +150,25 @@ const VirtualKeyboard: React.FC = () => {
   );
 };
 
+// Канонічна назва файлу опису в архіві: f.<фонд(4 цифри)>op.<опис(4 цифри)>.pdf
+// (напр. фонд 442 / опис 105 → f.0442op.0105.pdf). Якщо фонд/опис не суто числові —
+// повертаємо fallback (source_pdf).
+function opysFileName(fund: string, opys: string, fallback: string): string {
+  const f = String(fund || '').trim();
+  const o = String(opys || '').trim();
+  if (/^\d+$/.test(f) && /^\d+$/.test(o)) {
+    return `f.${f.padStart(4, '0')}op.${o.padStart(4, '0')}.pdf`;
+  }
+  return fallback || '';
+}
+
 // Будує посилання на повний PDF опису: база (конфігуровна) + назва файлу + #page=N.
-// Якщо source_pdf уже повний URL — лишаємо як є. Скрол до сторінки через #page=
+// Якщо назва вже повний URL — лишаємо як є. Скрол до сторінки через #page=
 // (працює у вбудованих PDF-переглядачах Chrome/Firefox/Edge).
-function buildOpysUrl(base: string, sourcePdf: string, page: string): string {
-  if (!sourcePdf) return '';
+function buildOpysUrl(base: string, fileName: string, page: string): string {
+  if (!fileName) return '';
   const root = base || 'https://cdiak.archives.gov.ua/files/';
-  const url = /^https?:\/\//i.test(sourcePdf) ? sourcePdf : `${root}${sourcePdf}`;
+  const url = /^https?:\/\//i.test(fileName) ? fileName : `${root}${encodeURIComponent(fileName)}`;
   const p = parseInt(String(page || '').match(/\d+/)?.[0] || '', 10);
   return Number.isFinite(p) && p > 0 ? `${url}#page=${p}` : url;
 }
@@ -313,16 +325,20 @@ export const VerificationWorkspace: React.FC<{ opysBaseUrl?: string }> = ({ opys
                   </span>
                 )}
               </div>
-              {cse.sourcePdf && (
-                <a
-                  href={buildOpysUrl(opysBaseUrl || '', cse.sourcePdf, cse.page)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline mt-0.5"
-                >
-                  <ExternalLink size={12} /> Відкрити повний опис{cse.page ? ` (стор. ${cse.page})` : ''}
-                </a>
-              )}
+              {(() => {
+                const file = opysFileName(cse.fund, cse.opys, cse.sourcePdf);
+                const url = buildOpysUrl(opysBaseUrl || '', file, cse.page);
+                return url ? (
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline mt-0.5"
+                  >
+                    <ExternalLink size={12} /> Відкрити повний опис{cse.page ? ` (стор. ${cse.page})` : ''}
+                  </a>
+                ) : null;
+              })()}
             </>
           ) : (
             <div className="text-lg font-bold text-slate-600">Перевірка справ</div>
@@ -384,13 +400,14 @@ export const VerificationWorkspace: React.FC<{ opysBaseUrl?: string }> = ({ opys
 
             {/* Поля по питаннях */}
             <div className={orientation === 'horizontal' ? 'flex-1 space-y-3' : 'w-full space-y-3'}>
-              {cse.questions.map((q, i) => {
+              {Array.from({ length: Math.max(cse.questions.length, working.length) }).map((_, i) => {
+                const q = cse.questions[i];
                 const changed = (working[i] ?? '') !== (original[i] ?? '');
                 return (
                   <div key={i}>
                     <div className="flex items-center justify-between mb-1">
                       <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                        {q.label || `Поле ${i + 1}`}
+                        {q?.label || `Поле ${i + 1}`}
                       </label>
                       {changed && (
                         <span className="text-[10px] font-medium text-amber-600 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">

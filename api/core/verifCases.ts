@@ -4,6 +4,7 @@
 import { createHmac } from 'node:crypto';
 import {
   db,
+  getMeta,
   incTotalPoints,
   incMonthlyPoints,
   incDailyCount,
@@ -98,6 +99,23 @@ function asQuestions(v: unknown): VerifQuestion[] {
     : [];
 }
 
+// Питання з адмінського розділу «Питання» (bot_meta.questions) — щоб підписи на
+// веб-формі збігалися з тим, що налаштовано в адмінці (а не зі снапшоту колонок).
+async function getAdminQuestions(): Promise<VerifQuestion[]> {
+  const raw = await getMeta('questions');
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((q: any) => ({
+      label: String(q?.label ?? q?.name ?? ''),
+      role: String(q?.role ?? ''),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 function mapCaseRow(r: any): VerifCaseRow {
   return {
     caseId: r.case_id,
@@ -168,6 +186,8 @@ export async function getNextForVerifier(verifierId: string): Promise<VerifNext 
   const { data, error } = await db().rpc(RPC.candidates, { p_verifier_id: verifierId });
   if (error) throw error;
   const rows = (data as any[]) || [];
+  // Підписи питань — з адмінського розділу «Питання»; фолбек на снапшот справи.
+  const adminQuestions = await getAdminQuestions();
   for (const r of rows) {
     const { data: locked, error: lerr } = await db().rpc(RPC.lock, {
       p_case_id: r.case_id,
@@ -186,7 +206,7 @@ export async function getNextForVerifier(verifierId: string): Promise<VerifNext 
         sprava: c.sprava,
         sourcePdf: c.sourcePdf,
         page: c.page,
-        questions: c.questions,
+        questions: adminQuestions.length ? adminQuestions : c.questions,
         answers: c.currentAnswers.length ? c.currentAnswers : c.aiAnswers,
         aiAnswers: c.aiAnswers,
         lockedUntil: new Date(Date.now() + LOCK_MINUTES * 60_000).toISOString(),
