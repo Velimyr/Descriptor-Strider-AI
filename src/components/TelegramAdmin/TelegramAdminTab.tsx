@@ -2826,7 +2826,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
 const ResultsView: React.FC = () => {
   const [data, setData] = useState<{ questions: any[]; submissions: any[] } | null>(null);
-  const [allDescriptions, setAllDescriptions] = useState<{ key: string; name: string }[]>([]);
+  const [allDescriptions, setAllDescriptions] = useState<{ key: string; name: string; source: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [limit, setLimit] = useState(500);
@@ -2848,7 +2848,7 @@ const ResultsView: React.FC = () => {
     try {
       const ov = await tgApi.overview();
       setAllDescriptions(
-        (ov.descriptions || []).map((d: any) => ({ key: d.key, name: d.name }))
+        (ov.descriptions || []).map((d: any) => ({ key: d.key, name: d.name, source: d.source || 'telegram' }))
       );
     } catch (e: any) {
       setMsg('❌ ' + e.message);
@@ -2962,8 +2962,10 @@ const ResultsView: React.FC = () => {
 
   // Усі описи (із Огляду) — щоб у фільтрі бачити навіть ті, які ще не мають
   // підтверджень у поточному ліміті завантаження.
+  // value кодує джерело: "<source>::<archive|fund|opys>" — щоб фільтр був точним
+  // (телеграм і веб можуть мати однаковий опис).
   const descriptions: [string, string][] = allDescriptions
-    .map(d => [d.key, d.name] as [string, string])
+    .map(d => [`${d.source}::${d.key}`, `${d.name} (${d.source === 'web' ? 'веб' : 'телеграм'})`] as [string, string])
     .sort((a, b) => a[1].localeCompare(b[1]));
 
   const selectedDescriptionName = descFilter
@@ -2972,7 +2974,12 @@ const ResultsView: React.FC = () => {
 
   const filtered = data
     ? data.submissions.filter(s => {
-        if (descFilter && descKeyOf(s) !== descFilter) return false;
+        if (descFilter) {
+          const sep = descFilter.indexOf('::');
+          const src = sep >= 0 ? descFilter.slice(0, sep) : 'telegram';
+          const key = sep >= 0 ? descFilter.slice(sep + 2) : descFilter;
+          if ((s.source || 'telegram') !== src || descKeyOf(s) !== key) return false;
+        }
         if (!filter.trim()) return true;
         const q = filter.toLowerCase();
         const row = buildRow(s, data.questions);
@@ -3009,11 +3016,16 @@ const ResultsView: React.FC = () => {
   // що потрапили у поточну вкладку «Результати» (обмежену limit-ом).
   const exportSelectedDescription = async () => {
     if (!data || !descFilter) return;
-    const [archive, fund, opys] = descFilter.split('|');
+    const sep = descFilter.indexOf('::');
+    const src = sep >= 0 ? descFilter.slice(0, sep) : 'telegram';
+    const rest = sep >= 0 ? descFilter.slice(sep + 2) : descFilter;
+    const [archive, fund, opys] = rest.split('|');
     try {
       setBusy(true);
       setMsg('Завантажую всі підтвердження опису з БД…');
-      const r = await tgApi.submissionsByDescription(archive, fund, opys);
+      const r = src === 'web'
+        ? await tgApi.verifSubmissionsByDescription(archive, fund, opys)
+        : await tgApi.submissionsByDescription(archive, fund, opys);
       const rows = (r?.submissions || []) as any[];
       if (rows.length === 0) {
         setMsg(`⚠️ Для опису "${selectedDescriptionName}" у БД 0 підтверджень.`);
@@ -3083,7 +3095,7 @@ const ResultsView: React.FC = () => {
         </select>
         <select
           value={descFilterInput}
-          onChange={e => setDescFilterInput(e.target.value)}
+          onChange={e => { setDescFilterInput(e.target.value); setDescFilter(e.target.value); }}
           className="border rounded px-2 py-1 text-sm"
         >
           <option value="">Усі описи</option>
