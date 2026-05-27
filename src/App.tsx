@@ -46,6 +46,7 @@ import { MusicPanel } from './components/MusicPanel';
 import { config } from './config';
 import { TelegramAdminTab } from './components/TelegramAdmin/TelegramAdminTab';
 import { CasesPreparationPage } from './components/CasesPreparation/CasesPreparationPage';
+import { VerificationTab } from './components/Verification/VerificationTab';
 
 // PDF.js worker setup
 import * as pdfjs from 'pdfjs-dist';
@@ -266,6 +267,11 @@ export default function App() {
   const [showLogs, setShowLogs] = useState(false);
   const [googleAuthLoading, setGoogleAuthLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'recognition' | 'verification'>(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('main_active_tab') : null;
+    return saved === 'verification' ? 'verification' : 'recognition';
+  });
+  const [showRecognitionSettings, setShowRecognitionSettings] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [activeStatusTab, setActiveStatusTab] = useState<number>(0);
   const [showTelegramAdmin, setShowTelegramAdmin] = useState(
@@ -298,6 +304,10 @@ export default function App() {
   useEffect(() => {
     console.log(`App mounted. Current geminiModel: ${geminiModel}`);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem('main_active_tab', activeTab);
+  }, [activeTab]);
 
   const addLog = (message: string, level: LogEntry['level'] = 'info') => {
     const newLog: LogEntry = {
@@ -708,21 +718,33 @@ export default function App() {
     const pdfPageStartedAt = performance.now();
     const page = await pdf.getPage(pageNum);
     logDuration(`Сторінка ${pageNum} (${url}): PDF-сторінку отримано`, pdfPageStartedAt, 5000);
-    const viewport = page.getViewport({ scale: config.pdfRenderScale });
+    // Рендеримо в hi-res (cropRenderScale) — щоб кропи фрагментів були чіткими.
+    const viewport = page.getViewport({ scale: config.cropRenderScale });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
     canvas.height = viewport.height;
     canvas.width = viewport.width;
-    
+
     const renderStartedAt = performance.now();
-    await page.render({ 
-      canvasContext: context!, 
-      viewport 
+    await page.render({
+      canvasContext: context!,
+      viewport
     } as any).promise;
     logDuration(`Сторінка ${pageNum} (${url}): canvas render завершено`, renderStartedAt, 10000);
 
+    // Для Gemini зменшуємо зображення (щоб не зростала вартість/час). Кропи беремо
+    // з hi-res полотна, бо bbox нормалізований (0..1000) і від масштабу не залежить.
     const imageEncodeStartedAt = performance.now();
-    const imageBase64 = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+    const aiScale = config.cropRenderScale > 0 ? config.pdfRenderScale / config.cropRenderScale : 1;
+    let aiSource: HTMLCanvasElement = canvas;
+    if (aiScale < 1) {
+      const aiCanvas = document.createElement('canvas');
+      aiCanvas.width = Math.max(1, Math.round(canvas.width * aiScale));
+      aiCanvas.height = Math.max(1, Math.round(canvas.height * aiScale));
+      aiCanvas.getContext('2d')?.drawImage(canvas, 0, 0, aiCanvas.width, aiCanvas.height);
+      aiSource = aiCanvas;
+    }
+    const imageBase64 = aiSource.toDataURL('image/jpeg', 0.85).split(',')[1];
     logDuration(`Сторінка ${pageNum} (${url}): JPEG/base64 підготовлено`, imageEncodeStartedAt, 7000);
 
     updatePageStatus(url, pageNum, { progress: 40 });
@@ -774,7 +796,8 @@ export default function App() {
         pageNumber: pageNum,
         data: res.data,
         tags: res.tags,
-        fragmentImage: fragmentCanvas.toDataURL('image/png')
+        boundingBox,
+        fragmentImage: fragmentCanvas.toDataURL('image/jpeg', 0.9)
       };
     });
     logDuration(`Сторінка ${pageNum} (${url}): вирізання фрагментів завершено`, fragmentsStartedAt, 10000);
@@ -1325,7 +1348,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-[#F8F9FA] text-slate-900 font-sans">
+    <div className="flex flex-col h-screen bg-[#F8F9FA] text-slate-900 font-sans">
       {showTelegramAdmin && (
         <TelegramAdminTab
           onClose={closeTelegramAdmin}
@@ -1336,6 +1359,40 @@ export default function App() {
         />
       )}
       {showCasesPrep && <CasesPreparationPage onClose={closeCasesPrep} />}
+
+      {/* Top-level tabs */}
+      <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 h-12 shrink-0">
+        <div className="flex gap-1">
+          {([['recognition', 'Розпізнавання'], ['verification', 'Перевірка']] as const).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setActiveTab(key)}
+              className={cn(
+                'px-4 py-1.5 rounded-lg text-sm font-bold transition-colors',
+                activeTab === key ? 'bg-indigo-50 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {activeTab === 'recognition' && (
+          <button
+            onClick={() => setShowRecognitionSettings(s => !s)}
+            className={cn(
+              'flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors',
+              showRecognitionSettings
+                ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+            )}
+          >
+            <SettingsIcon size={16} />
+            Налаштування
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-1 min-h-0">
       {/* Sidebar */}
       <aside className="w-72 bg-white border-r border-slate-200 flex flex-col">
         <div className="p-6 border-b border-slate-100">
@@ -1363,7 +1420,7 @@ export default function App() {
           {projects.map(p => (
             <div 
               key={p.id}
-              onClick={() => setActiveProjectId(p.id)}
+              onClick={() => { setActiveProjectId(p.id); setActiveTab('recognition'); }}
               className={cn(
                 "group flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors",
                 activeProjectId === p.id ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-50 text-slate-600"
@@ -1384,107 +1441,6 @@ export default function App() {
         </nav>
 
         <div className="p-4 border-t border-slate-100 space-y-4">
-          <div className="space-y-3">
-            <div className="px-3">
-              <button
-                type="button"
-                onClick={() => setIsKeysPanelOpen(open => !open)}
-                className="w-full flex items-center justify-between gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors"
-              >
-                <span className="flex items-center gap-2 text-xs font-bold text-slate-600">
-                  <KeyRound size={14} className="text-indigo-500" />
-                  Gemini Keys - {geminiKeys.length}
-                </span>
-                {isKeysPanelOpen
-                  ? <ChevronDown size={14} className="text-slate-400" />
-                  : <ChevronRight size={14} className="text-slate-400" />}
-              </button>
-              <AnimatePresence initial={false}>
-                {isKeysPanelOpen && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="pt-2 space-y-2">
-                      {geminiKeys.length === 0 && (
-                        <p className="text-[10px] text-slate-400 italic">
-                          Жодного ключа не додано. Додайте принаймні один.
-                        </p>
-                      )}
-                      {geminiKeys.map((key, idx) => (
-                        <div key={idx} className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-slate-400 w-5 text-center">#{idx + 1}</span>
-                          <input
-                            type="password"
-                            value={key}
-                            onChange={(e) => updateGeminiKeyAt(idx, e.target.value)}
-                            placeholder="Введіть ключ..."
-                            className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => removeGeminiKeyAt(idx)}
-                            className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                            title="Видалити ключ"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={addGeminiKey}
-                        className="w-full flex items-center justify-center gap-1.5 py-1.5 border border-dashed border-slate-200 rounded text-[10px] font-bold text-slate-400 hover:text-indigo-600 hover:border-indigo-200 transition-all"
-                      >
-                        <Plus size={12} />
-                        Додати ключ
-                      </button>
-                      <p className="text-[10px] text-slate-400 leading-snug">
-                        Ключі ротуються по колу: при помилці автоматично використовується наступний.
-                      </p>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 px-3">Модель Gemini</label>
-              <div className="px-3">
-                <select
-                  value={geminiModel}
-                  onChange={(e) => saveGeminiModel(e.target.value)}
-                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none appearance-none cursor-pointer"
-                >
-                  <option value="gemini-3-flash-preview">Gemini 3 Flash (Швидка)</option>
-                  <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Потужна)</option>
-                  <option value="gemini-flash-lite-latest">Gemini 3.1 Flash Lite (Економна)</option>
-                  <option value="gemini-flash-latest">Gemini Flash Latest</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2 px-3">
-                Інтервал між спробами (сек)
-              </label>
-              <div className="px-3 flex items-center gap-2">
-                <Timer size={14} className="text-slate-400" />
-                <input
-                  type="number"
-                  min={0}
-                  step={1}
-                  value={retryIntervalSec}
-                  onChange={(e) => saveRetryInterval(Number(e.target.value))}
-                  className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
-                />
-              </div>
-            </div>
-
-          </div>
-          
           <div className="flex gap-2 px-3">
             <label className="flex-1 flex items-center justify-center gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 cursor-pointer text-slate-600 transition-colors text-xs font-bold">
               <Upload size={14} className="text-slate-400" />
@@ -1521,6 +1477,126 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto bg-slate-50/50">
+        {activeTab === 'verification' ? (
+          <VerificationTab />
+        ) : (
+        <>
+        <AnimatePresence initial={false}>
+          {showRecognitionSettings && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="p-6 max-w-3xl mx-auto">
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+                  <h4 className="font-bold text-sm flex items-center gap-2 text-slate-700">
+                    <SettingsIcon size={16} className="text-indigo-600" />
+                    Налаштування розпізнавання
+                  </h4>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setIsKeysPanelOpen(open => !open)}
+                      className="w-full flex items-center justify-between gap-2 p-2 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors"
+                    >
+                      <span className="flex items-center gap-2 text-xs font-bold text-slate-600">
+                        <KeyRound size={14} className="text-indigo-500" />
+                        Gemini Keys - {geminiKeys.length}
+                      </span>
+                      {isKeysPanelOpen
+                        ? <ChevronDown size={14} className="text-slate-400" />
+                        : <ChevronRight size={14} className="text-slate-400" />}
+                    </button>
+                    <AnimatePresence initial={false}>
+                      {isKeysPanelOpen && (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="pt-2 space-y-2">
+                            {geminiKeys.length === 0 && (
+                              <p className="text-[10px] text-slate-400 italic">
+                                Жодного ключа не додано. Додайте принаймні один.
+                              </p>
+                            )}
+                            {geminiKeys.map((key, idx) => (
+                              <div key={idx} className="flex items-center gap-2">
+                                <span className="text-[10px] font-bold text-slate-400 w-5 text-center">#{idx + 1}</span>
+                                <input
+                                  type="password"
+                                  value={key}
+                                  onChange={(e) => updateGeminiKeyAt(idx, e.target.value)}
+                                  placeholder="Введіть ключ..."
+                                  className="flex-1 p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeGeminiKeyAt(idx)}
+                                  className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                                  title="Видалити ключ"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={addGeminiKey}
+                              className="w-full flex items-center justify-center gap-1.5 py-1.5 border border-dashed border-slate-200 rounded text-[10px] font-bold text-slate-400 hover:text-indigo-600 hover:border-indigo-200 transition-all"
+                            >
+                              <Plus size={12} />
+                              Додати ключ
+                            </button>
+                            <p className="text-[10px] text-slate-400 leading-snug">
+                              Ключі ротуються по колу: при помилці автоматично використовується наступний.
+                            </p>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Модель Gemini</label>
+                      <select
+                        value={geminiModel}
+                        onChange={(e) => saveGeminiModel(e.target.value)}
+                        className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none appearance-none cursor-pointer"
+                      >
+                        <option value="gemini-3-flash-preview">Gemini 3 Flash (Швидка)</option>
+                        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Потужна)</option>
+                        <option value="gemini-flash-lite-latest">Gemini 3.1 Flash Lite (Економна)</option>
+                        <option value="gemini-flash-latest">Gemini Flash Latest</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+                        Інтервал між спробами (сек)
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <Timer size={14} className="text-slate-400" />
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={retryIntervalSec}
+                          onChange={(e) => saveRetryInterval(Number(e.target.value))}
+                          className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
         <AnimatePresence mode="wait">
           {activeProject ? (
             <motion.div 
@@ -2155,9 +2231,11 @@ export default function App() {
             </div>
           )}
         </AnimatePresence>
+        </>
+        )}
 
         {selectedImage && (
-          <div 
+          <div
             className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-8 cursor-zoom-out"
             onClick={() => setSelectedImage(null)}
           >
@@ -2255,6 +2333,7 @@ export default function App() {
           )}
         </AnimatePresence>
       </main>
+      </div>
     </div>
   );
 }

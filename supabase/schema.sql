@@ -374,3 +374,182 @@ returns setof bot_cases language sql security definer as $$
   order by c.created_at, c.case_id;
 $$;
 revoke all on function bot_candidate_cases(text) from public, anon, authenticated;
+
+-- =====================================================================
+-- ВЕБ-ПЕРЕВІРКА справ (вкладка «Перевірка»). Окремі таблиці — бот їх НЕ читає.
+-- Лише колаборативний режим: AI наперед заповнює варіант, люди підтверджують/
+-- виправляють. Справа done після N різних перевіряльників (поріг — у коді, зараз 3).
+-- Бали/бейджі/рейтинг — СПІЛЬНІ з ботом (bot_users / bot_monthly_points / bot_daily_scores).
+-- =====================================================================
+
+-- Черга перевірки. case_id генерує бекенд при імпорті .json з розпізнавання.
+-- questions — снапшот колонок проєкту [{label, role}]; ai_answers/current_answers —
+-- масиви рядків, вирівняні по questions. current_answers стартує = ai_answers і
+-- оновлюється при правці (це й є фінальний зведений варіант для експорту).
+create table if not exists bot_verif_cases (
+  case_id              text primary key,
+  tg_file_id           text        not null default '',
+  tg_chat_id           text        not null default '',
+  tg_message_id        text        not null default '',
+  source_pdf           text        not null default '',
+  page                 text        not null default '',
+  bbox                 text        not null default '',
+  archive              text        not null default '',
+  fund                 text        not null default '',
+  opys                 text        not null default '',
+  sprava               text        not null default '',
+  questions            jsonb       not null default '[]'::jsonb,
+  ai_answers           jsonb       not null default '[]'::jsonb,
+  current_answers      jsonb       not null default '[]'::jsonb,
+  confirmations_count  int         not null default 0,
+  status               text        not null default 'open' check (status in ('open','done')),
+  locked_by            text        not null default '',
+  locked_until         timestamptz,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now()
+);
+create index if not exists idx_verif_cases_status on bot_verif_cases(status);
+create index if not exists idx_verif_cases_lock   on bot_verif_cases(locked_until);
+create index if not exists idx_verif_cases_desc   on bot_verif_cases(archive, fund, opys);
+
+-- Аудит перевірок. PK(case_id, verifier_id): один перевіряльник = одна дія на справу.
+-- corrected_words — к-сть слів, що перевіряльник змінив (для балів 0.1×слово).
+-- kind: 'confirm' (без правок) | 'edit' (з правками). answers — те, що він підтвердив.
+create table if not exists bot_verif_confirmations (
+  case_id         text        not null,
+  verifier_id     text        not null,
+  kind            text        not null check (kind in ('confirm','edit')),
+  answers         jsonb       not null default '[]'::jsonb,
+  corrected_words int         not null default 0,
+  at              timestamptz not null default now(),
+  primary key (case_id, verifier_id)
+);
+create index if not exists idx_verif_confirms_case on bot_verif_confirmations(case_id);
+create index if not exists idx_verif_confirms_user on bot_verif_confirmations(verifier_id);
+
+-- Пропущені справи (кнопка «Пропустити»). Не рахуються в консенсус, виключаються
+-- з добору цьому перевіряльнику.
+create table if not exists bot_verif_skips (
+  case_id     text        not null,
+  verifier_id text        not null,
+  at          timestamptz not null default now(),
+  primary key (case_id, verifier_id)
+);
+create index if not exists idx_verif_skips_user on bot_verif_skips(verifier_id);
+
+-- source у submissions: 'telegram' (дефолт) | 'web'. Уніфікує експорт опису й графік.
+alter table bot_submissions add column if not exists source text not null default 'telegram';
+create index if not exists idx_subs_source on bot_submissions(source);
+
+alter table bot_verif_cases         enable row level security;
+alter table bot_verif_confirmations enable row level security;
+alter table bot_verif_skips         enable row level security;
+
+-- Атомарний інкремент накопичувальних балів (lifetime). Дробові бали (0.1×слово).
+create or replace function bot_inc_total_points(p_tg_id text, p_delta numeric)
+returns numeric language plpgsql security definer as $$
+declare v numeric;
+begin
+  update bot_users set total_points = total_points + p_delta
+   where tg_id = p_tg_id
+   returning total_points into v;
+  return v;
+end $$;
+revoke all on function bot_inc_total_points(text, numeric) from public, anon, authenticated;
+
+-- Кандидати на перевірку: відкриті справи, де цей перевіряльник ще не діяв і не
+-- пропускав, не заблоковані іншим. ORDER BY обов'язковий (PostgREST обрізає до ~1000).
+create or replace function bot_verif_candidate_cases(p_verifier_id text)
+returns setof bot_verif_cases language sql security definer as $$
+  select c.* from bot_verif_cases c
+  where c.status = 'open'
+    and not exists (select 1 from bot_verif_confirmations cc where cc.case_id = c.case_id and cc.verifier_id = p_verifier_id)
+    and not exists (select 1 from bot_verif_skips sk where sk.case_id = c.case_id and sk.verifier_id = p_verifier_id)
+    and (c.locked_until is null or c.locked_until < now() or c.locked_by = p_verifier_id)
+  order by c.created_at, c.case_id;
+$$;
+revoke all on function bot_verif_candidate_cases(text) from public, anon, authenticated;
+
+-- Атомарне блокування справи за перевіряльником. Повертає true якщо вдалось
+-- (вільна / прострочена / вже моя). Захищає від видачі однієї справи двом людям.
+create or replace function bot_verif_lock(p_case_id text, p_verifier_id text, p_minutes int)
+returns boolean language plpgsql security definer as $$
+declare ok boolean;
+begin
+  update bot_verif_cases
+     set locked_by = p_verifier_id,
+         locked_until = now() + (p_minutes || ' minutes')::interval,
+         updated_at = now()
+   where case_id = p_case_id
+     and status = 'open'
+     and (locked_until is null or locked_until < now() or locked_by = p_verifier_id)
+   returning true into ok;
+  return coalesce(ok, false);
+end $$;
+revoke all on function bot_verif_lock(text, text, int) from public, anon, authenticated;
+
+-- Зафіксувати перевірку: записати дію перевіряльника, оновити зведений варіант
+-- (при edit), перерахувати к-сть різних перевіряльників, закрити справу при досягненні
+-- порога, зняти лок. Advisory-lock на case_id серіалізує одночасні сабміти.
+-- Повертає актуальні confirmations_count і status. Бали нараховує бекенд окремо.
+create or replace function bot_verif_record(
+  p_case_id       text,
+  p_verifier_id   text,
+  p_kind          text,
+  p_answers       jsonb,
+  p_corrected     int,
+  p_threshold     int
+) returns table (new_count int, new_status text) language plpgsql security definer as $$
+declare v_count int; v_status text;
+begin
+  perform pg_advisory_xact_lock(hashtext('verif:' || p_case_id));
+  insert into bot_verif_confirmations(case_id, verifier_id, kind, answers, corrected_words)
+    values (p_case_id, p_verifier_id, p_kind, coalesce(p_answers, '[]'::jsonb), greatest(coalesce(p_corrected, 0), 0))
+    on conflict (case_id, verifier_id) do nothing;
+  if p_kind = 'edit' then
+    update bot_verif_cases
+       set current_answers = coalesce(p_answers, '[]'::jsonb), updated_at = now()
+     where case_id = p_case_id;
+  end if;
+  select count(distinct verifier_id) into v_count from bot_verif_confirmations where case_id = p_case_id;
+  update bot_verif_cases
+     set confirmations_count = v_count,
+         status = case when v_count >= p_threshold then 'done' else status end,
+         locked_by = '', locked_until = null,
+         updated_at = now()
+   where case_id = p_case_id
+   returning status into v_status;
+  return query select v_count, v_status;
+end $$;
+revoke all on function bot_verif_record(text, text, text, jsonb, int, int) from public, anon, authenticated;
+
+-- Агрегований прогрес описів перевірки (для шапки вкладки). Без підкачки всіх справ.
+create or replace function bot_verif_description_progress()
+returns table (
+  archive text,
+  fund text,
+  opys text,
+  earliest_created_at timestamptz,
+  total_cases bigint,
+  done_cases bigint
+) language sql security definer as $$
+  select c.archive, c.fund, c.opys,
+    min(c.created_at) as earliest_created_at,
+    count(*) as total_cases,
+    count(*) filter (where c.status = 'done') as done_cases
+  from bot_verif_cases c
+  group by c.archive, c.fund, c.opys;
+$$;
+revoke all on function bot_verif_description_progress() from public, anon, authenticated;
+
+-- Одноразові коди «Вхід через бота» для сайту перевірки. Сайт створює код →
+-- юзер тисне /start login_<code> у боті → бот пише tg_id+used_at → сайт опитує статус.
+create table if not exists bot_verif_login_codes (
+  code        text primary key,
+  tg_id       text        not null default '',
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz not null,
+  used_at     timestamptz
+);
+create index if not exists idx_verif_login_codes_exp on bot_verif_login_codes(expires_at);
+alter table bot_verif_login_codes enable row level security;

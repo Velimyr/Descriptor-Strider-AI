@@ -47,13 +47,17 @@ const MIN_INTERVAL_MS = 1200;
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-export async function sendPhotoByBuffer(
+// Універсальне завантаження медіа-буфера в чат/канал з пейсингом і ретраєм на 429.
+// method: 'sendPhoto' | 'sendAnimation'; field: 'photo' | 'animation'.
+async function sendMediaByBuffer(
+  method: string,
+  field: string,
+  contentType: string,
   chatId: number | string,
   buffer: Buffer,
   filename: string,
   caption?: string
 ): Promise<any> {
-  // Базова пауза між відправками у канал.
   const wait = lastChannelSendAt + MIN_INTERVAL_MS - Date.now();
   if (wait > 0) await sleep(wait);
 
@@ -62,9 +66,9 @@ export async function sendPhotoByBuffer(
     const form = new FormData();
     form.append('chat_id', String(chatId));
     if (caption) form.append('caption', caption);
-    form.append('photo', buffer, { filename, contentType: 'image/jpeg' });
+    form.append(field, buffer, { filename, contentType });
     try {
-      const res = await axios.post(apiUrl('sendPhoto'), form, {
+      const res = await axios.post(apiUrl(method), form, {
         headers: form.getHeaders(),
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
@@ -80,19 +84,43 @@ export async function sendPhotoByBuffer(
       const retryAfter = retryAfterTg || retryAfterHdr || 0;
       if ((status === 429 || data?.error_code === 429) && attempt < maxAttempts) {
         const waitMs = (retryAfter || attempt * 2) * 1000 + 300;
-        console.warn(
-          `[sendPhotoByBuffer] 429 — sleeping ${waitMs}ms (attempt ${attempt}/${maxAttempts - 1})`
-        );
+        console.warn(`[${method}] 429 — sleeping ${waitMs}ms (attempt ${attempt}/${maxAttempts - 1})`);
         await sleep(waitMs);
         continue;
       }
-      // інша помилка — кидаємо нагору
-      throw new Error(
-        `sendPhoto: ${data?.description || e.message} (status ${status || '?'})`
-      );
+      throw new Error(`${method}: ${data?.description || e.message} (status ${status || '?'})`);
     }
   }
-  throw new Error('sendPhoto: всі спроби вичерпані (429)');
+  throw new Error(`${method}: всі спроби вичерпані (429)`);
+}
+
+export function sendPhotoByBuffer(
+  chatId: number | string,
+  buffer: Buffer,
+  filename: string,
+  caption?: string
+): Promise<any> {
+  return sendMediaByBuffer('sendPhoto', 'photo', 'image/jpeg', chatId, buffer, filename, caption);
+}
+
+// Анімація (GIF або MP4): Telegram програє інлайн (для MP4 — нативно, GIF конвертує в MP4).
+export function sendAnimationByBuffer(
+  chatId: number | string,
+  buffer: Buffer,
+  filename: string,
+  caption?: string,
+  contentType: string = 'image/gif'
+): Promise<any> {
+  return sendMediaByBuffer('sendAnimation', 'animation', contentType, chatId, buffer, filename, caption);
+}
+
+export async function sendAnimationByFileId(
+  chatId: number | string,
+  fileId: string,
+  caption?: string,
+  extra: any = {}
+): Promise<any> {
+  return tg('sendAnimation', { chat_id: chatId, animation: fileId, caption, parse_mode: 'HTML', ...extra });
 }
 
 export async function answerCallbackQuery(callbackQueryId: string, text?: string) {

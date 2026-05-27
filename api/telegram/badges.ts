@@ -9,9 +9,17 @@ import {
   getEarnedBadgeIds,
   grantBadges,
   countUserCases,
+  countUserVerifications,
+  sumUserCorrectedWords,
   patchUser,
 } from './storage.js';
-import { sendMessage, sendPhotoByFileId, sendPhotoByBuffer } from './tg-api.js';
+import {
+  sendMessage,
+  sendPhotoByFileId,
+  sendPhotoByBuffer,
+  sendAnimationByFileId,
+  sendAnimationByBuffer,
+} from './tg-api.js';
 import { nowIsoUtc } from './scheduler.js';
 
 const T = telegramBotConfig.texts;
@@ -24,12 +32,22 @@ function fmt(template: string, values: Record<string, string | number>): string 
   return template.replace(/\{(\w+)\}/g, (_, k) => String(values[k] ?? `{${k}}`));
 }
 
-// file_id картинки бейджа кешуємо в bot_meta('badge_file_id:<id>'). Якщо ще не
-// залито — читаємо файл з диска, шлемо в канал, зберігаємо отриманий file_id.
-async function getBadgeFileId(badge: BadgeDef): Promise<string | null> {
+type BadgeMedia = { fileId: string; kind: 'photo' | 'animation' };
+
+// file_id медіа бейджа кешуємо в bot_meta('badge_file_id:<id>') як "<kind>:<fileId>".
+// (старий формат — голий fileId — трактуємо як photo). Метод залежить від РЕАЛЬНОГО
+// файлу (а не лише від config), бо при відсутньому .gif робимо fallback на sample.png.
+async function getBadgeMedia(badge: BadgeDef): Promise<BadgeMedia | null> {
   const metaKey = `badge_file_id:${badge.id}`;
   const cached = await getMeta(metaKey);
-  if (cached) return cached;
+  if (cached) {
+    const idx = cached.indexOf(':');
+    if (idx > 0) {
+      const kind = cached.slice(0, idx) === 'animation' ? 'animation' : 'photo';
+      return { fileId: cached.slice(idx + 1), kind };
+    }
+    return { fileId: cached, kind: 'photo' };
+  }
   try {
     const fs = await import('fs/promises');
     const path = await import('path');
@@ -37,12 +55,15 @@ async function getBadgeFileId(badge: BadgeDef): Promise<string | null> {
     const candidates = [
       path.join(process.cwd(), 'api', 'telegram', 'badges', badge.image),
       path.join(process.cwd(), 'public', 'badges', badge.image),
+      // Fallback-плейсхолдер, якщо реальної картинки бейджа ще нема.
+      path.join(process.cwd(), 'api', 'telegram', 'badges', 'sample.png'),
     ];
     let buf: Buffer | null = null;
+    let usedPath = '';
     for (const p of candidates) {
       try {
         buf = await fs.readFile(p);
-        if (buf) break;
+        if (buf) { usedPath = p; break; }
       } catch {
         // спробуємо наступний шлях
       }
@@ -53,13 +74,29 @@ async function getBadgeFileId(badge: BadgeDef): Promise<string | null> {
     }
     const channelId = process.env[telegramBotConfig.tg.channelIdEnv];
     if (!channelId) return null;
+
+    // Тип визначаємо за фактично прочитаним файлом (gif/mp4 → animation).
+    const isAnim = /\.(gif|mp4)$/i.test(usedPath);
+    if (isAnim) {
+      const ct = /\.mp4$/i.test(usedPath) ? 'video/mp4' : 'image/gif';
+      const res = await sendAnimationByBuffer(channelId, buf, badge.image, undefined, ct);
+      const fid = res?.animation?.file_id || res?.document?.file_id || '';
+      if (fid) {
+        await setMeta(metaKey, `animation:${fid}`);
+        return { fileId: fid, kind: 'animation' };
+      }
+      return null;
+    }
     const res = await sendPhotoByBuffer(channelId, buf, badge.image);
     const photoArr = res?.photo || [];
     const fid = photoArr.length ? photoArr[photoArr.length - 1].file_id : '';
-    if (fid) await setMeta(metaKey, fid);
-    return fid || null;
+    if (fid) {
+      await setMeta(metaKey, `photo:${fid}`);
+      return { fileId: fid, kind: 'photo' };
+    }
+    return null;
   } catch (e) {
-    console.error('getBadgeFileId failed', e);
+    console.error('getBadgeMedia failed', e);
     return null;
   }
 }
@@ -81,11 +118,12 @@ function badgeCaption(badge: BadgeDef): string {
 
 async function sendBadgePhoto(chatId: number | string, badge: BadgeDef): Promise<void> {
   const caption = badgeCaption(badge);
-  const fid = await getBadgeFileId(badge);
-  if (fid && caption.length <= 1024) {
-    await sendPhotoByFileId(chatId, fid, caption);
-  } else if (fid) {
-    await sendPhotoByFileId(chatId, fid);
+  const media = await getBadgeMedia(badge);
+  const send = media?.kind === 'animation' ? sendAnimationByFileId : sendPhotoByFileId;
+  if (media && caption.length <= 1024) {
+    await send(chatId, media.fileId, caption);
+  } else if (media) {
+    await send(chatId, media.fileId);
     await sendMessage(chatId, caption);
   } else {
     await sendMessage(chatId, caption);
@@ -195,5 +233,67 @@ export async function evaluateBadges(opts: {
     for (const b of newly) await sendBadgeEarnedCard(opts.chatId, b);
   } catch (e) {
     console.error('evaluateBadges failed', e);
+  }
+}
+
+// Оцінка бейджів для САЙТУ ПЕРЕВІРКИ (web). Видає ТИХО (без Telegram-картки — у
+// web-юзера може не бути чату). Повертає нові бейджі, щоб показати їх у тості на сайті.
+// Обробляє веб-метрики (verifications_total, corrected_words_total) + спільні
+// (total_points, day_count, cases_total) — бо бали в перевірці спільні з ботом.
+export async function evaluateWebBadges(opts: {
+  tgId: string;
+  totalPoints: number;
+  todayCount: number;
+}): Promise<BadgeDef[]> {
+  const all = telegramBotConfig.badges;
+  if (all.length === 0) return [];
+  try {
+    const earned = new Set(await getEarnedBadgeIds(opts.tgId));
+    const candidates = all.filter(b => !earned.has(b.id));
+    if (candidates.length === 0) return [];
+
+    let casesTotal: number | null = null;
+    let verifTotal: number | null = null;
+    let correctedTotal: number | null = null;
+    const meets = async (b: BadgeDef): Promise<boolean> => {
+      const c = b.criteria;
+      switch (c.type) {
+        case 'total_points':
+          return opts.totalPoints >= c.threshold;
+        case 'day_count':
+          return opts.todayCount >= c.threshold;
+        case 'cases_total':
+          if (casesTotal === null) casesTotal = await countUserCases(opts.tgId);
+          return casesTotal >= c.threshold;
+        case 'verifications_total':
+          if (verifTotal === null) verifTotal = await countUserVerifications(opts.tgId);
+          return verifTotal >= c.threshold;
+        case 'corrected_words_total':
+          if (correctedTotal === null) correctedTotal = await sumUserCorrectedWords(opts.tgId);
+          return correctedTotal >= c.threshold;
+        default:
+          return false;
+      }
+    };
+
+    const newly: BadgeDef[] = [];
+    for (const b of candidates) if (await meets(b)) newly.push(b);
+    if (newly.length) await grantBadges(opts.tgId, newly.map(b => b.id));
+
+    // Якщо юзер звʼязаний з Telegram (numeric tg_id, а не web:) — шлемо картку в його
+    // приватний чат із ботом (chat_id = tg_id). Помилка (заблокував бота) — не критична.
+    if (newly.length && !opts.tgId.startsWith('web:')) {
+      for (const b of newly) {
+        try {
+          await sendBadgeEarnedCard(opts.tgId, b);
+        } catch (e) {
+          console.error('evaluateWebBadges: TG card failed', e);
+        }
+      }
+    }
+    return newly;
+  } catch (e) {
+    console.error('evaluateWebBadges failed', e);
+    return [];
   }
 }
