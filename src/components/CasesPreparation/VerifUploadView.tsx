@@ -30,6 +30,10 @@ export const VerifUploadView: React.FC = () => {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [msg, setMsg] = useState('');
   const [showRecover, setShowRecover] = useState(false);
+  // Оцінка якості зображень у файлі: скільки справ мають boundingBox (= новий hi-res
+  // конвеєр) і роздільність зразка. Допомагає вирішити, чи треба «Покращити (hi-res)».
+  const [quality, setQuality] = useState<{ withBbox: number; total: number; sampleWidth: number } | null>(null);
+  const needsImprovement = !!quality && quality.total > 0 && quality.withBbox < quality.total;
 
   const metaValid = !!(archive.trim() && fund.trim() && opys.trim());
   const withImageCount = project ? project.results.filter(r => typeof r.fragmentImage === 'string' && r.fragmentImage.includes(',')).length : 0;
@@ -45,11 +49,21 @@ export const VerifUploadView: React.FC = () => {
         const results = Array.isArray(data.results) ? data.results : [];
         if (columns.length === 0) throw new Error('У файлі немає структури таблиці (tableStructure).');
         setProject({ name: data.name || f.name, columns, results });
-        const imgs = results.filter((r: any) => typeof r?.fragmentImage === 'string' && r.fragmentImage.includes(',')).length;
-        setMsg(`Завантажено «${data.name || f.name}»: ${results.length} справ, ${columns.length} колонок, ${imgs} із зображеннями.`);
+        const imgRecords = results.filter((r: any) => typeof r?.fragmentImage === 'string' && r.fragmentImage.includes(','));
+        const withBbox = imgRecords.filter((r: any) => Array.isArray(r?.boundingBox) && r.boundingBox.length === 4).length;
+        setMsg(`Завантажено «${data.name || f.name}»: ${results.length} справ, ${columns.length} колонок, ${imgRecords.length} із зображеннями.`);
+        setQuality({ withBbox, total: imgRecords.length, sampleWidth: 0 });
+        // Міряємо роздільність першого фрагмента (для інформації).
+        const sample = imgRecords[0];
+        if (sample?.fragmentImage) {
+          const img = new Image();
+          img.onload = () => setQuality(q => (q ? { ...q, sampleWidth: img.naturalWidth } : q));
+          img.src = sample.fragmentImage;
+        }
       } catch (err: any) {
         setMsg('❌ Не вдалося прочитати файл: ' + err.message);
         setProject(null);
+        setQuality(null);
       }
     };
     reader.readAsText(f);
@@ -153,6 +167,25 @@ export const VerifUploadView: React.FC = () => {
         <Upload size={16} /> Обрати файл .json
         <input type="file" accept=".json,application/json" onChange={onFile} className="hidden" />
       </label>
+
+      {project && quality && (
+        <div
+          className={`text-sm rounded px-3 py-2 border ${
+            needsImprovement ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-emerald-50 border-emerald-300 text-emerald-800'
+          }`}
+        >
+          {needsImprovement ? (
+            <>
+              ⚠ Зображення невисокої якості{quality.sampleWidth ? ` (~${quality.sampleWidth}px)` : ''} — рекомендуємо
+              спершу «🧪 Покращити якість (hi-res)».
+            </>
+          ) : (
+            <>
+              ✓ Зображення вже у високій якості{quality.sampleWidth ? ` (~${quality.sampleWidth}px)` : ''} — покращувати не потрібно.
+            </>
+          )}
+        </div>
+      )}
 
       {project && (
         <div className="flex flex-wrap items-center gap-2">

@@ -2920,6 +2920,7 @@ const ResultsView: React.FC = () => {
 
   const buildHeaders = (questions: any[]) => [
     'submitted_at',
+    'Джерело',
     'Тип',
     'Автор',
     'Перевірили',
@@ -2946,6 +2947,7 @@ const ResultsView: React.FC = () => {
     const answers = Array.isArray(s.answers) ? s.answers : [];
     return [
       s.submitted_at || '',
+      s.source === 'web' ? 'веб' : 'телеграм',
       s.is_collab ? 'collab' : 'parallel',
       `${s.display_name || ''}${s.tg_id ? ` (${s.tg_id})` : ''}`,
       summarizeConfirmations(s),
@@ -3210,9 +3212,17 @@ const OverviewView: React.FC = () => {
   const [data, setData] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [sub, setSub] = useState<'progress' | 'users'>('progress');
   const [descFilter, setDescFilter] = useState<DescFilter>('all');
   const [descPage, setDescPage] = useState(1);
   const [usersPage, setUsersPage] = useState(1);
+  // Користувачі: режим балів — «весь час» (total_points) або «помісячно».
+  const [userMode, setUserMode] = useState<'total' | 'monthly'>('total');
+  const [months, setMonths] = useState<string[]>([]);
+  const [month, setMonth] = useState('');
+  const [monthly, setMonthly] = useState<Array<{ tgId: string; points: number; displayName: string }>>([]);
+  const [monthlyBusy, setMonthlyBusy] = useState(false);
+  const [monthlyPage, setMonthlyPage] = useState(1);
 
   const refresh = async () => {
     setBusy(true);
@@ -3227,6 +3237,22 @@ const OverviewView: React.FC = () => {
     }
   };
 
+  const loadMonthly = async (m?: string) => {
+    setMonthlyBusy(true);
+    setMsg('');
+    try {
+      const r = await tgApi.monthly(m);
+      setMonths(r.months || []);
+      setMonth(r.month || '');
+      setMonthly(r.leaderboard || []);
+      setMonthlyPage(1);
+    } catch (e: any) {
+      setMsg(e.message);
+    } finally {
+      setMonthlyBusy(false);
+    }
+  };
+
   useEffect(() => {
     refresh();
   }, []);
@@ -3234,6 +3260,12 @@ const OverviewView: React.FC = () => {
   useEffect(() => {
     setDescPage(1);
   }, [descFilter]);
+
+  // Перший перехід у «помісячно» — підвантажуємо місяці.
+  useEffect(() => {
+    if (userMode === 'monthly' && months.length === 0) loadMonthly();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userMode]);
 
   const filteredDescriptions = useMemo(() => {
     const list: any[] = Array.isArray(data?.descriptions) ? data.descriptions : [];
@@ -3257,151 +3289,208 @@ const OverviewView: React.FC = () => {
     usersPageSafe * USERS_PAGE_SIZE
   );
 
+  const monthlyTotalPages = Math.max(1, Math.ceil(monthly.length / USERS_PAGE_SIZE));
+  const monthlyPageSafe = Math.min(monthlyPage, monthlyTotalPages);
+  const monthlyPageRows = monthly.slice(
+    (monthlyPageSafe - 1) * USERS_PAGE_SIZE,
+    monthlyPageSafe * USERS_PAGE_SIZE
+  );
+
+  const srcLabel = (s?: string) => (s === 'web' ? 'веб' : 'телеграм');
+
   return (
     <div className="space-y-4 max-w-4xl">
-      <button onClick={refresh} disabled={busy} className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1">
-        <RefreshCw size={14} /> Оновити
-      </button>
+      <div className="flex items-center gap-2">
+        <button onClick={refresh} disabled={busy} className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1">
+          <RefreshCw size={14} /> Оновити
+        </button>
+        <div className="flex gap-1">
+          {([['progress', 'Прогрес'], ['users', 'Користувачі (за балами)']] as [typeof sub, string][]).map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setSub(k)}
+              className={`px-3 py-1.5 text-sm rounded ${sub === k ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
       {msg && <div className="text-sm">{msg}</div>}
-      {data && (
-        <>
-          <section>
-            <h3 className="font-semibold mb-2">Прогрес</h3>
-            <div className="bg-slate-50 border rounded p-3 text-sm space-y-2">
-              <div>
-                Повністю розпізнано описів: <b>{data.fullyDoneDescriptions ?? 0}</b> з{' '}
-                {(data.descriptions || []).length}. Усього справ: {data.cases}.
-              </div>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-slate-600">Показати:</span>
-                {([
-                  ['all', 'Всі'],
-                  ['pending', 'Незавершені'],
-                  ['done', 'Завершені'],
-                ] as [DescFilter, string][]).map(([k, label]) => (
-                  <button
-                    key={k}
-                    onClick={() => setDescFilter(k)}
-                    className={`px-2 py-1 rounded border ${
-                      descFilter === k ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-slate-300'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-                <span className="ml-auto text-slate-500">
-                  {filteredDescriptions.length === 0
-                    ? 'нічого не знайдено'
-                    : `${(descPageSafe - 1) * DESC_PAGE_SIZE + 1}–${Math.min(
-                        descPageSafe * DESC_PAGE_SIZE,
-                        filteredDescriptions.length
-                      )} з ${filteredDescriptions.length}`}
-                </span>
-              </div>
-              {descPageRows.length > 0 && (
-                <table className="w-full text-xs border-collapse mt-1">
-                  <thead>
-                    <tr className="bg-slate-100">
-                      <th className="text-left p-1.5">Опис</th>
-                      <th className="text-right p-1.5 whitespace-nowrap">Готово</th>
-                      <th className="text-right p-1.5 whitespace-nowrap">Справ</th>
-                      <th className="text-right p-1.5 whitespace-nowrap">%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {descPageRows.map((d: any) => (
-                      <tr key={d.key} className="border-b">
-                        <td className="p-1.5">{d.name}</td>
-                        <td className="p-1.5 text-right">{d.doneCases}</td>
-                        <td className="p-1.5 text-right">{d.totalCases}</td>
-                        <td className="p-1.5 text-right">{d.donePct}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-              {descTotalPages > 1 && (
-                <div className="flex items-center justify-end gap-1 text-xs pt-1">
-                  <button
-                    onClick={() => setDescPage(p => Math.max(1, p - 1))}
-                    disabled={descPageSafe <= 1}
-                    className="px-2 py-1 rounded border bg-white disabled:opacity-40"
-                  >
-                    ← Назад
-                  </button>
-                  <span className="px-2">
-                    Стор. {descPageSafe} / {descTotalPages}
-                  </span>
-                  <button
-                    onClick={() => setDescPage(p => Math.min(descTotalPages, p + 1))}
-                    disabled={descPageSafe >= descTotalPages}
-                    className="px-2 py-1 rounded border bg-white disabled:opacity-40"
-                  >
-                    Далі →
-                  </button>
-                </div>
-              )}
+
+      {data && sub === 'progress' && (
+        <section>
+          <div className="bg-slate-50 border rounded p-3 text-sm space-y-2">
+            <div>
+              Повністю розпізнано описів: <b>{data.fullyDoneDescriptions ?? 0}</b> з{' '}
+              {(data.descriptions || []).length}. Усього справ: {data.cases}.
             </div>
-          </section>
-          <section>
-            <div className="flex items-baseline justify-between mb-2">
-              <h3 className="font-semibold">Користувачі (за балами)</h3>
-              <span className="text-xs text-slate-500">
-                {usersList.length === 0
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-slate-600">Показати:</span>
+              {([
+                ['all', 'Всі'],
+                ['pending', 'Незавершені'],
+                ['done', 'Завершені'],
+              ] as [DescFilter, string][]).map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setDescFilter(k)}
+                  className={`px-2 py-1 rounded border ${
+                    descFilter === k ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-slate-300'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+              <span className="ml-auto text-slate-500">
+                {filteredDescriptions.length === 0
                   ? 'нічого не знайдено'
-                  : `${(usersPageSafe - 1) * USERS_PAGE_SIZE + 1}–${Math.min(
-                      usersPageSafe * USERS_PAGE_SIZE,
-                      usersList.length
-                    )} з ${usersList.length}`}
+                  : `${(descPageSafe - 1) * DESC_PAGE_SIZE + 1}–${Math.min(
+                      descPageSafe * DESC_PAGE_SIZE,
+                      filteredDescriptions.length
+                    )} з ${filteredDescriptions.length}`}
               </span>
             </div>
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="bg-slate-100">
-                  <th className="text-left p-2">#</th>
-                  <th className="text-left p-2">Імʼя</th>
-                  <th className="text-left p-2">TG ID</th>
-                  <th className="text-right p-2">Бали</th>
-                  <th className="text-left p-2">Статус</th>
-                  <th className="text-right p-2">Пропуски</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usersPageRows.map((u: any, i: number) => (
-                  <tr key={u.tgId} className="border-b">
-                    <td className="p-2">{(usersPageSafe - 1) * USERS_PAGE_SIZE + i + 1}</td>
-                    <td className="p-2">{u.displayName || '—'}</td>
-                    <td className="p-2 font-mono text-xs">{u.tgId}</td>
-                    <td className="p-2 text-right">{u.totalPoints}</td>
-                    <td className="p-2">{u.status}</td>
-                    <td className="p-2 text-right">{u.consecutiveMisses}</td>
+            {descPageRows.length > 0 && (
+              <table className="w-full text-xs border-collapse mt-1">
+                <thead>
+                  <tr className="bg-slate-100">
+                    <th className="text-left p-1.5">Опис</th>
+                    <th className="text-left p-1.5 whitespace-nowrap">Джерело</th>
+                    <th className="text-right p-1.5 whitespace-nowrap">Готово</th>
+                    <th className="text-right p-1.5 whitespace-nowrap">Справ</th>
+                    <th className="text-right p-1.5 whitespace-nowrap">%</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-            {usersTotalPages > 1 && (
-              <div className="flex items-center justify-end gap-1 text-xs pt-2">
-                <button
-                  onClick={() => setUsersPage(p => Math.max(1, p - 1))}
-                  disabled={usersPageSafe <= 1}
-                  className="px-2 py-1 rounded border bg-white disabled:opacity-40"
-                >
-                  ← Назад
-                </button>
-                <span className="px-2">
-                  Стор. {usersPageSafe} / {usersTotalPages}
-                </span>
-                <button
-                  onClick={() => setUsersPage(p => Math.min(usersTotalPages, p + 1))}
-                  disabled={usersPageSafe >= usersTotalPages}
-                  className="px-2 py-1 rounded border bg-white disabled:opacity-40"
-                >
-                  Далі →
-                </button>
+                </thead>
+                <tbody>
+                  {descPageRows.map((d: any) => (
+                    <tr key={`${d.source || 'tg'}:${d.key}`} className="border-b">
+                      <td className="p-1.5">{d.name}</td>
+                      <td className="p-1.5">{srcLabel(d.source)}</td>
+                      <td className="p-1.5 text-right">{d.doneCases}</td>
+                      <td className="p-1.5 text-right">{d.totalCases}</td>
+                      <td className="p-1.5 text-right">{d.donePct}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {descTotalPages > 1 && (
+              <div className="flex items-center justify-end gap-1 text-xs pt-1">
+                <button onClick={() => setDescPage(p => Math.max(1, p - 1))} disabled={descPageSafe <= 1}
+                  className="px-2 py-1 rounded border bg-white disabled:opacity-40">← Назад</button>
+                <span className="px-2">Стор. {descPageSafe} / {descTotalPages}</span>
+                <button onClick={() => setDescPage(p => Math.min(descTotalPages, p + 1))} disabled={descPageSafe >= descTotalPages}
+                  className="px-2 py-1 rounded border bg-white disabled:opacity-40">Далі →</button>
               </div>
             )}
-          </section>
-        </>
+          </div>
+        </section>
+      )}
+
+      {data && sub === 'users' && (
+        <section>
+          <div className="flex flex-wrap items-center gap-2 mb-2">
+            {([['total', 'Весь час'], ['monthly', 'Помісячно']] as [typeof userMode, string][]).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setUserMode(k)}
+                className={`px-3 py-1 text-xs rounded border ${userMode === k ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-slate-300'}`}
+              >
+                {label}
+              </button>
+            ))}
+            {userMode === 'monthly' && (
+              <>
+                <select
+                  value={month}
+                  onChange={e => loadMonthly(e.target.value)}
+                  disabled={monthlyBusy || months.length === 0}
+                  className="border rounded px-2 py-1 text-xs"
+                >
+                  {months.length === 0 && <option value="">— немає даних —</option>}
+                  {months.map((m, i) => (
+                    <option key={m} value={m}>{m}{i === 0 ? ' (поточний)' : ''}</option>
+                  ))}
+                </select>
+                {monthlyBusy && <RefreshCw size={14} className="animate-spin text-slate-400" />}
+              </>
+            )}
+          </div>
+
+          {userMode === 'total' ? (
+            <>
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-slate-100">
+                    <th className="text-left p-2">#</th>
+                    <th className="text-left p-2">Імʼя</th>
+                    <th className="text-left p-2">TG ID</th>
+                    <th className="text-right p-2">Бали (всього)</th>
+                    <th className="text-left p-2">Статус</th>
+                    <th className="text-right p-2">Пропуски</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usersPageRows.map((u: any, i: number) => (
+                    <tr key={u.tgId} className="border-b">
+                      <td className="p-2">{(usersPageSafe - 1) * USERS_PAGE_SIZE + i + 1}</td>
+                      <td className="p-2">{u.displayName || '—'}</td>
+                      <td className="p-2 font-mono text-xs">{u.tgId}</td>
+                      <td className="p-2 text-right">{u.totalPoints}</td>
+                      <td className="p-2">{u.status}</td>
+                      <td className="p-2 text-right">{u.consecutiveMisses}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {usersTotalPages > 1 && (
+                <div className="flex items-center justify-end gap-1 text-xs pt-2">
+                  <button onClick={() => setUsersPage(p => Math.max(1, p - 1))} disabled={usersPageSafe <= 1}
+                    className="px-2 py-1 rounded border bg-white disabled:opacity-40">← Назад</button>
+                  <span className="px-2">Стор. {usersPageSafe} / {usersTotalPages}</span>
+                  <button onClick={() => setUsersPage(p => Math.min(usersTotalPages, p + 1))} disabled={usersPageSafe >= usersTotalPages}
+                    className="px-2 py-1 rounded border bg-white disabled:opacity-40">Далі →</button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-slate-100">
+                    <th className="text-left p-2">#</th>
+                    <th className="text-left p-2">Імʼя</th>
+                    <th className="text-left p-2">TG ID</th>
+                    <th className="text-right p-2">Бали ({month || '—'})</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthlyPageRows.length === 0 && !monthlyBusy && (
+                    <tr><td colSpan={4} className="p-3 text-center text-slate-500">Немає даних за цей місяць</td></tr>
+                  )}
+                  {monthlyPageRows.map((u, i) => (
+                    <tr key={u.tgId} className="border-b">
+                      <td className="p-2">{(monthlyPageSafe - 1) * USERS_PAGE_SIZE + i + 1}</td>
+                      <td className="p-2">{u.displayName || '—'}</td>
+                      <td className="p-2 font-mono text-xs">{u.tgId}</td>
+                      <td className="p-2 text-right">{Math.round(u.points * 100) / 100}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {monthlyTotalPages > 1 && (
+                <div className="flex items-center justify-end gap-1 text-xs pt-2">
+                  <button onClick={() => setMonthlyPage(p => Math.max(1, p - 1))} disabled={monthlyPageSafe <= 1}
+                    className="px-2 py-1 rounded border bg-white disabled:opacity-40">← Назад</button>
+                  <span className="px-2">Стор. {monthlyPageSafe} / {monthlyTotalPages}</span>
+                  <button onClick={() => setMonthlyPage(p => Math.min(monthlyTotalPages, p + 1))} disabled={monthlyPageSafe >= monthlyTotalPages}
+                    className="px-2 py-1 rounded border bg-white disabled:opacity-40">Далі →</button>
+                </div>
+              )}
+            </>
+          )}
+        </section>
       )}
     </div>
   );

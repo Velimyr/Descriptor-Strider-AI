@@ -573,8 +573,17 @@ router.get('/admin/results', async (req, res) => {
     } catch {
       questions = [];
     }
-    // Об'єднуємо і сортуємо за датою.
-    const merged = [...subs, ...collabAsSubs]
+    // Веб-перевірка (окремі таблиці) — додаємо як рядки з source='web'.
+    const { getRecentVerifResults } = await import('../core/verifCases.js');
+    let webResults: any[] = [];
+    try {
+      webResults = await getRecentVerifResults(limit);
+    } catch (e: any) {
+      console.warn('results: web verif skipped:', e?.message || e);
+    }
+    // Об'єднуємо і сортуємо за датою. Телеграм-рядки тегаємо source='telegram'.
+    const tg = [...subs, ...collabAsSubs].map((s: any) => ({ ...s, source: s.source || 'telegram' }));
+    const merged = [...tg, ...webResults]
       .sort((a: any, b: any) => String(b.submitted_at || '').localeCompare(String(a.submitted_at || '')))
       .slice(0, limit);
     res.json({ ok: true, questions, submissions: merged });
@@ -917,8 +926,17 @@ router.post('/admin/integrity/reopen', async (req, res) => {
 router.get('/admin/overview', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const [users, cases] = await Promise.all([getAllUsers(), getAllCases()]);
-  const descriptions = progressByDescription(cases);
-  const fullyDoneDescriptions = descriptions.filter(d => d.doneCases === d.totalCases).length;
+  const tgDescriptions = progressByDescription(cases).map(d => ({ ...d, source: 'telegram' as const }));
+  // Веб-описи (окремі таблиці) — тегаємо source='web'.
+  let webDescriptions: any[] = [];
+  try {
+    const { getVerifDescriptions } = await import('../core/verifCases.js');
+    webDescriptions = (await getVerifDescriptions()).map(d => ({ ...d, earliestCreatedAt: '', source: 'web' as const }));
+  } catch (e: any) {
+    console.warn('overview: web descriptions skipped:', e?.message || e);
+  }
+  const descriptions = [...tgDescriptions, ...webDescriptions];
+  const fullyDoneDescriptions = descriptions.filter(d => d.totalCases > 0 && d.doneCases >= d.totalCases).length;
   res.json({
     users: users
       .map(u => ({
@@ -941,6 +959,21 @@ router.get('/admin/today-stats', async (req, res) => {
   const tz = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
   const stats = await getTodayActivity(tz);
   res.json({ ...stats, timezone: tz });
+});
+
+// Місячний рейтинг: список доступних місяців + лідерборд обраного місяця.
+// month='' (або не передано) → поточний/найновіший. Бали спільні (TG + web).
+router.get('/admin/monthly', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { getMonthlyMonths, getMonthlyLeaderboard } = await import('./storage.js');
+    const months = await getMonthlyMonths();
+    const month = String(req.query.month || '') || months[0] || '';
+    const leaderboard = month ? await getMonthlyLeaderboard(month) : [];
+    res.json({ months, month, leaderboard });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Прогноз завершення фонду. Прогноз будуємо так:

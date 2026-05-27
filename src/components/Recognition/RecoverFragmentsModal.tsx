@@ -20,6 +20,7 @@ export const RecoverFragmentsModal: React.FC<{
   const [recovered, setRecovered] = useState<Record<string, Recovered>>({});
   const [minScore, setMinScore] = useState(0.4);
   const [msg, setMsg] = useState('');
+  const [zoomSrc, setZoomSrc] = useState<string | null>(null);
 
   const candidates = useMemo(
     () => results.filter(r => typeof r.fragmentImage === 'string' && r.fragmentImage && r.pageNumber),
@@ -156,11 +157,23 @@ export const RecoverFragmentsModal: React.FC<{
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <div className="text-[10px] text-slate-400 mb-0.5">Було</div>
-                        <img src={r.fragmentImage} className="w-full border rounded bg-slate-50" referrerPolicy="no-referrer" />
+                        <img
+                          src={r.fragmentImage}
+                          onClick={() => setZoomSrc(r.fragmentImage || null)}
+                          className="w-full border rounded bg-slate-50 cursor-zoom-in"
+                          title="Клік — на весь екран"
+                          referrerPolicy="no-referrer"
+                        />
                       </div>
                       <div>
                         <div className="text-[10px] text-slate-400 mb-0.5">Стало (hi-res)</div>
-                        <img src={rec.dataUrl} className="w-full border rounded bg-slate-50" referrerPolicy="no-referrer" />
+                        <img
+                          src={rec.dataUrl}
+                          onClick={() => setZoomSrc(rec.dataUrl)}
+                          className="w-full border rounded bg-slate-50 cursor-zoom-in"
+                          title="Клік — на весь екран"
+                          referrerPolicy="no-referrer"
+                        />
                       </div>
                     </div>
                   </div>
@@ -184,6 +197,15 @@ export const RecoverFragmentsModal: React.FC<{
           </div>
         </div>
       </div>
+
+      {zoomSrc && (
+        <div
+          className="fixed inset-0 z-[60] bg-slate-900/90 flex items-center justify-center p-4 cursor-zoom-out"
+          onClick={e => { e.stopPropagation(); setZoomSrc(null); }}
+        >
+          <img src={zoomSrc} className="max-w-full max-h-full object-contain" referrerPolicy="no-referrer" />
+        </div>
+      )}
     </div>
   );
 };

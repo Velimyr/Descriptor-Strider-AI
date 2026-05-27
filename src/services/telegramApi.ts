@@ -91,6 +91,12 @@ export const tgApi = {
       body: JSON.stringify({ imageBase64, mime, apiKey }),
     }),
   overview: () => call('/admin/overview'),
+  monthly: (month?: string) =>
+    call(`/admin/monthly${month ? `?month=${encodeURIComponent(month)}` : ''}`) as Promise<{
+      months: string[];
+      month: string;
+      leaderboard: Array<{ tgId: string; points: number; displayName: string }>;
+    }>,
   results: (limit = 500) => call(`/admin/results?limit=${limit}`),
   todayStats: () => call('/admin/today-stats') as Promise<{ cases: number; users: number; timezone: string }>,
   dailyActivity: (days = 30, source: 'all' | 'telegram' | 'web' = 'all') =>

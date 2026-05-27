@@ -5,6 +5,7 @@ import { createHmac } from 'node:crypto';
 import {
   db,
   getMeta,
+  getDisplayNamesMap,
   incTotalPoints,
   incMonthlyPoints,
   incDailyCount,
@@ -411,6 +412,64 @@ export async function getVerifSubmissionsByDescription(
     };
   });
   return { questions, submissions };
+}
+
+// Нещодавні веб-результати для вкладки «Результати» — у форматі submission-рядків
+// (як collabCaseToSubmission), з source='web' і списком перевіряльників.
+export async function getRecentVerifResults(limit: number): Promise<any[]> {
+  const { data, error } = await db()
+    .from(T.cases)
+    .select('case_id, archive, fund, opys, sprava, source_pdf, page, current_answers, ai_answers, confirmations_count, status, updated_at, created_at')
+    .gt('confirmations_count', 0)
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  const cases = data || [];
+  if (cases.length === 0) return [];
+
+  const caseIds = cases.map((c: any) => c.case_id);
+  const { data: confs, error: cErr } = await db()
+    .from(T.confirmations)
+    .select('case_id, verifier_id, kind, at')
+    .in('case_id', caseIds);
+  if (cErr) throw cErr;
+
+  const confsByCase = new Map<string, any[]>();
+  const verifierIds = new Set<string>();
+  for (const cf of confs || []) {
+    const arr = confsByCase.get(cf.case_id) || [];
+    arr.push(cf);
+    confsByCase.set(cf.case_id, arr);
+    verifierIds.add(cf.verifier_id);
+  }
+  const names = await getDisplayNamesMap([...verifierIds]);
+
+  return cases.map((c: any) => {
+    const cur = asStringArray(c.current_answers);
+    const answers = cur.length ? cur : asStringArray(c.ai_answers);
+    const list = (confsByCase.get(c.case_id) || [])
+      .sort((a, b) => String(a.at).localeCompare(String(b.at)))
+      .map((cf: any) => ({ tg_id: cf.verifier_id, display_name: names[cf.verifier_id] || '', kind: cf.kind, at: cf.at }));
+    return {
+      case_id: c.case_id,
+      tg_id: '',
+      display_name: '',
+      submitted_at: c.updated_at || c.created_at || '',
+      answers,
+      source_link: '',
+      archive: c.archive || '',
+      fund: c.fund || '',
+      opys: c.opys || '',
+      sprava: c.sprava || '',
+      source_pdf: c.source_pdf || '',
+      page: c.page || '',
+      is_collab: true,
+      confirmations_count: c.confirmations_count || 0,
+      case_status: c.status || 'open',
+      confirmations: list,
+      source: 'web',
+    };
+  });
 }
 
 // Список веб-описів у форматі overview.descriptions (key/name/donePct/doneCases/totalCases).
