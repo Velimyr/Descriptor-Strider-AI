@@ -178,7 +178,7 @@ export const VerificationTab: React.FC = () => {
         </div>
       </div>
 
-      <VerificationWorkspace />
+      <VerificationWorkspace opysBaseUrl={config?.opys_base_url} />
 
       {showCabinet && (
         <CabinetModal

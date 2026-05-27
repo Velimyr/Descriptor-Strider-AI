@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, Check, SkipForward, Pencil, Rows, Columns, RotateCcw, Award } from 'lucide-react';
+import { Loader2, Check, SkipForward, Pencil, Rows, Columns, RotateCcw, Award, ExternalLink } from 'lucide-react';
 import * as verifApi from '../../services/verifApi';
 import type { VerifCase, VerifStatsResp } from '../../services/verifApi';
 
@@ -45,7 +45,7 @@ const FieldEditor: React.FC<{ value: string; onChange: (v: string) => void }> = 
     <div className="flex flex-wrap items-center gap-y-1 p-2 bg-slate-50 border border-slate-200 rounded text-sm leading-relaxed">
       {tokens.length === 0 ? (
         <span className="text-slate-300 italic cursor-text" onClick={() => setFullEdit(true)}>
-          порожньо — натисніть олівець
+          (порожньо)
         </span>
       ) : (
         tokens.map((t, i) =>
@@ -150,7 +150,18 @@ const VirtualKeyboard: React.FC = () => {
   );
 };
 
-export const VerificationWorkspace: React.FC = () => {
+// Будує посилання на повний PDF опису: база (конфігуровна) + назва файлу + #page=N.
+// Якщо source_pdf уже повний URL — лишаємо як є. Скрол до сторінки через #page=
+// (працює у вбудованих PDF-переглядачах Chrome/Firefox/Edge).
+function buildOpysUrl(base: string, sourcePdf: string, page: string): string {
+  if (!sourcePdf) return '';
+  const root = base || 'https://cdiak.archives.gov.ua/files/';
+  const url = /^https?:\/\//i.test(sourcePdf) ? sourcePdf : `${root}${sourcePdf}`;
+  const p = parseInt(String(page || '').match(/\d+/)?.[0] || '', 10);
+  return Number.isFinite(p) && p > 0 ? `${url}#page=${p}` : url;
+}
+
+export const VerificationWorkspace: React.FC<{ opysBaseUrl?: string }> = ({ opysBaseUrl }) => {
   const [orientation, setOrientation] = useState<Orientation>(() =>
     (localStorage.getItem(ORIENT_KEY) as Orientation) === 'vertical' ? 'vertical' : 'horizontal'
   );
@@ -302,6 +313,16 @@ export const VerificationWorkspace: React.FC = () => {
                   </span>
                 )}
               </div>
+              {cse.sourcePdf && (
+                <a
+                  href={buildOpysUrl(opysBaseUrl || '', cse.sourcePdf, cse.page)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline mt-0.5"
+                >
+                  <ExternalLink size={12} /> Відкрити повний опис{cse.page ? ` (стор. ${cse.page})` : ''}
+                </a>
+              )}
             </>
           ) : (
             <div className="text-lg font-bold text-slate-600">Перевірка справ</div>

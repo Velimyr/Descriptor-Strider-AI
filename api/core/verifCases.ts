@@ -49,6 +49,8 @@ export interface VerifNext {
   fund: string;
   opys: string;
   sprava: string;
+  sourcePdf: string;
+  page: string;
   questions: VerifQuestion[];
   answers: string[]; // current_answers (= ai_answers, поки ніхто не правив)
   aiAnswers: string[];
@@ -70,6 +72,8 @@ interface VerifCaseRow {
   fund: string;
   opys: string;
   sprava: string;
+  sourcePdf: string;
+  page: string;
   questions: VerifQuestion[];
   currentAnswers: string[];
   aiAnswers: string[];
@@ -102,6 +106,8 @@ function mapCaseRow(r: any): VerifCaseRow {
     fund: r.fund || '',
     opys: r.opys || '',
     sprava: r.sprava || '',
+    sourcePdf: r.source_pdf || '',
+    page: r.page || '',
     questions: asQuestions(r.questions),
     currentAnswers: asStringArray(r.current_answers),
     aiAnswers: asStringArray(r.ai_answers),
@@ -178,6 +184,8 @@ export async function getNextForVerifier(verifierId: string): Promise<VerifNext 
         fund: c.fund,
         opys: c.opys,
         sprava: c.sprava,
+        sourcePdf: c.sourcePdf,
+        page: c.page,
         questions: c.questions,
         answers: c.currentAnswers.length ? c.currentAnswers : c.aiAnswers,
         aiAnswers: c.aiAnswers,

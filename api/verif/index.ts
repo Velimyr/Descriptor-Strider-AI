@@ -39,6 +39,7 @@ import {
   TelegramLoginData,
 } from '../core/verifAuth.js';
 import { createLoginCode, getLoginCode } from '../core/verifLogin.js';
+import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 const TG_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || 'descriptorstriderbot';
 
@@ -99,6 +100,8 @@ router.get('/config', (_req, res) => {
   res.json({
     tg_bot_username: process.env.TELEGRAM_BOT_USERNAME || 'descriptorstriderbot',
     dev_login: process.env.VERIF_DEV_LOGIN === '1',
+    // База для посилання на повний опис (PDF) — налаштовується в config.ts.
+    opys_base_url: telegramBotConfig.verif.opysBaseUrl,
   });
 });
 

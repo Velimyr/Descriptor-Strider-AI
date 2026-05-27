@@ -18,6 +18,7 @@ export interface VerifProfile extends VerifUser {
 export interface VerifConfig {
   tg_bot_username: string;
   dev_login: boolean;
+  opys_base_url: string;
 }
 
 export function getToken(): string {
@@ -113,6 +114,8 @@ export interface VerifCase {
   fund: string;
   opys: string;
   sprava: string;
+  sourcePdf: string;
+  page: string;
   questions: VerifQuestion[];
   answers: string[];
   aiAnswers: string[];

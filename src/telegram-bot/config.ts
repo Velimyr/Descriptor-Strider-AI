@@ -33,6 +33,10 @@ export interface TelegramBotConfig {
     dailyGoal: number;           // денний план опрацьованих справ (для повідомлення подяки)
   };
 
+  verif: {
+    opysBaseUrl: string;         // база URL для посилання на повний PDF опису (веб-перевірка)
+  };
+
   points: {
     base: number;
     tier1: { thresholdInclusive: number; multiplier: number };
@@ -139,6 +143,11 @@ export const telegramBotConfig: TelegramBotConfig = {
     targetSubmissions: 3,
     allowExtraAfterTarget: true,
     dailyGoal: 1000,
+  },
+
+  verif: {
+    // База для посилання на повний опис (PDF) у веб-перевірці. Змінюй тут.
+    opysBaseUrl: 'https://cdiak.archives.gov.ua/files/',
   },
 
   points: {
