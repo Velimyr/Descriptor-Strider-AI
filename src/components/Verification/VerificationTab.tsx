@@ -407,7 +407,6 @@ const CabinetModal: React.FC<{
 const ProfileSettings: React.FC = () => {
   const [loaded, setLoaded] = useState(false);
   const [city, setCity] = useState('');
-  const [region, setRegion] = useState('');
   const [facebook, setFacebook] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -420,7 +419,6 @@ const ProfileSettings: React.FC = () => {
       .then(p => {
         if (!alive) return;
         setCity(p.city || '');
-        setRegion(p.region || '');
         setFacebook(p.facebookUrl || '');
         setLoaded(true);
       })
@@ -435,7 +433,7 @@ const ProfileSettings: React.FC = () => {
     try {
       await verifApi.saveProfile({
         city: city.trim(),
-        region: region.trim(),
+        region: '',
         facebookUrl: facebook.trim(),
       });
       setOkMsg('Збережено ✓');
@@ -452,19 +450,11 @@ const ProfileSettings: React.FC = () => {
   return (
     <div className="space-y-3">
       <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Профіль</div>
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label className="block text-xs text-slate-500 mb-1">Місто</label>
-          <input value={city} onChange={e => setCity(e.target.value)} maxLength={60}
-            placeholder="Київ"
-            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
-        </div>
-        <div>
-          <label className="block text-xs text-slate-500 mb-1">Область</label>
-          <input value={region} onChange={e => setRegion(e.target.value)} maxLength={60}
-            placeholder="Київська"
-            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
-        </div>
+      <div>
+        <label className="block text-xs text-slate-500 mb-1">Місто / село</label>
+        <input value={city} onChange={e => setCity(e.target.value)} maxLength={60}
+          placeholder="Львів"
+          className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
       </div>
       <div>
         <label className="block text-xs text-slate-500 mb-1">Facebook (приватно, лише для адміна)</label>

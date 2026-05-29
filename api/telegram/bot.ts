@@ -140,9 +140,9 @@ function helpMenuKeyboard(): any {
 }
 
 function settingsMenuKeyboard(): any {
+  // Імʼя перенесено всередину Профілю — лишаємо лише одну точку входу.
   return {
     inline_keyboard: [
-      [{ text: T.settingsRenameButton, callback_data: 'settings:rename' }],
       [{ text: T.settingsProfileButton, callback_data: 'settings:profile' }],
     ],
   };
@@ -159,6 +159,7 @@ function settingsRenameCancelKeyboard(): any {
 function profileMenuKeyboard(): any {
   return {
     inline_keyboard: [
+      [{ text: T.profileEditNameButton, callback_data: 'profile:edit_name' }],
       [{ text: T.profileEditCityButton, callback_data: 'profile:edit_city' }],
       [{ text: T.profileEditPhotoButton, callback_data: 'profile:edit_photo' }],
       [{ text: T.profileEditFacebookButton, callback_data: 'profile:edit_facebook' }],
@@ -168,12 +169,14 @@ function profileMenuKeyboard(): any {
   };
 }
 
-function profileEditCancelKeyboard(): any {
-  return {
-    inline_keyboard: [
-      [{ text: T.profileEditCancelButton, callback_data: 'profile:cancel' }],
-    ],
-  };
+// Клавіатура під edit-промптом: «Скасувати» + «Видалити» (якщо значення є).
+function profileEditCancelKeyboard(field?: 'name' | 'city' | 'facebook' | 'photo' | 'contact', hasValue = false): any {
+  const rows: any[] = [];
+  if (field && hasValue) {
+    rows.push([{ text: T.profileDeleteButton, callback_data: `profile:clear_${field}` }]);
+  }
+  rows.push([{ text: T.profileEditCancelButton, callback_data: 'profile:cancel' }]);
+  return { inline_keyboard: rows };
 }
 
 // Reply-keyboard з кнопкою «Поділитися контактом» (request_contact).
@@ -814,24 +817,40 @@ async function handleCallback(cb: any) {
       await sendMessage(chatId, 'Надішліть /start');
       return;
     }
+    if (action === 'edit_name') {
+      // Імʼя — обовʼязкове, кнопки «Видалити» немає.
+      await Promise.all([
+        patchUser(tgId, { pendingAction: 'rename' }),
+        sendMessage(chatId, T.settingsRenamePrompt, {
+          reply_markup: profileEditCancelKeyboard(),
+        }),
+      ]);
+      return;
+    }
     if (action === 'edit_city') {
       await Promise.all([
         patchUser(tgId, { pendingAction: 'edit_city' }),
-        sendMessage(chatId, T.profileCityPrompt, { reply_markup: profileEditCancelKeyboard() }),
+        sendMessage(chatId, T.profileCityPrompt, {
+          reply_markup: profileEditCancelKeyboard('city', !!user.city),
+        }),
       ]);
       return;
     }
     if (action === 'edit_facebook') {
       await Promise.all([
         patchUser(tgId, { pendingAction: 'edit_facebook' }),
-        sendMessage(chatId, T.profileFacebookPrompt, { reply_markup: profileEditCancelKeyboard() }),
+        sendMessage(chatId, T.profileFacebookPrompt, {
+          reply_markup: profileEditCancelKeyboard('facebook', !!user.facebookUrl),
+        }),
       ]);
       return;
     }
     if (action === 'edit_photo') {
       await Promise.all([
         patchUser(tgId, { pendingAction: 'edit_photo' }),
-        sendMessage(chatId, T.profilePhotoPrompt, { reply_markup: profileEditCancelKeyboard() }),
+        sendMessage(chatId, T.profilePhotoPrompt, {
+          reply_markup: profileEditCancelKeyboard('photo', !!user.photoFileId),
+        }),
       ]);
       return;
     }
@@ -840,6 +859,12 @@ async function handleCallback(cb: any) {
       await sendMessage(chatId, T.profileContactPrompt, {
         reply_markup: profileContactReplyKeyboard(),
       });
+      // Додатково даємо інлайн-кнопку «Видалити», якщо вже збережено.
+      if (user.phoneNumber) {
+        await sendMessage(chatId, 'Або видалити вже збережений контакт:', {
+          reply_markup: { inline_keyboard: [[{ text: T.profileDeleteButton, callback_data: 'profile:clear_contact' }]] },
+        });
+      }
       return;
     }
     if (action === 'cancel') {
@@ -849,6 +874,11 @@ async function handleCallback(cb: any) {
           reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
         }),
       ]);
+      return;
+    }
+    if (action.startsWith('clear_')) {
+      const field = action.slice('clear_'.length);
+      await processProfileClear(chatId, user, field);
       return;
     }
     return;
@@ -1300,15 +1330,10 @@ async function processRenameInput(chatId: number, user: BotUser, rawText: string
 }
 
 // --------- Профіль ---------
-function formatCityRegion(user: BotUser): string {
-  const parts = [user.city, user.region].filter(s => s && s.trim());
-  return parts.length ? escapeHtml(parts.join(', ')) : T.profileFieldEmpty;
-}
-
 async function sendProfileMenu(chatId: number | string, user: BotUser) {
   const text = fmt(T.profileMenuHeader, {
     name: escapeHtml(user.displayName || '—'),
-    cityRegion: formatCityRegion(user),
+    city: user.city ? escapeHtml(user.city) : T.profileFieldEmpty,
     photoStatus: user.photoFileId ? T.profilePhotoSet : T.profilePhotoNone,
     facebook: user.facebookUrl ? T.profileFieldHidden : T.profileFieldEmpty,
     contact: user.phoneNumber ? T.profileFieldHidden : T.profileFieldEmpty,
@@ -1318,21 +1343,16 @@ async function sendProfileMenu(chatId: number | string, user: BotUser) {
 
 async function processProfileCityInput(chatId: number, user: BotUser, rawText: string) {
   const v = rawText.trim().slice(0, 80);
-  if (v === '—' || v === '-') {
-    await Promise.all([
-      patchUser(user.tgId, { city: '', region: '', pendingAction: '' }),
-      sendMessage(chatId, T.profileCityCleared, {
-        reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
-      }),
-    ]);
+  if (!v) {
+    await sendMessage(chatId, T.profileCityPrompt, {
+      reply_markup: profileEditCancelKeyboard('city', !!user.city),
+    });
     return;
   }
-  // Перший токен — місто, решта — область. Розділювач — кома або «/».
-  const parts = v.split(/[,/]/).map(s => s.trim()).filter(Boolean);
-  const city = parts[0] || '';
-  const region = parts.slice(1).join(' ').trim();
+  // Чистимо «область» — лишаємо тільки перший токен (на випадок, якщо ввели «Київ, Київська»).
+  const city = v.split(/[,/]/).map(s => s.trim()).filter(Boolean)[0] || '';
   await Promise.all([
-    patchUser(user.tgId, { city, region, pendingAction: '' }),
+    patchUser(user.tgId, { city, region: '', pendingAction: '' }),
     sendMessage(chatId, T.profileCitySaved, {
       reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
     }),
@@ -1341,13 +1361,10 @@ async function processProfileCityInput(chatId: number, user: BotUser, rawText: s
 
 async function processProfileFacebookInput(chatId: number, user: BotUser, rawText: string) {
   const v = rawText.trim();
-  if (v === '—' || v === '-') {
-    await Promise.all([
-      patchUser(user.tgId, { facebookUrl: '', pendingAction: '' }),
-      sendMessage(chatId, T.profileFacebookCleared, {
-        reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
-      }),
-    ]);
+  if (!v) {
+    await sendMessage(chatId, T.profileFacebookPrompt, {
+      reply_markup: profileEditCancelKeyboard('facebook', !!user.facebookUrl),
+    });
     return;
   }
   // Дозволяємо facebook.com, fb.com, m.facebook.com. Якщо без схеми — додамо https://.
@@ -1356,13 +1373,57 @@ async function processProfileFacebookInput(chatId: number, user: BotUser, rawTex
   const ok = /^https:\/\/(www\.|m\.)?(facebook|fb)\.com\/.+/i.test(url);
   if (!ok) {
     await sendMessage(chatId, T.profileFacebookInvalid, {
-      reply_markup: profileEditCancelKeyboard(),
+      reply_markup: profileEditCancelKeyboard('facebook', !!user.facebookUrl),
     });
     return;
   }
   await Promise.all([
     patchUser(user.tgId, { facebookUrl: url, pendingAction: '' }),
     sendMessage(chatId, T.profileFacebookSaved, {
+      reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+    }),
+  ]);
+}
+
+// Очищення поля по кліку «🗑 Видалити».
+async function processProfileClear(
+  chatId: number | string,
+  user: BotUser,
+  field: string
+): Promise<void> {
+  let patch: any = { pendingAction: '' };
+  let confirm = '';
+  let already = false;
+  if (field === 'city') {
+    if (!user.city && !user.region) already = true;
+    patch.city = '';
+    patch.region = '';
+    confirm = T.profileCityCleared;
+  } else if (field === 'facebook') {
+    if (!user.facebookUrl) already = true;
+    patch.facebookUrl = '';
+    confirm = T.profileFacebookCleared;
+  } else if (field === 'photo') {
+    if (!user.photoFileId) already = true;
+    patch.photoFileId = '';
+    patch.photoMessageId = '';
+    confirm = T.profilePhotoCleared;
+  } else if (field === 'contact') {
+    if (!user.phoneNumber) already = true;
+    patch.phoneNumber = '';
+    confirm = T.profileContactCleared;
+  } else {
+    return;
+  }
+  if (already) {
+    await sendMessage(chatId, T.profileNothingToDelete, {
+      reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+    });
+    return;
+  }
+  await Promise.all([
+    patchUser(user.tgId, patch),
+    sendMessage(chatId, confirm, {
       reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
     }),
   ]);
@@ -1386,7 +1447,7 @@ async function processProfilePhotoInput(chatId: number, user: BotUser, photoSize
         `👤 Профіль\n` +
         `tg_id: <code>${escapeHtml(user.tgId)}</code>\n` +
         `Імʼя: ${escapeHtml(user.displayName || '—')}\n` +
-        (user.city || user.region ? `Місто: ${escapeHtml([user.city, user.region].filter(Boolean).join(', '))}\n` : '') +
+        (user.city ? `Місто: ${escapeHtml(user.city)}\n` : '') +
         (user.tgUsername ? `Username: @${escapeHtml(user.tgUsername)}\n` : '');
       const res = await sendPhotoByFileId(channelId, fileId, caption);
       const arr = res?.photo || [];

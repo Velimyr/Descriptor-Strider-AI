@@ -427,7 +427,7 @@ export const telegramBotConfig: TelegramBotConfig = {
     profileMenuHeader:
       '<b>👤 Мій профіль</b>\n\n' +
       'Імʼя: <b>{name}</b>\n' +
-      'Місто/область: {cityRegion}\n' +
+      'Місто/село: {city}\n' +
       'Фото: {photoStatus}\n' +
       'Facebook: {facebook}\n' +
       'Контакт: {contact}\n\n' +
@@ -436,30 +436,32 @@ export const telegramBotConfig: TelegramBotConfig = {
     profileFieldHidden: '<i>збережено</i>',
     profilePhotoSet: '<i>є</i>',
     profilePhotoNone: '<i>немає</i>',
-    profileEditCityButton: '🏙 Місто/область',
+    profileEditNameButton: '✏ Імʼя',
+    profileEditCityButton: '🏙 Місто/село',
     profileEditFacebookButton: '📘 Facebook',
     profileEditPhotoButton: '📷 Фото',
-    profileEditContactButton: '📞 Поділитися контактом',
+    profileEditContactButton: '📞 Контакт',
+    profileDeleteButton: '🗑 Видалити',
     profileBackButton: '⬅ Назад у налаштування',
     profileCityPrompt:
-      'Вкажіть місто й область у форматі: <b>Київ, Київська</b>. Або просто місто — «Львів». Щоб видалити — надішліть «—».',
-    profileCitySaved: 'Готово! Місто й область оновлено.',
-    profileCityCleared: 'Готово! Місто й область очищено.',
-    profileFacebookPrompt:
-      'Надішліть посилання на ваш Facebook (https://facebook.com/…). Щоб видалити — «—».',
-    profileFacebookInvalid: 'Це не схоже на посилання Facebook. Спробуйте ще раз або «—» щоб видалити.',
+      'Вкажіть ваше місто або село — наприклад, <b>Львів</b> або <b>Бучач</b>.',
+    profileCitySaved: 'Готово! Місто/село оновлено.',
+    profileCityCleared: 'Готово! Місто/село видалено.',
+    profileFacebookPrompt: 'Надішліть посилання на ваш Facebook (https://facebook.com/…).',
+    profileFacebookInvalid: 'Це не схоже на посилання Facebook. Спробуйте ще раз.',
     profileFacebookSaved: 'Готово! Facebook збережено (лише для адміністратора).',
     profileFacebookCleared: 'Готово! Facebook видалено.',
     profilePhotoPrompt:
-      'Надішліть ОДНЕ фото — воно буде вашим аватаром у рейтингу. Щоб видалити поточне — надішліть «—».',
-    profilePhotoNotPhoto: 'Очікую саме фото (не файл, не відео). Надішліть ще раз або «—» щоб видалити.',
-    profilePhotoSaved: 'Готово! Аватар оновлено. ✨',
-    profilePhotoCleared: 'Готово! Аватар видалено.',
+      'Надішліть ОДНЕ фото. Воно стане вашим аватаром, якщо ви потрапите у «🏅 Працівники місяця».',
+    profilePhotoNotPhoto: 'Очікую саме фото (не файл, не відео). Надішліть ще раз.',
+    profilePhotoSaved: 'Готово! Фото збережено. ✨',
+    profilePhotoCleared: 'Готово! Фото видалено.',
     profileContactPrompt:
-      'Натисніть кнопку нижче «Поділитися контактом», щоб адмін міг звʼязатися з вами за потреби. Або надішліть «—» щоб видалити збережений контакт.',
+      'Натисніть кнопку нижче «Поділитися контактом», щоб адмін міг звʼязатися з вами за потреби.',
     profileContactButton: '📞 Поділитися контактом',
     profileContactSaved: 'Готово! Контакт збережено (лише для адміністратора).',
     profileContactCleared: 'Готово! Контакт видалено.',
+    profileNothingToDelete: 'Поле вже порожнє.',
     profileEditCancelButton: '❌ Скасувати',
     profileEditCancelled: 'Скасовано.',
 

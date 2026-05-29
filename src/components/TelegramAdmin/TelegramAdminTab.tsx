@@ -3576,17 +3576,15 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
                 </div>
               </div>
 
-              <Field label="Місто / область" value={[p.city, p.region].filter(Boolean).join(', ') || '—'} />
+              <Field label="Місто / село" value={p.city || '—'} />
 
               <div className="pt-3 border-t">
                 <div className="text-xs font-semibold uppercase text-slate-400 mb-2">Приватне (лише адмін)</div>
                 <Field
                   label="Telegram"
-                  value={
-                    p.tgUsername
-                      ? <a href={p.tgLink} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">@{p.tgUsername}</a>
-                      : <a href={p.tgLink} className="text-indigo-600 hover:underline">tg://user?id={p.tgId}</a>
-                  }
+                  value={p.tgUsername
+                    ? <a href={`https://t.me/${p.tgUsername}`} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">@{p.tgUsername}</a>
+                    : <span className="text-slate-400">— (username не відомий)</span>}
                 />
                 <Field
                   label="Телефон"
