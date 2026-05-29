@@ -33,6 +33,7 @@ import {
   setCaseCreated,
   setCaseEdited,
   confirmCase,
+  captureTgUsername,
 } from './storage.js';
 import {
   answerCallbackQuery,
@@ -142,6 +143,7 @@ function settingsMenuKeyboard(): any {
   return {
     inline_keyboard: [
       [{ text: T.settingsRenameButton, callback_data: 'settings:rename' }],
+      [{ text: T.settingsProfileButton, callback_data: 'settings:profile' }],
     ],
   };
 }
@@ -151,6 +153,38 @@ function settingsRenameCancelKeyboard(): any {
     inline_keyboard: [
       [{ text: T.cancelButton, callback_data: 'settings:rename_cancel' }],
     ],
+  };
+}
+
+function profileMenuKeyboard(): any {
+  return {
+    inline_keyboard: [
+      [{ text: T.profileEditCityButton, callback_data: 'profile:edit_city' }],
+      [{ text: T.profileEditPhotoButton, callback_data: 'profile:edit_photo' }],
+      [{ text: T.profileEditFacebookButton, callback_data: 'profile:edit_facebook' }],
+      [{ text: T.profileEditContactButton, callback_data: 'profile:edit_contact' }],
+      [{ text: T.profileBackButton, callback_data: 'settings:back' }],
+    ],
+  };
+}
+
+function profileEditCancelKeyboard(): any {
+  return {
+    inline_keyboard: [
+      [{ text: T.profileEditCancelButton, callback_data: 'profile:cancel' }],
+    ],
+  };
+}
+
+// Reply-keyboard з кнопкою «Поділитися контактом» (request_contact).
+function profileContactReplyKeyboard(): any {
+  return {
+    keyboard: [
+      [{ text: T.profileContactButton, request_contact: true }],
+      [{ text: T.cancelButton }],
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: true,
   };
 }
 
@@ -362,8 +396,24 @@ async function handleMessage(msg: any) {
   const rawText: string = msg.text || '';
   const text = normalizeCommand(rawText);
 
+  // Лагідно фіксуємо @username — буде корисний адміну, щоб написати юзеру в особисті.
+  // Fire-and-forget.
+  captureTgUsername(tgId, msg.from?.username).catch(() => {});
+
   // Читаємо user і session паралельно — все одно потрібні для більшості шляхів.
   const [user, session] = await Promise.all([getUser(tgId), getSession(tgId)]);
+
+  // --- Профіль: нетекстові повідомлення (фото / контакт) у режимі редагування. ---
+  if (user) {
+    if (user.pendingAction === 'edit_photo' && msg.photo) {
+      await processProfilePhotoInput(chatId, user, msg.photo);
+      return;
+    }
+    if (user.pendingAction === 'edit_contact' && msg.contact) {
+      await processProfileContactInput(chatId, user, msg.contact);
+      return;
+    }
+  }
 
   if (text.startsWith('/start')) {
     // /start link_XXXX — дип-лінк лінкінгу web-юзера до цього TG-юзера.
@@ -391,6 +441,13 @@ async function handleMessage(msg: any) {
         badgesSeededAt: nowIsoUtc(),
         source: 'tg',
         partnerId: null,
+        city: '',
+        region: '',
+        tgUsername: '',
+        phoneNumber: '',
+        facebookUrl: '',
+        photoFileId: '',
+        photoMessageId: '',
       };
       await upsertUser(newUser);
       currentUser = { ...newUser, rowIndex: 0 } as BotUser;
@@ -595,6 +652,28 @@ async function handleMessage(msg: any) {
   }
   if (text === '/settings') return void (await cmdSettings(chatId, user));
 
+  // Профіль: «Скасувати» з reply-клавіатури (contact-промпт).
+  if (user.pendingAction === 'edit_contact' && rawText.trim() === T.cancelButton) {
+    await Promise.all([
+      patchUser(tgId, { pendingAction: '' }),
+      sendMessage(chatId, T.profileEditCancelled, {
+        reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+      }),
+    ]);
+    return;
+  }
+
+  // Профіль: текстові поля (місто/Facebook). Скидаємо режим якщо юзер тицьнув кнопку меню.
+  if (user.pendingAction === 'edit_city' || user.pendingAction === 'edit_facebook') {
+    if (!text.startsWith('/')) {
+      if (user.pendingAction === 'edit_city') await processProfileCityInput(chatId, user, rawText);
+      else await processProfileFacebookInput(chatId, user, rawText);
+      return;
+    }
+    await patchUser(tgId, { pendingAction: '' });
+    user.pendingAction = '';
+  }
+
   // Користувач у режимі введення нового імені — будь-який звичайний текст є відповіддю.
   // Якщо натиснув іншу кнопку меню (нормалізується в команду) — мовчки скидаємо режим
   // і даємо команді виконатись.
@@ -710,6 +789,63 @@ async function handleCallback(cb: any) {
       await Promise.all([
         patchUser(tgId, { pendingAction: '' }),
         sendMessage(chatId, T.settingsRenameCancelled, {
+          reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+        }),
+      ]);
+      return;
+    }
+    if (action === 'profile') {
+      await sendProfileMenu(chatId, user);
+      return;
+    }
+    if (action === 'back') {
+      await cmdSettings(chatId, user);
+      return;
+    }
+    return;
+  }
+
+  // ---- Профіль: callback-кнопки редагування ----
+  if (data.startsWith('profile:')) {
+    await answerCallbackQuery(cb.id);
+    const action = data.slice('profile:'.length);
+    const user = await getUser(tgId);
+    if (!user) {
+      await sendMessage(chatId, 'Надішліть /start');
+      return;
+    }
+    if (action === 'edit_city') {
+      await Promise.all([
+        patchUser(tgId, { pendingAction: 'edit_city' }),
+        sendMessage(chatId, T.profileCityPrompt, { reply_markup: profileEditCancelKeyboard() }),
+      ]);
+      return;
+    }
+    if (action === 'edit_facebook') {
+      await Promise.all([
+        patchUser(tgId, { pendingAction: 'edit_facebook' }),
+        sendMessage(chatId, T.profileFacebookPrompt, { reply_markup: profileEditCancelKeyboard() }),
+      ]);
+      return;
+    }
+    if (action === 'edit_photo') {
+      await Promise.all([
+        patchUser(tgId, { pendingAction: 'edit_photo' }),
+        sendMessage(chatId, T.profilePhotoPrompt, { reply_markup: profileEditCancelKeyboard() }),
+      ]);
+      return;
+    }
+    if (action === 'edit_contact') {
+      await patchUser(tgId, { pendingAction: 'edit_contact' });
+      await sendMessage(chatId, T.profileContactPrompt, {
+        reply_markup: profileContactReplyKeyboard(),
+      });
+      return;
+    }
+    if (action === 'cancel') {
+      await Promise.all([
+        patchUser(tgId, { pendingAction: '' }),
+        sendMessage(chatId, T.profileEditCancelled, {
           reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
         }),
       ]);
@@ -1159,6 +1295,141 @@ async function processRenameInput(chatId: number, user: BotUser, rawText: string
     upsertUser(updated, user.rowIndex),
     sendMessage(chatId, fmt(T.settingsRenameSaved, { name: escapeHtml(name) }), {
       reply_markup: mainMenuKeyboard(updated),
+    }),
+  ]);
+}
+
+// --------- Профіль ---------
+function formatCityRegion(user: BotUser): string {
+  const parts = [user.city, user.region].filter(s => s && s.trim());
+  return parts.length ? escapeHtml(parts.join(', ')) : T.profileFieldEmpty;
+}
+
+async function sendProfileMenu(chatId: number | string, user: BotUser) {
+  const text = fmt(T.profileMenuHeader, {
+    name: escapeHtml(user.displayName || '—'),
+    cityRegion: formatCityRegion(user),
+    photoStatus: user.photoFileId ? T.profilePhotoSet : T.profilePhotoNone,
+    facebook: user.facebookUrl ? T.profileFieldHidden : T.profileFieldEmpty,
+    contact: user.phoneNumber ? T.profileFieldHidden : T.profileFieldEmpty,
+  });
+  await sendMessage(chatId, text, { reply_markup: profileMenuKeyboard() });
+}
+
+async function processProfileCityInput(chatId: number, user: BotUser, rawText: string) {
+  const v = rawText.trim().slice(0, 80);
+  if (v === '—' || v === '-') {
+    await Promise.all([
+      patchUser(user.tgId, { city: '', region: '', pendingAction: '' }),
+      sendMessage(chatId, T.profileCityCleared, {
+        reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+      }),
+    ]);
+    return;
+  }
+  // Перший токен — місто, решта — область. Розділювач — кома або «/».
+  const parts = v.split(/[,/]/).map(s => s.trim()).filter(Boolean);
+  const city = parts[0] || '';
+  const region = parts.slice(1).join(' ').trim();
+  await Promise.all([
+    patchUser(user.tgId, { city, region, pendingAction: '' }),
+    sendMessage(chatId, T.profileCitySaved, {
+      reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+    }),
+  ]);
+}
+
+async function processProfileFacebookInput(chatId: number, user: BotUser, rawText: string) {
+  const v = rawText.trim();
+  if (v === '—' || v === '-') {
+    await Promise.all([
+      patchUser(user.tgId, { facebookUrl: '', pendingAction: '' }),
+      sendMessage(chatId, T.profileFacebookCleared, {
+        reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+      }),
+    ]);
+    return;
+  }
+  // Дозволяємо facebook.com, fb.com, m.facebook.com. Якщо без схеми — додамо https://.
+  let url = v.slice(0, 256);
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  const ok = /^https:\/\/(www\.|m\.)?(facebook|fb)\.com\/.+/i.test(url);
+  if (!ok) {
+    await sendMessage(chatId, T.profileFacebookInvalid, {
+      reply_markup: profileEditCancelKeyboard(),
+    });
+    return;
+  }
+  await Promise.all([
+    patchUser(user.tgId, { facebookUrl: url, pendingAction: '' }),
+    sendMessage(chatId, T.profileFacebookSaved, {
+      reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+    }),
+  ]);
+}
+
+async function processProfilePhotoInput(chatId: number, user: BotUser, photoSizes: any[]) {
+  // Беремо найбільшу розмірність — остання у масиві.
+  const biggest = photoSizes[photoSizes.length - 1];
+  const fileId: string = biggest?.file_id || '';
+  if (!fileId) {
+    await sendMessage(chatId, T.profilePhotoNotPhoto, { reply_markup: profileEditCancelKeyboard() });
+    return;
+  }
+  // Повторно вантажимо у приватний канал, щоб мати власне message_id (адмін зможе перейти).
+  // Підпис — короткі публічні дані юзера.
+  const channelId = process.env[telegramBotConfig.tg.channelIdEnv];
+  let photoMessageId = '';
+  if (channelId) {
+    try {
+      const caption =
+        `👤 Профіль\n` +
+        `tg_id: <code>${escapeHtml(user.tgId)}</code>\n` +
+        `Імʼя: ${escapeHtml(user.displayName || '—')}\n` +
+        (user.city || user.region ? `Місто: ${escapeHtml([user.city, user.region].filter(Boolean).join(', '))}\n` : '') +
+        (user.tgUsername ? `Username: @${escapeHtml(user.tgUsername)}\n` : '');
+      const res = await sendPhotoByFileId(channelId, fileId, caption);
+      const arr = res?.photo || [];
+      const newFid = arr.length ? arr[arr.length - 1].file_id : fileId;
+      photoMessageId = String(res?.message_id || '');
+      await patchUser(user.tgId, {
+        photoFileId: newFid,
+        photoMessageId,
+        pendingAction: '',
+      });
+    } catch (e) {
+      console.error('profile photo channel upload failed', e);
+      // Fallback — збережемо хоча б отриманий file_id, щоб юзер міг показати аватар.
+      await patchUser(user.tgId, { photoFileId: fileId, pendingAction: '' });
+    }
+  } else {
+    await patchUser(user.tgId, { photoFileId: fileId, pendingAction: '' });
+  }
+  await sendMessage(chatId, T.profilePhotoSaved, {
+    reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
+  });
+}
+
+async function processProfileContactInput(chatId: number, user: BotUser, contact: any) {
+  // Для безпеки приймаємо лише власний контакт юзера. Якщо поділилися чужим — ігноруємо.
+  const sharedUserId = contact?.user_id ? String(contact.user_id) : '';
+  if (sharedUserId && sharedUserId !== user.tgId) {
+    await sendMessage(chatId, 'Поділіться, будь ласка, своїм контактом, а не чужим.', {
+      reply_markup: profileContactReplyKeyboard(),
+    });
+    return;
+  }
+  const phone = String(contact?.phone_number || '').trim();
+  if (!phone) {
+    await sendMessage(chatId, T.profileContactPrompt, {
+      reply_markup: profileContactReplyKeyboard(),
+    });
+    return;
+  }
+  await Promise.all([
+    patchUser(user.tgId, { phoneNumber: phone, pendingAction: '' }),
+    sendMessage(chatId, T.profileContactSaved, {
+      reply_markup: mainMenuKeyboard({ ...user, pendingAction: '' }),
     }),
   ]);
 }

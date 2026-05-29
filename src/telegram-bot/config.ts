@@ -422,6 +422,47 @@ export const telegramBotConfig: TelegramBotConfig = {
     settingsRenameSaved: 'Готово! Тепер у рейтингу ви — <b>{name}</b>.',
     settingsRenameCancelled: 'Зміну імені скасовано.',
 
+    // --- Профіль користувача ---
+    settingsProfileButton: '👤 Мій профіль',
+    profileMenuHeader:
+      '<b>👤 Мій профіль</b>\n\n' +
+      'Імʼя: <b>{name}</b>\n' +
+      'Місто/область: {cityRegion}\n' +
+      'Фото: {photoStatus}\n' +
+      'Facebook: {facebook}\n' +
+      'Контакт: {contact}\n\n' +
+      'Імʼя, місто й фото — публічні. Facebook і контакт — лише для адміністратора (щоб написати вам особисто за потреби).',
+    profileFieldEmpty: '<i>не вказано</i>',
+    profileFieldHidden: '<i>збережено</i>',
+    profilePhotoSet: '<i>є</i>',
+    profilePhotoNone: '<i>немає</i>',
+    profileEditCityButton: '🏙 Місто/область',
+    profileEditFacebookButton: '📘 Facebook',
+    profileEditPhotoButton: '📷 Фото',
+    profileEditContactButton: '📞 Поділитися контактом',
+    profileBackButton: '⬅ Назад у налаштування',
+    profileCityPrompt:
+      'Вкажіть місто й область у форматі: <b>Київ, Київська</b>. Або просто місто — «Львів». Щоб видалити — надішліть «—».',
+    profileCitySaved: 'Готово! Місто й область оновлено.',
+    profileCityCleared: 'Готово! Місто й область очищено.',
+    profileFacebookPrompt:
+      'Надішліть посилання на ваш Facebook (https://facebook.com/…). Щоб видалити — «—».',
+    profileFacebookInvalid: 'Це не схоже на посилання Facebook. Спробуйте ще раз або «—» щоб видалити.',
+    profileFacebookSaved: 'Готово! Facebook збережено (лише для адміністратора).',
+    profileFacebookCleared: 'Готово! Facebook видалено.',
+    profilePhotoPrompt:
+      'Надішліть ОДНЕ фото — воно буде вашим аватаром у рейтингу. Щоб видалити поточне — надішліть «—».',
+    profilePhotoNotPhoto: 'Очікую саме фото (не файл, не відео). Надішліть ще раз або «—» щоб видалити.',
+    profilePhotoSaved: 'Готово! Аватар оновлено. ✨',
+    profilePhotoCleared: 'Готово! Аватар видалено.',
+    profileContactPrompt:
+      'Натисніть кнопку нижче «Поділитися контактом», щоб адмін міг звʼязатися з вами за потреби. Або надішліть «—» щоб видалити збережений контакт.',
+    profileContactButton: '📞 Поділитися контактом',
+    profileContactSaved: 'Готово! Контакт збережено (лише для адміністратора).',
+    profileContactCleared: 'Готово! Контакт видалено.',
+    profileEditCancelButton: '❌ Скасувати',
+    profileEditCancelled: 'Скасовано.',
+
     // Швидкий фідбек
     savingNotice: '💾 Зберігаю...',
     processingNotice: '⏳ Обробляю...',

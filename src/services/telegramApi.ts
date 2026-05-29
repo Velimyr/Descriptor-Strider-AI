@@ -224,6 +224,28 @@ export const tgApi = {
     }>,
   listPuzzles: () =>
     call('/admin/puzzles') as Promise<{ puzzles: Array<{ date: string; sentence: string }> }>,
+  // --- Профіль користувача ---
+  userProfile: (tgId: string) =>
+    call(`/admin/user-profile/${encodeURIComponent(tgId)}`) as Promise<{
+      tgId: string;
+      displayName: string;
+      totalPoints: number;
+      status: string;
+      source: 'tg' | 'web';
+      partnerId: string | null;
+      createdAt: string;
+      city: string;
+      region: string;
+      photoFileId: string;
+      hasPhoto: boolean;
+      tgUsername: string;
+      tgLink: string;
+      phoneNumber: string;
+      facebookUrl: string;
+      photoMessageId: string;
+    }>,
+  userPhotoUrl: (tgId: string) =>
+    `/api/telegram/admin/user-photo/${encodeURIComponent(tgId)}?secret=${encodeURIComponent(getAdminSecret())}`,
   bulkPuzzles: (phrases: string[], startDate?: string, dryRun = false) =>
     call('/admin/puzzle/bulk', {
       method: 'POST',

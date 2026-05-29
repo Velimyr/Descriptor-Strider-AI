@@ -953,6 +953,68 @@ router.post('/admin/integrity/reopen', async (req, res) => {
   }
 });
 
+// ----- Профіль юзера: повна інформація (вкл. приватні поля), для адмін-UI -----
+router.get('/admin/user-profile/:tgId', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { getUser } = await import('./storage.js');
+    const u = await getUser(req.params.tgId);
+    if (!u) return res.status(404).json({ error: 'not found' });
+    const tgLink = u.tgUsername
+      ? `https://t.me/${u.tgUsername}`
+      : `tg://user?id=${u.tgId}`;
+    res.json({
+      tgId: u.tgId,
+      displayName: u.displayName,
+      totalPoints: u.totalPoints,
+      status: u.status,
+      source: u.source,
+      partnerId: u.partnerId,
+      createdAt: u.createdAt,
+      // публічні
+      city: u.city,
+      region: u.region,
+      photoFileId: u.photoFileId,
+      hasPhoto: !!u.photoFileId,
+      // приватні
+      tgUsername: u.tgUsername,
+      tgLink,
+      phoneNumber: u.phoneNumber,
+      facebookUrl: u.facebookUrl,
+      photoMessageId: u.photoMessageId,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Проксі аватара юзера. Авторизація — той самий cron-secret (як решта /admin/*).
+router.get('/admin/user-photo/:tgId', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { getUser } = await import('./storage.js');
+    const u = await getUser(req.params.tgId);
+    if (!u || !u.photoFileId) return res.status(404).send('no photo');
+    const { tg } = await import('./tg-api.js');
+    const info = await tg('getFile', { file_id: u.photoFileId });
+    const filePath = info?.file_path;
+    if (!filePath) return res.status(410).send('telegram file expired');
+    const botToken = process.env[telegramBotConfig.tg.botTokenEnv];
+    if (!botToken) return res.status(500).send('bot token missing');
+    const axios = (await import('axios')).default;
+    const upstream = await axios.get(
+      `https://api.telegram.org/file/bot${botToken}/${filePath}`,
+      { responseType: 'arraybuffer', timeout: 15000 }
+    );
+    res.setHeader('Content-Type', upstream.headers['content-type'] || 'image/jpeg');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(Buffer.from(upstream.data));
+  } catch (e: any) {
+    console.error('user-photo failed', e?.message || e);
+    res.status(502).send('download error');
+  }
+});
+
 router.get('/admin/overview', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const [users, cases] = await Promise.all([getAllUsers(), getAllCases()]);

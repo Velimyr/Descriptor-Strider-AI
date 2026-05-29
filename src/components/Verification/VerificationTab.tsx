@@ -392,7 +392,97 @@ const CabinetModal: React.FC<{
           )}
         </div>
 
+        <div className="pt-2 border-t border-slate-100">
+          <ProfileSettings />
+        </div>
+
         {err && <div className="text-sm text-red-600">{err}</div>}
+      </div>
+    </div>
+  );
+};
+
+// Профіль користувача: місто/область (публічно) + Facebook (приватно, для адміна).
+// Фото / TG-контакт через бота — недоступні з веб (за домовленістю).
+const ProfileSettings: React.FC = () => {
+  const [loaded, setLoaded] = useState(false);
+  const [city, setCity] = useState('');
+  const [region, setRegion] = useState('');
+  const [facebook, setFacebook] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [okMsg, setOkMsg] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    verifApi
+      .getProfile()
+      .then(p => {
+        if (!alive) return;
+        setCity(p.city || '');
+        setRegion(p.region || '');
+        setFacebook(p.facebookUrl || '');
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+    return () => { alive = false; };
+  }, []);
+
+  const save = async () => {
+    setBusy(true);
+    setErr('');
+    setOkMsg('');
+    try {
+      await verifApi.saveProfile({
+        city: city.trim(),
+        region: region.trim(),
+        facebookUrl: facebook.trim(),
+      });
+      setOkMsg('Збережено ✓');
+      setTimeout(() => setOkMsg(''), 2000);
+    } catch (e: any) {
+      setErr(e?.code === 'invalid_facebook_url' ? 'Невалідне посилання Facebook' : (e?.message || 'Помилка'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!loaded) return <div className="text-xs text-slate-400">Завантаження профілю…</div>;
+
+  return (
+    <div className="space-y-3">
+      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Профіль</div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">Місто</label>
+          <input value={city} onChange={e => setCity(e.target.value)} maxLength={60}
+            placeholder="Київ"
+            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+        </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">Область</label>
+          <input value={region} onChange={e => setRegion(e.target.value)} maxLength={60}
+            placeholder="Київська"
+            className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+        </div>
+      </div>
+      <div>
+        <label className="block text-xs text-slate-500 mb-1">Facebook (приватно, лише для адміна)</label>
+        <input value={facebook} onChange={e => setFacebook(e.target.value)} maxLength={256}
+          placeholder="https://facebook.com/yourname"
+          className="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 outline-none" />
+      </div>
+      <div className="flex items-center gap-2">
+        <button onClick={save} disabled={busy}
+          className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white text-sm rounded-lg flex items-center gap-1">
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+          Зберегти
+        </button>
+        {okMsg && <span className="text-xs text-emerald-600">{okMsg}</span>}
+        {err && <span className="text-xs text-red-600">{err}</span>}
+      </div>
+      <div className="text-[11px] text-slate-400">
+        Фото й Telegram-контакт — лише через бота Telegram (у налаштуваннях бота).
       </div>
     </div>
   );

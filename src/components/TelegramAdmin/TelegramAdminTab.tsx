@@ -3235,6 +3235,8 @@ const OverviewView: React.FC = () => {
   const [monthly, setMonthly] = useState<Array<{ tgId: string; points: number; displayName: string }>>([]);
   const [monthlyBusy, setMonthlyBusy] = useState(false);
   const [monthlyPage, setMonthlyPage] = useState(1);
+  // Профіль користувача — модалка по кліку на рядок.
+  const [profileTgId, setProfileTgId] = useState<string | null>(null);
 
   const refresh = async () => {
     setBusy(true);
@@ -3445,7 +3447,12 @@ const OverviewView: React.FC = () => {
                 </thead>
                 <tbody>
                   {usersPageRows.map((u: any, i: number) => (
-                    <tr key={u.tgId} className="border-b">
+                    <tr
+                      key={u.tgId}
+                      className="border-b cursor-pointer hover:bg-slate-50"
+                      onClick={() => setProfileTgId(u.tgId)}
+                      title="Натисніть, щоб відкрити профіль"
+                    >
                       <td className="p-2">{(usersPageSafe - 1) * USERS_PAGE_SIZE + i + 1}</td>
                       <td className="p-2">{u.displayName || '—'}</td>
                       <td className="p-2 font-mono text-xs">{u.tgId}</td>
@@ -3482,7 +3489,12 @@ const OverviewView: React.FC = () => {
                     <tr><td colSpan={4} className="p-3 text-center text-slate-500">Немає даних за цей місяць</td></tr>
                   )}
                   {monthlyPageRows.map((u, i) => (
-                    <tr key={u.tgId} className="border-b">
+                    <tr
+                      key={u.tgId}
+                      className="border-b cursor-pointer hover:bg-slate-50"
+                      onClick={() => setProfileTgId(u.tgId)}
+                      title="Натисніть, щоб відкрити профіль"
+                    >
                       <td className="p-2">{(monthlyPageSafe - 1) * USERS_PAGE_SIZE + i + 1}</td>
                       <td className="p-2">{u.displayName || '—'}</td>
                       <td className="p-2 font-mono text-xs">{u.tgId}</td>
@@ -3504,9 +3516,106 @@ const OverviewView: React.FC = () => {
           )}
         </section>
       )}
+      {profileTgId && (
+        <UserProfileModal tgId={profileTgId} onClose={() => setProfileTgId(null)} />
+      )}
     </div>
   );
 };
+
+// Модалка з повним профілем юзера (вкл. приватні поля).
+const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgId, onClose }) => {
+  const [p, setP] = useState<Awaited<ReturnType<typeof tgApi.userProfile>> | null>(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setBusy(true);
+    setErr('');
+    tgApi
+      .userProfile(tgId)
+      .then(r => { if (!cancelled) setP(r); })
+      .catch(e => { if (!cancelled) setErr(e.message); })
+      .finally(() => { if (!cancelled) setBusy(false); });
+    return () => { cancelled = true; };
+  }, [tgId]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b">
+          <h3 className="font-semibold text-slate-800">Профіль користувача</h3>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded text-slate-500">✕</button>
+        </div>
+        <div className="p-4 space-y-3 text-sm">
+          {busy && <div className="text-slate-500">Завантаження…</div>}
+          {err && <div className="text-red-600">⚠ {err}</div>}
+          {p && (
+            <>
+              <div className="flex items-start gap-4">
+                {p.hasPhoto ? (
+                  <img
+                    src={tgApi.userPhotoUrl(p.tgId)}
+                    alt={p.displayName}
+                    className="w-24 h-24 rounded-lg object-cover border bg-slate-100"
+                  />
+                ) : (
+                  <div className="w-24 h-24 rounded-lg border bg-slate-100 flex items-center justify-center text-3xl text-slate-400">👤</div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-slate-800 text-base">{p.displayName || '—'}</div>
+                  <div className="text-xs text-slate-500 font-mono mt-0.5">tg_id: {p.tgId}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">Балів: {p.totalPoints} · {p.status}</div>
+                  {p.source === 'web' && <div className="text-xs text-amber-600 mt-0.5">web-юзер{p.partnerId ? ` (partner: ${p.partnerId})` : ''}</div>}
+                </div>
+              </div>
+
+              <Field label="Місто / область" value={[p.city, p.region].filter(Boolean).join(', ') || '—'} />
+
+              <div className="pt-3 border-t">
+                <div className="text-xs font-semibold uppercase text-slate-400 mb-2">Приватне (лише адмін)</div>
+                <Field
+                  label="Telegram"
+                  value={
+                    p.tgUsername
+                      ? <a href={p.tgLink} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">@{p.tgUsername}</a>
+                      : <a href={p.tgLink} className="text-indigo-600 hover:underline">tg://user?id={p.tgId}</a>
+                  }
+                />
+                <Field
+                  label="Телефон"
+                  value={p.phoneNumber
+                    ? <a href={`tel:${p.phoneNumber}`} className="text-indigo-600 hover:underline">{p.phoneNumber}</a>
+                    : '—'}
+                />
+                <Field
+                  label="Facebook"
+                  value={p.facebookUrl
+                    ? <a href={p.facebookUrl} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline break-all">{p.facebookUrl}</a>
+                    : '—'}
+                />
+              </div>
+              <div className="text-xs text-slate-400 pt-2 border-t">Створено: {p.createdAt ? new Date(p.createdAt).toLocaleString('uk-UA') : '—'}</div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Field: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
+  <div className="grid grid-cols-[120px_1fr] gap-2">
+    <div className="text-slate-500">{label}:</div>
+    <div className="text-slate-800">{value}</div>
+  </div>
+);
 
 // ==================== CHART ====================
 

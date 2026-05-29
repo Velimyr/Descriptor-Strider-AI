@@ -168,6 +168,28 @@ export async function releaseCase(caseId: string): Promise<void> {
   await call(`/case/${encodeURIComponent(caseId)}/release`, { method: 'POST', body: '{}' });
 }
 
+export interface VerifProfileSettings {
+  nickname: string;
+  city: string;
+  region: string;
+  facebookUrl: string;
+  hasPhoto: boolean;
+  tgUsername: string;
+  phoneNumber: string;
+}
+
+export async function getProfile(): Promise<VerifProfileSettings> {
+  return call<VerifProfileSettings>('/me/profile');
+}
+
+export async function saveProfile(patch: {
+  city?: string;
+  region?: string;
+  facebookUrl?: string;
+}): Promise<void> {
+  await call('/me/profile', { method: 'POST', body: JSON.stringify(patch) });
+}
+
 export async function rename(displayName: string): Promise<string> {
   const r = await call<{ ok: boolean; nickname: string }>('/me/rename', {
     method: 'POST',

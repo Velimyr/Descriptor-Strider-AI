@@ -59,7 +59,7 @@ export interface BotUser {
   lastDispatchedAt: string;
   consecutiveMisses: number;
   status: 'active' | 'paused';
-  pendingAction: '' | 'rename';
+  pendingAction: '' | 'rename' | 'edit_city' | 'edit_facebook' | 'edit_photo' | 'edit_contact';
   createdAt: string;
   introShownAt: string; // ISO або '' якщо ще не показували
   // Час "засіву" бейджів. '' (NULL у БД) = ще не засівали: на першій перевірці
@@ -69,6 +69,14 @@ export interface BotUser {
   // Колонки додані міграцією schema-widget-*.sql.
   source: 'tg' | 'web';
   partnerId: string | null;
+  // Профіль (всі опціональні). public: city/region/photoFileId; private: tgUsername/phoneNumber/facebookUrl.
+  city: string;
+  region: string;
+  tgUsername: string;     // @handle без @; автозбирається з updates
+  phoneNumber: string;    // з share-contact кнопки
+  facebookUrl: string;
+  photoFileId: string;    // TG file_id найбільшої фото
+  photoMessageId: string; // id повідомлення у приватному каналі профілів
 }
 
 export interface BotCase {
@@ -119,12 +127,19 @@ function mapUser(r: any): BotUser {
     lastDispatchedAt: r.last_dispatched_at || '',
     consecutiveMisses: r.consecutive_misses || 0,
     status: (r.status || 'active') as 'active' | 'paused',
-    pendingAction: (r.pending_action || '') as '' | 'rename',
+    pendingAction: (r.pending_action || '') as BotUser['pendingAction'],
     createdAt: r.created_at || '',
     introShownAt: r.intro_shown_at || '',
     badgesSeededAt: r.badges_seeded_at || '',
     source: (r.source || 'tg') as 'tg' | 'web',
     partnerId: r.partner_id || null,
+    city: r.city || '',
+    region: r.region || '',
+    tgUsername: r.tg_username || '',
+    phoneNumber: r.phone_number || '',
+    facebookUrl: r.facebook_url || '',
+    photoFileId: r.photo_file_id || '',
+    photoMessageId: r.photo_message_id || '',
   };
 }
 
@@ -300,9 +315,32 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.pendingAction !== undefined) dbPatch.pending_action = patch.pendingAction;
   if (patch.introShownAt !== undefined) dbPatch.intro_shown_at = patch.introShownAt || null;
   if (patch.badgesSeededAt !== undefined) dbPatch.badges_seeded_at = patch.badgesSeededAt || null;
+  if (patch.city !== undefined) dbPatch.city = patch.city || null;
+  if (patch.region !== undefined) dbPatch.region = patch.region || null;
+  if (patch.tgUsername !== undefined) dbPatch.tg_username = patch.tgUsername || null;
+  if (patch.phoneNumber !== undefined) dbPatch.phone_number = patch.phoneNumber || null;
+  if (patch.facebookUrl !== undefined) dbPatch.facebook_url = patch.facebookUrl || null;
+  if (patch.photoFileId !== undefined) dbPatch.photo_file_id = patch.photoFileId || null;
+  if (patch.photoMessageId !== undefined) dbPatch.photo_message_id = patch.photoMessageId || null;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;
+}
+
+// Лагідне оновлення tg_username — викликається при кожному update від юзера.
+// Не пише, якщо значення збігається; без помилки, якщо рядок ще не створений.
+export async function captureTgUsername(tgId: string, username: string | undefined | null) {
+  const clean = (username || '').trim().replace(/^@/, '');
+  if (!clean) return;
+  try {
+    const { error } = await db()
+      .from(T.users)
+      .update({ tg_username: clean })
+      .eq('tg_id', tgId);
+    if (error) console.warn('captureTgUsername failed', error.message);
+  } catch (e: any) {
+    console.warn('captureTgUsername threw', e?.message || e);
+  }
 }
 
 // ---------- CASES ----------

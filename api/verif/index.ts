@@ -79,6 +79,13 @@ async function ensureTelegramUser(tgId: string, name: string): Promise<void> {
     badgesSeededAt: new Date().toISOString(),
     source: 'tg',
     partnerId: null,
+    city: '',
+    region: '',
+    tgUsername: '',
+    phoneNumber: '',
+    facebookUrl: '',
+    photoFileId: '',
+    photoMessageId: '',
   });
 }
 
@@ -278,6 +285,52 @@ router.get('/me', requireSession, async (req, res) => {
     });
   } catch (e: any) {
     console.error('verif/me failed', e?.message || e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Профіль: повертаємо ПУБЛІЧНІ + приватні поля для свого юзера.
+router.get('/me/profile', requireSession, async (req, res) => {
+  try {
+    const u = req.sessionUser!;
+    res.json({
+      nickname: u.displayName,
+      city: u.city,
+      region: u.region,
+      facebookUrl: u.facebookUrl,
+      hasPhoto: !!u.photoFileId,
+      // web-юзери не мають TG-кнопок, але показуємо що збережено
+      tgUsername: u.tgUsername,
+      phoneNumber: u.phoneNumber,
+    });
+  } catch (e: any) {
+    console.error('verif/me/profile GET failed', e?.message || e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Оновлення публічних/приватних текстових полів профілю.
+// Фото на веб-стороні поки не приймаємо — лишається TG-only (як домовились).
+router.post('/me/profile', requireSession, async (req, res) => {
+  try {
+    const u = req.sessionUser!;
+    const body = req.body || {};
+    const patch: any = {};
+    if (body.city !== undefined) patch.city = String(body.city || '').slice(0, 80);
+    if (body.region !== undefined) patch.region = String(body.region || '').slice(0, 80);
+    if (body.facebookUrl !== undefined) {
+      let v = String(body.facebookUrl || '').trim().slice(0, 256);
+      if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v;
+      if (v && !/^https:\/\/(www\.|m\.)?(facebook|fb)\.com\/.+/i.test(v)) {
+        return res.status(400).json({ error: 'invalid_facebook_url' });
+      }
+      patch.facebookUrl = v;
+    }
+    if (Object.keys(patch).length === 0) return res.json({ ok: true, noop: true });
+    await patchUser(u.tgId, patch);
+    res.json({ ok: true });
+  } catch (e: any) {
+    console.error('verif/me/profile POST failed', e?.message || e);
     res.status(500).json({ error: 'internal' });
   }
 });
