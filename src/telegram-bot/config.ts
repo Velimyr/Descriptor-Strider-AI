@@ -40,7 +40,7 @@ export interface TelegramBotConfig {
   // Групи Telegram, у які Блукач шле ранкові/вечірні/підсумкові оголошення.
   // ID супергруп — від'ємні з префіксом -100. Можна додавати/прибирати без редеплою БД.
   groupChats: {
-    announceChatIds: string[-1001355627446];
+    announceChatIds: string[];
   };
 
   points: {
@@ -174,7 +174,7 @@ export const telegramBotConfig: TelegramBotConfig = {
   groupChats: {
     // Сюди клади ID груп Telegram, у які бот має слати оголошення.
     // Для супергруп — '-100…'. Бот має бути доданий у групу й мати право писати.
-    announceChatIds: [],
+    announceChatIds: ['-1001355627446'],
   },
 
   points: {
