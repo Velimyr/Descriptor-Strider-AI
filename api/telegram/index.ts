@@ -216,29 +216,32 @@ router.get('/cron/cleanup', async (req, res) => {
 });
 
 // ----------- Cron: групові оголошення (10:00 / 21:00 Київ) -----------
-// Зовнішній планувальник має смикати ці ендпоінти в потрібні години.
-// Кожне повідомлення йде один раз за день (claim через bot_meta).
-router.get('/cron/morning', async (req, res) => {
+// Зовнішній планувальник (GH Actions, `15 * * * *`) смикає ОДИН ендпоінт щогодини.
+// Сервер сам перевіряє київську годину і вирішує, чи це час морнінгу/вечора.
+// Вікно — 2 години (10–11 і 21–22), щоб витримати випадки коли GH Actions
+// «гасить» окремі слоти. Дедуплікація — через bot_meta claim, тож зайвих
+// повідомлень не буде.
+router.get('/cron/group-tick', async (req, res) => {
   const expected = process.env[telegramBotConfig.cronSecretEnv];
   if (expected && req.query.secret !== expected) return res.status(403).send('forbidden');
-  try {
-    const { announceMorningTop } = await import('./groupAnnounce.js');
-    const result = await announceMorningTop();
-    res.json({ ok: true, ...result });
-  } catch (e: any) {
-    res.status(500).json({ error: e?.message || 'internal' });
-  }
-});
+  const tz = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
+  const hourStr = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz, hour: '2-digit', hour12: false,
+  }).format(new Date());
+  const kyivHour = parseInt(hourStr, 10);
 
-router.get('/cron/evening', async (req, res) => {
-  const expected = process.env[telegramBotConfig.cronSecretEnv];
-  if (expected && req.query.secret !== expected) return res.status(403).send('forbidden');
+  const actions: any[] = [];
   try {
-    const { announceEveningPuzzle } = await import('./groupAnnounce.js');
-    const result = await announceEveningPuzzle();
-    res.json({ ok: true, ...result });
+    const { announceMorningTop, announceEveningPuzzle } = await import('./groupAnnounce.js');
+    if (kyivHour === 10 || kyivHour === 11) {
+      actions.push({ kind: 'morning', ...(await announceMorningTop()) });
+    }
+    if (kyivHour === 21 || kyivHour === 22) {
+      actions.push({ kind: 'evening', ...(await announceEveningPuzzle()) });
+    }
+    res.json({ ok: true, kyivHour, actions });
   } catch (e: any) {
-    res.status(500).json({ error: e?.message || 'internal' });
+    res.status(500).json({ error: e?.message || 'internal', kyivHour, actions });
   }
 });
 
