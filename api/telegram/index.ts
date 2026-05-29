@@ -214,6 +214,33 @@ router.get('/cron/cleanup', async (req, res) => {
   res.json({ ok: true, cleaned });
 });
 
+// ----------- Cron: групові оголошення (10:00 / 21:00 Київ) -----------
+// Зовнішній планувальник має смикати ці ендпоінти в потрібні години.
+// Кожне повідомлення йде один раз за день (claim через bot_meta).
+router.get('/cron/morning', async (req, res) => {
+  const expected = process.env[telegramBotConfig.cronSecretEnv];
+  if (expected && req.query.secret !== expected) return res.status(403).send('forbidden');
+  try {
+    const { announceMorningTop } = await import('./groupAnnounce.js');
+    const result = await announceMorningTop();
+    res.json({ ok: true, ...result });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.get('/cron/evening', async (req, res) => {
+  const expected = process.env[telegramBotConfig.cronSecretEnv];
+  if (expected && req.query.secret !== expected) return res.status(403).send('forbidden');
+  try {
+    const { announceEveningPuzzle } = await import('./groupAnnounce.js');
+    const result = await announceEveningPuzzle();
+    res.json({ ok: true, ...result });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
 // ----------- Admin endpoints (захищені тим же CRON_SECRET; для веб-UI) -----------
 
 function requireAdminSecret(req: express.Request, res: express.Response): boolean {

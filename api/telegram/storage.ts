@@ -1395,6 +1395,139 @@ export async function getRecognizedCollabAnswers(limit = 2000): Promise<string[]
   return (data || []).map((r: any) => (Array.isArray(r.current_answers) ? r.current_answers.map(String) : []));
 }
 
+// Атомарний "захоп" права на одноразове оголошення. Робимо INSERT у bot_meta
+// з унікальним ключем; якщо рядок уже існує — повертаємо false (нічого не шлемо).
+// PK на key → конфлікт = "вже оголошено" (не помилка для нас).
+export async function tryClaimAnnouncement(key: string): Promise<boolean> {
+  const { error } = await db()
+    .from(T.meta)
+    .insert({ key, value: new Date().toISOString() });
+  if (!error) {
+    invalidateMetaCache(key);
+    return true;
+  }
+  // 23505 — unique_violation. Інші помилки прокидаємо.
+  if ((error as any).code === '23505') return false;
+  throw error;
+}
+
+// Кількість унікальних справ, які користувач "торкнувся" у дату (Київ).
+// Об'єднує TG-сабміти (parallel) + collab-події (create/edit/confirm) + веб-перевірки.
+// Дія = пара (tg_id, case_id) — кілька подій по одній справі від одного юзера = 1.
+export async function getYesterdayCaseLeaders(
+  timeZone: string,
+  limit: number = 3
+): Promise<Array<{ tgId: string; displayName: string; casesCount: number }>> {
+  const now = new Date();
+  const todayStr = new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(now);
+  const tzParts = new Intl.DateTimeFormat('en-US', {
+    timeZone, timeZoneName: 'longOffset',
+  }).formatToParts(now);
+  const tzName = tzParts.find(p => p.type === 'timeZoneName')?.value || 'GMT+00:00';
+  const m = tzName.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+  const sign = m?.[1] === '-' ? -1 : 1;
+  const hh = parseInt(m?.[2] || '0', 10);
+  const mm = parseInt(m?.[3] || '0', 10);
+  const offsetMin = sign * (hh * 60 + mm);
+  const todayMidnightUtcMs = Date.parse(`${todayStr}T00:00:00.000Z`) - offsetMin * 60_000;
+  const startUtc = new Date(todayMidnightUtcMs - 86_400_000).toISOString();
+  const endUtc = new Date(todayMidnightUtcMs).toISOString();
+
+  // tg_id → set of case_id
+  const pairs = new Map<string, Set<string>>();
+  const add = (tgId: string, caseId: string) => {
+    if (!tgId || !caseId) return;
+    let s = pairs.get(tgId);
+    if (!s) pairs.set(tgId, (s = new Set()));
+    s.add(caseId);
+  };
+
+  const pageSize = 1000;
+  // 1) parallel TG
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await db()
+      .from(T.submissions)
+      .select('tg_id, case_id')
+      .gte('submitted_at', startUtc)
+      .lt('submitted_at', endUtc)
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) add(String((r as any).tg_id || ''), String((r as any).case_id || ''));
+    if (rows.length < pageSize) break;
+  }
+  // 2) collab TG
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await db()
+      .from(T.caseConfirmations)
+      .select('tg_id, case_id')
+      .gte('at', startUtc)
+      .lt('at', endUtc)
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const r of rows) add(String((r as any).tg_id || ''), String((r as any).case_id || ''));
+    if (rows.length < pageSize) break;
+  }
+  // 3) web-перевірки (verifier_id). Тиха деградація, якщо схема ще не накатана.
+  try {
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await db()
+        .from(`${PREFIX}verif_confirmations`)
+        .select('verifier_id, case_id')
+        .gte('at', startUtc)
+        .lt('at', endUtc)
+        .range(from, from + pageSize - 1);
+      if (error) throw error;
+      const rows = data || [];
+      for (const r of rows) add(String((r as any).verifier_id || ''), String((r as any).case_id || ''));
+      if (rows.length < pageSize) break;
+    }
+  } catch (e: any) {
+    console.warn('getYesterdayCaseLeaders: verif_confirmations skipped:', e?.message || e);
+  }
+
+  const ranked = [...pairs.entries()]
+    .map(([tgId, set]) => ({ tgId, casesCount: set.size }))
+    .sort((a, b) => b.casesCount - a.casesCount)
+    .slice(0, limit);
+  const names = await getDisplayNamesMap(ranked.map(r => r.tgId));
+  return ranked.map(r => ({
+    tgId: r.tgId,
+    casesCount: r.casesCount,
+    displayName: names[r.tgId] || '',
+  }));
+}
+
+// Чи всі справи опису (archive|fund|opys) у статусі 'done' (і хоч одна існує).
+export async function isDescriptionFullyDone(
+  archive: string,
+  fund: string,
+  opys: string
+): Promise<{ done: boolean; totalCases: number; doneCases: number }> {
+  const { count: total, error: e1 } = await db()
+    .from(T.cases)
+    .select('case_id', { count: 'exact', head: true })
+    .eq('archive', archive)
+    .eq('fund', fund)
+    .eq('opys', opys);
+  if (e1) throw e1;
+  const totalCases = total || 0;
+  if (totalCases === 0) return { done: false, totalCases: 0, doneCases: 0 };
+  const { count: doneN, error: e2 } = await db()
+    .from(T.cases)
+    .select('case_id', { count: 'exact', head: true })
+    .eq('archive', archive)
+    .eq('fund', fund)
+    .eq('opys', opys)
+    .eq('status', 'done');
+  if (e2) throw e2;
+  const doneCases = doneN || 0;
+  return { done: doneCases >= totalCases, totalCases, doneCases };
+}
+
 // Прострочені блокування — на випадок ручної очистки (бот і так враховує locked_until).
 export async function clearExpiredLocks(): Promise<number> {
   const { data, error } = await db()
