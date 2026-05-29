@@ -44,6 +44,12 @@ export interface TelegramBotConfig {
     opysBaseUrl: string;         // база URL для посилання на повний PDF опису (веб-перевірка)
   };
 
+  // Групи Telegram, у які Блукач шле ранкові/вечірні/підсумкові оголошення.
+  // ID супергруп — від'ємні з префіксом -100. Можна додавати/прибирати без редеплою БД.
+  groupChats: {
+    announceChatIds: string[];
+  };
+
   points: {
     base: number;
     tier1: { thresholdInclusive: number; multiplier: number };
@@ -97,6 +103,21 @@ export interface TelegramBotConfig {
   tierMessages: {
     tier1: string[];
     tier2: string[];
+  };
+
+  // Шаблони для оголошень у групи (морнінг-топ, вечір-пазл, опис-завершено).
+  // Кожен масив — варіанти, з яких випадково обирається один на повідомлення.
+  // Підстановки: {date} {dateYesterday} {leaders} {place} {name} {count}
+  //              {winners} {sentence} {archive} {fund} {opys} {descName}
+  //              {totalCases} {totalDone} {donePct}
+  groupAnnounce: {
+    morningHeader: string[];
+    morningLine: string;        // один рядок ліст-айтема. {place} {name} {count}
+    morningEmpty: string[];     // якщо вчора ніхто нічого не робив
+    eveningWinners: string[];   // якщо хтось зібрав пазл (одне+ переможців)
+    eveningWinnerLine: string;  // {place} {name} {points}
+    eveningNobody: string[];    // фраза дня була, але ніхто не зібрав
+    descriptionDone: string[];  // опис закрито на 100%
   };
 
   // Каталог бейджів (досягнень). Можна доповнювати з часом — кожен бейдж
@@ -161,6 +182,12 @@ export const telegramBotConfig: TelegramBotConfig = {
   verif: {
     // База для посилання на повний опис (PDF) у веб-перевірці. Змінюй тут.
     opysBaseUrl: 'https://cdiak.archives.gov.ua/files/',
+  },
+
+  groupChats: {
+    // Сюди клади ID груп Telegram, у які бот має слати оголошення.
+    // Для супергруп — '-100…'. Бот має бути доданий у групу й мати право писати.
+    announceChatIds: ['-1001355627446'],
   },
 
   points: {
@@ -616,6 +643,36 @@ export const telegramBotConfig: TelegramBotConfig = {
       criteria: { type: 'corrected_words_total', threshold: 1000 },
     },
   ],
+
+  groupAnnounce: {
+    morningHeader: [
+      '☀ <b>Доброго ранку!</b>\nЦе Блукач. Поки ви спали, я підбив підсумки вчорашнього дня. Тримайтеся, зараз будуть герої:\n\n{leaders}',
+      '🌅 <b>Ранкове зведення від Блукача.</b>\nВчора ці люди буквально не давали архівам спокою:\n\n{leaders}',
+      '📜 <b>Гонг! Новий день в архівах.</b>\nА ось хто вчора розчиняв описи у дрібний пил:\n\n{leaders}',
+      '☕ <b>Ранкова кава — і трохи слави.</b>\nВчорашні чемпіони з розпізнавання та перевірки справ:\n\n{leaders}',
+    ],
+    morningLine: '{place}. <b>{name}</b> — {count} {casesWord}',
+    morningEmpty: [
+      '☀ <b>Доброго ранку!</b>\nВчора архіви скучали — ніхто не зайшов розпізнавати чи перевіряти. Сьогодні точно виправимо? 😉',
+      '🌅 Це Блукач. Учора в архівах було підозріло тихо: жодної опрацьованої справи. Може, сьогодні дамо їм роботу?',
+    ],
+    eveningWinners: [
+      '🌙 <b>Вечір. Описовий пазл закрито.</b>\nФраза дня: «<i>{sentence}</i>»\n\nВітаю тих, хто склав її першими:\n\n{winners}',
+      '🧩 <b>І ось вони — переможці Описового пазла!</b>\nФраза дня: «<i>{sentence}</i>»\n\n{winners}\n\nСлава тим, хто вміє читати між старих рядків. 🎉',
+      '🌆 <b>Сонце сідає, пазл зібрано.</b>\nФраза: «<i>{sentence}</i>»\n\n{winners}',
+    ],
+    eveningWinnerLine: '🏆 {place} місце — <b>{name}</b> (+{points} балів)',
+    eveningNobody: [
+      '🌙 <b>21:00. Описовий пазл ще ніким не зібрано.</b>\nФраза дня: «<i>{sentence}</i>»\n\nЛишається ще <b>три години</b>, щоб встигнути зібрати її й забрати призові бали. Уперед! 🧩',
+      '🧩 <b>Увага, лишилось три години!</b>\nФраза дня все ще чекає свого героя: «<i>{sentence}</i>»\n\nХто перший збере — отримає призові 1000/500/300 балів. Я в Вас вірю! 💪',
+      '⏳ Це Блукач. О 21:00 пазл ще відкритий: «<i>{sentence}</i>».\nДо опівночі — три години. Часу якраз, щоб зробити кілька справ і вихопити приз. 🚀',
+    ],
+    descriptionDone: [
+      '🎉 <b>Опис {descName} повністю опрацьовано!</b>\nВсі {totalCases} справ перевірено. Дякую кожному, хто доклав руку — без вас цей опис ще довго припадав би пилом. 📜✨',
+      '📚 <b>Готово!</b> Опис <b>{descName}</b> закрито на 100%: {totalDone} з {totalCases} справ. Низький уклін архівним героям! 🙇‍♂',
+      '🏁 <b>Фініш!</b> Опис {descName} офіційно опрацьовано від першого до останнього аркуша. Архіви тихо аплодують. 👏',
+    ],
+  },
 
   puzzle: {
     // Мають збігатися з сумами в SQL bot_award_puzzle_winner.

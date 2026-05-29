@@ -1406,12 +1406,20 @@ async function confirmAndSubmit(
     sourcePdf: cse.sourcePdf,
     page: cse.page,
   });
-  const [, , todayCount, todayDone] = await Promise.all([
+  const [, newCaseCount, todayCount, todayDone] = await Promise.all([
     deleteSession(tgId),
     recomputeCaseSubmissionCount(cse.caseId),
     incDailyCount(tgId, today),
     getTodayProcessedCases(),
   ]);
+  if (newCaseCount >= telegramBotConfig.cases.targetSubmissions) {
+    try {
+      const { maybeAnnounceDescriptionDone } = await import('./groupAnnounce.js');
+      await maybeAnnounceDescriptionDone(cse.archive, cse.fund, cse.opys);
+    } catch (e) {
+      console.error('maybeAnnounceDescriptionDone (tg-parallel) failed', e);
+    }
+  }
 
   const pts = computePointsForToday(todayCount);
   const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1) : { multiplier: 1 };
@@ -1533,6 +1541,14 @@ async function collabConfirm(
   // Описовий пазл: зараховуємо слова (для розпізнавача). Чи на кожне підтвердження,
   // чи лише на повне закриття — вирішує config.puzzle.confirmMode.
   await onCollabCaseConfirmed(caseId, closed);
+  if (closed) {
+    try {
+      const { maybeAnnounceDescriptionDone } = await import('./groupAnnounce.js');
+      await maybeAnnounceDescriptionDone(cse.archive, cse.fund, cse.opys);
+    } catch (e) {
+      console.error('maybeAnnounceDescriptionDone (tg-collab) failed', e);
+    }
+  }
 }
 
 // Спільна частина для collab create/edit/confirm: бали, повідомлення.

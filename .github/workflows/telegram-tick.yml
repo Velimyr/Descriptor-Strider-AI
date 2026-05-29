@@ -10,6 +10,11 @@ on:
     - cron: '0 7,10,13,16 * * *'
     # cleanup протермінованих сесій — раз на годину
     - cron: '15 * * * *'
+    # Ранкове вітання о 10:00 Київ. UTC+3 → 07:00; UTC+2 → 08:00. Шлемо обидва —
+    # сервер сам дедуплікує (bot_meta claim).
+    - cron: '5 7,8 * * *'
+    # Підсумок Описового пазла о 21:00 Київ. UTC+3 → 18:00; UTC+2 → 19:00.
+    - cron: '5 18,19 * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -58,4 +63,36 @@ jobs:
           [ -n "$BASE_URL" ] || { echo "::error::TELEGRAM_BASE_URL missing"; exit 1; }
           [ -n "$SECRET" ]   || { echo "::error::TELEGRAM_CRON_SECRET missing"; exit 1; }
           URL="${BASE_URL%/}/api/telegram/cron/cleanup?secret=$SECRET"
+          curl -fsS --max-time 60 "$URL"
+
+  morning:
+    if: github.event.schedule == '5 7,8 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger morning announce
+        env:
+          BASE_URL_RAW: ${{ secrets.TELEGRAM_BASE_URL }}
+          SECRET_RAW: ${{ secrets.TELEGRAM_CRON_SECRET }}
+        run: |
+          BASE_URL=$(printf '%s' "$BASE_URL_RAW" | tr -d '\r\n\t ' )
+          SECRET=$(printf '%s' "$SECRET_RAW" | tr -d '\r\n\t ' )
+          [ -n "$BASE_URL" ] || { echo "::error::TELEGRAM_BASE_URL missing"; exit 1; }
+          [ -n "$SECRET" ]   || { echo "::error::TELEGRAM_CRON_SECRET missing"; exit 1; }
+          URL="${BASE_URL%/}/api/telegram/cron/morning?secret=$SECRET"
+          curl -fsS --max-time 60 "$URL"
+
+  evening:
+    if: github.event.schedule == '5 18,19 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger evening puzzle announce
+        env:
+          BASE_URL_RAW: ${{ secrets.TELEGRAM_BASE_URL }}
+          SECRET_RAW: ${{ secrets.TELEGRAM_CRON_SECRET }}
+        run: |
+          BASE_URL=$(printf '%s' "$BASE_URL_RAW" | tr -d '\r\n\t ' )
+          SECRET=$(printf '%s' "$SECRET_RAW" | tr -d '\r\n\t ' )
+          [ -n "$BASE_URL" ] || { echo "::error::TELEGRAM_BASE_URL missing"; exit 1; }
+          [ -n "$SECRET" ]   || { echo "::error::TELEGRAM_CRON_SECRET missing"; exit 1; }
+          URL="${BASE_URL%/}/api/telegram/cron/evening?secret=$SECRET"
           curl -fsS --max-time 60 "$URL"

@@ -122,10 +122,19 @@ async function submitParallel(user: BotUser, cse: BotCase, answers: string[]): P
     page: cse.page,
     partnerId: user.partnerId, // денормалізована атрибуція до партнера
   });
-  const [, todayCount] = await Promise.all([
+  const [newCaseCount, todayCount] = await Promise.all([
     recomputeCaseSubmissionCount(cse.caseId),
     incDailyCount(user.tgId, today),
   ]);
+  // Якщо саме цим сабмітом справу закрили — перевіримо, чи закрився ВЕСЬ опис.
+  if (newCaseCount >= telegramBotConfig.cases.targetSubmissions) {
+    try {
+      const { maybeAnnounceDescriptionDone } = await import('../telegram/groupAnnounce.js');
+      await maybeAnnounceDescriptionDone(cse.archive, cse.fund, cse.opys);
+    } catch (e) {
+      console.error('maybeAnnounceDescriptionDone (parallel) failed', e);
+    }
+  }
   const pts = computePointsForToday(todayCount);
   const newTotal = await applyUserPoints(user, pts.pointsEarned);
   return {
@@ -167,6 +176,14 @@ async function submitCollabConfirm(user: BotUser, cse: BotCase): Promise<SubmitR
   {
     const { onCollabCaseConfirmed } = await import('../telegram/puzzle.js');
     await onCollabCaseConfirmed(cse.caseId, closed);
+  }
+  if (closed) {
+    try {
+      const { maybeAnnounceDescriptionDone } = await import('../telegram/groupAnnounce.js');
+      await maybeAnnounceDescriptionDone(cse.archive, cse.fund, cse.opys);
+    } catch (e) {
+      console.error('maybeAnnounceDescriptionDone (collab) failed', e);
+    }
   }
   return deliverCollabPoints(user, closed, 1, 'collab-confirm');
 }
