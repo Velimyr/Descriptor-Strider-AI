@@ -1,8 +1,9 @@
 // «Працівники місяця» — плаваюча кнопка справа знизу + popup-podium з топ-3 минулого місяця.
 // Авто-відкриття 1-7 числа нового місяця (один раз; флаг у localStorage).
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Trophy } from 'lucide-react';
+import { X, Trophy, Download, Loader2 } from 'lucide-react';
+import { toPng } from 'html-to-image';
 
 interface Winner {
   place: 1 | 2 | 3;
@@ -163,13 +164,10 @@ const FloatingButton: React.FC<{ onClick: () => void }> = ({ onClick }) => (
     transition={{ type: 'spring', stiffness: 200, damping: 18, delay: 0.3 }}
     whileHover={{ scale: 1.08 }}
     whileTap={{ scale: 0.95 }}
-    className="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full shadow-xl bg-white border-2 border-amber-400 flex items-center justify-center overflow-hidden hover:shadow-2xl"
-    style={{ boxShadow: '0 10px 30px -10px rgba(245, 158, 11, 0.45)' }}
+    className="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full shadow-xl bg-gradient-to-br from-amber-400 to-amber-500 text-white flex items-center justify-center hover:shadow-2xl"
+    style={{ boxShadow: '0 10px 30px -10px rgba(245, 158, 11, 0.55)' }}
   >
-    <img src="/logo.png" alt="" className="w-9 h-9 object-contain" />
-    <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-amber-400 text-white text-[10px] font-bold flex items-center justify-center">
-      <Trophy size={11} />
-    </span>
+    <Trophy size={26} strokeWidth={2.2} />
   </motion.button>
 );
 
@@ -186,6 +184,33 @@ const PodiumModal: React.FC<{
     for (const w of winners) m.set(w.place, w);
     return m;
   }, [winners]);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState('');
+
+  const saveImage = async () => {
+    if (!cardRef.current) return;
+    setSaving(true);
+    setSaveErr('');
+    try {
+      const dataUrl = await toPng(cardRef.current, {
+        cacheBust: true,
+        pixelRatio: 2, // 2x для чіткості
+        backgroundColor: '#fffbeb', // amber-50 — бо контейнер має градієнт
+      });
+      const a = document.createElement('a');
+      const monthSlug = data?.month || 'hof';
+      a.download = `workers-of-the-month-${monthSlug}.png`;
+      a.href = dataUrl;
+      a.click();
+    } catch (e: any) {
+      setSaveErr(e?.message || 'Не вдалось зберегти');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const canSave = !busy && !err && winners.length > 0;
 
   return (
     <motion.div
@@ -201,15 +226,33 @@ const PodiumModal: React.FC<{
         exit={{ scale: 0.95, opacity: 0, y: 10 }}
         transition={{ type: 'spring', stiffness: 220, damping: 22 }}
         onClick={e => e.stopPropagation()}
-        className="relative bg-gradient-to-br from-amber-50 via-white to-orange-50 rounded-3xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-auto"
+        className="relative max-w-2xl w-full max-h-[90vh] overflow-auto"
       >
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 z-10 p-2 rounded-full bg-white/70 hover:bg-white text-slate-500 hover:text-slate-700 transition"
-        >
-          <X size={18} />
-        </button>
+        {/* Кнопки керування — поза «карткою-для-скріншоту», щоб не потрапляли в PNG. */}
+        <div className="absolute top-3 right-3 z-10 flex items-center gap-2">
+          {canSave && (
+            <button
+              onClick={saveImage}
+              disabled={saving}
+              title="Зберегти як картинку"
+              className="px-3 py-2 rounded-full bg-white/95 shadow-md hover:shadow-lg text-slate-700 hover:text-amber-700 transition flex items-center gap-1.5 text-sm font-medium disabled:opacity-60"
+            >
+              {saving ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+              <span className="hidden sm:inline">Зберегти</span>
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="p-2 rounded-full bg-white/95 hover:bg-white text-slate-500 hover:text-slate-700 transition shadow-md"
+          >
+            <X size={18} />
+          </button>
+        </div>
 
+        <div
+          ref={cardRef}
+          className="bg-gradient-to-br from-amber-50 via-white to-orange-50 rounded-3xl shadow-2xl overflow-hidden"
+        >
         <div className="px-6 sm:px-10 pt-8 pb-6">
           <div className="text-center mb-2">
             <div className="inline-flex items-center gap-2 px-4 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-bold uppercase tracking-wider">
@@ -245,6 +288,12 @@ const PodiumModal: React.FC<{
             <Podium first={byPlace.get(1)} second={byPlace.get(2)} third={byPlace.get(3)} />
           )}
         </div>
+        </div>
+        {saveErr && (
+          <div className="mt-2 px-4 py-2 bg-red-50 text-red-700 text-sm rounded-lg text-center">
+            ⚠ {saveErr}
+          </div>
+        )}
       </motion.div>
     </motion.div>
   );
