@@ -47,6 +47,7 @@ import { config } from './config';
 import { TelegramAdminTab } from './components/TelegramAdmin/TelegramAdminTab';
 import { CasesPreparationPage } from './components/CasesPreparation/CasesPreparationPage';
 import { VerificationTab } from './components/Verification/VerificationTab';
+import { HallOfFameWidget } from './components/HallOfFame/HallOfFameWidget';
 
 // PDF.js worker setup
 import * as pdfjs from 'pdfjs-dist';
@@ -1359,6 +1360,9 @@ export default function App() {
         />
       )}
       {showCasesPrep && <CasesPreparationPage onClose={closeCasesPrep} />}
+
+      {/* Плаваюча кнопка «Працівники місяця» — видна на всіх вкладках. */}
+      <HallOfFameWidget />
 
       {/* Top-level tabs */}
       <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 h-12 shrink-0">

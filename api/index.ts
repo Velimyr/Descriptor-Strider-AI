@@ -7,6 +7,7 @@ import path from "path";
 import telegramRouter from "./telegram/index.js";
 import publicRouter from "./public/index.js";
 import verifRouter from "./verif/index.js";
+import hofRouter from "./hof/index.js";
 
 dotenv.config({
   path: [
@@ -32,6 +33,9 @@ app.use('/api/public/v1', publicRouter);
 
 // Першосторонній API сайту перевірки справ. Сесія через Bearer-токен (без партнер-ключа).
 app.use('/api/verif', verifRouter);
+
+// Публічний Hall of Fame — переможці минулого місяця + проксі фото top-3.
+app.use('/api/hof', hofRouter);
 
 // Proxy for PDF files to avoid CORS
 app.get("/api/proxy-pdf", async (req, res) => {
