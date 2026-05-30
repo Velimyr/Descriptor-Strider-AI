@@ -2,7 +2,7 @@
 // Авто-відкриття 1-7 числа нового місяця (один раз; флаг у localStorage).
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Trophy, Download, Loader2 } from 'lucide-react';
+import { X, Trophy, Download, Loader2, Sparkles, Star } from 'lucide-react';
 import { toPng } from 'html-to-image';
 
 interface Winner {
@@ -251,23 +251,39 @@ const PodiumModal: React.FC<{
 
         <div
           ref={cardRef}
-          className="bg-gradient-to-br from-amber-50 via-white to-orange-50 rounded-3xl shadow-2xl overflow-hidden"
+          className="relative bg-gradient-to-br from-amber-50 via-white to-orange-50 rounded-3xl shadow-2xl overflow-hidden"
         >
-        <div className="px-6 sm:px-10 pt-8 pb-6">
-          <div className="text-center mb-2">
-            <div className="inline-flex items-center gap-2 px-4 py-1 rounded-full bg-amber-100 text-amber-700 text-xs font-bold uppercase tracking-wider">
+          {/* Декоративні плями градієнтів на фоні */}
+          <div className="pointer-events-none absolute -top-20 -left-20 w-64 h-64 rounded-full bg-amber-200/30 blur-3xl" />
+          <div className="pointer-events-none absolute -top-10 -right-16 w-56 h-56 rounded-full bg-orange-200/30 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-20 left-1/3 w-72 h-72 rounded-full bg-yellow-200/30 blur-3xl" />
+          {/* Конфеті — крапки/зірочки в шапці */}
+          <ConfettiDecor />
+
+        <div className="relative px-6 sm:px-10 pt-8 pb-6">
+          <div className="flex flex-col items-center mb-3">
+            {/* Лого Блукача в кружальці з обідком */}
+            <div className="relative mb-3">
+              <div className="w-16 h-16 rounded-full bg-white shadow-lg ring-4 ring-amber-200 flex items-center justify-center overflow-hidden">
+                <img src="/logo.png" alt="Блукач" className="w-12 h-12 object-contain" />
+              </div>
+              {/* Маленькі іскри по краях лого */}
+              <Sparkles size={14} className="absolute -top-1 -right-1 text-amber-400 drop-shadow" />
+              <Sparkles size={12} className="absolute -bottom-1 -left-1 text-orange-400 drop-shadow" />
+            </div>
+            <div className="inline-flex items-center gap-2 px-4 py-1 rounded-full bg-gradient-to-r from-amber-400 to-orange-400 text-white text-xs font-bold uppercase tracking-wider shadow-md">
               <Trophy size={14} /> Працівники місяця
             </div>
           </div>
           <h2 className="text-center text-2xl sm:text-3xl font-extrabold text-slate-800">
             {data ? monthLabelUk(data.month) : '…'}
           </h2>
-          <p className="text-center text-slate-500 text-sm mt-1">
-            Дякуємо, що тримаєте архіви живими! 📜✨
+          <p className="text-center text-amber-700 text-sm sm:text-base mt-2 font-semibold">
+            Найкращі розпізнавачі архівних описів! 🎉
           </p>
         </div>
 
-        <div className="px-6 sm:px-10 pb-10">
+        <div className="relative px-6 sm:px-10 pb-10">
           {busy && <div className="text-center py-12 text-slate-400">Завантаження…</div>}
           {err && (
             <div className="text-center py-8">
@@ -402,6 +418,65 @@ const EmptySlot: React.FC<{ place: 1 | 2 | 3 }> = ({ place }) => {
     </div>
   );
 };
+
+// Декоративне «конфеті» у шапці: яскраві кружальця/зірочки/іскри.
+// Абсолютне позиціонування — не впливає на лейаут. Лагідні анімації через motion.
+const ConfettiDecor: React.FC = () => (
+  <div className="pointer-events-none absolute inset-x-0 top-0 h-44 overflow-hidden">
+    {/* Зірочки лівого боку */}
+    <motion.div
+      initial={{ opacity: 0, y: -10, rotate: -20 }}
+      animate={{ opacity: 1, y: 0, rotate: 0 }}
+      transition={{ delay: 0.2, duration: 0.6 }}
+      className="absolute top-3 left-6 text-amber-400"
+    >
+      <Star size={18} fill="currentColor" />
+    </motion.div>
+    <motion.div
+      initial={{ opacity: 0, y: -10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.35, duration: 0.6 }}
+      className="absolute top-12 left-3 text-orange-400"
+    >
+      <Sparkles size={16} />
+    </motion.div>
+    {/* Зірочки правого боку */}
+    <motion.div
+      initial={{ opacity: 0, y: -10, rotate: 20 }}
+      animate={{ opacity: 1, y: 0, rotate: 0 }}
+      transition={{ delay: 0.25, duration: 0.6 }}
+      className="absolute top-4 right-20 text-amber-400"
+    >
+      <Star size={14} fill="currentColor" />
+    </motion.div>
+    <motion.div
+      initial={{ opacity: 0, y: -10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.4, duration: 0.6 }}
+      className="absolute top-14 right-8 text-orange-400"
+    >
+      <Sparkles size={18} />
+    </motion.div>
+    {/* Кольорові крапки-конфеті */}
+    {[
+      { left: '15%', top: '8px',  color: 'bg-amber-400',  size: 'w-2 h-2', delay: 0.3 },
+      { left: '28%', top: '24px', color: 'bg-orange-400', size: 'w-1.5 h-1.5', delay: 0.4 },
+      { left: '42%', top: '6px',  color: 'bg-rose-400',   size: 'w-2 h-2', delay: 0.5 },
+      { left: '58%', top: '22px', color: 'bg-yellow-400', size: 'w-1.5 h-1.5', delay: 0.45 },
+      { left: '72%', top: '10px', color: 'bg-amber-500',  size: 'w-2 h-2', delay: 0.35 },
+      { left: '85%', top: '26px', color: 'bg-orange-300', size: 'w-1.5 h-1.5', delay: 0.5 },
+    ].map((c, i) => (
+      <motion.div
+        key={i}
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: c.delay, duration: 0.5 }}
+        className={`absolute rounded-full ${c.size} ${c.color}`}
+        style={{ left: c.left, top: c.top }}
+      />
+    ))}
+  </div>
+);
 
 const PodiumBar: React.FC<{ place: 1 | 2 | 3 }> = ({ place }) => {
   const s = PLACE_STYLE[place];
