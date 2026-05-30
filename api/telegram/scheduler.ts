@@ -142,13 +142,31 @@ export async function selectNextCaseForUser(
   ]);
   if (candidates.length === 0) return null;
 
+  // Порядок описів за віком (найстаріший — першим) потрібен і для пазл-пріоритету,
+  // і для основного сортування — будуємо один раз.
+  const targetParallel = cfg.cases.targetSubmissions;
+  const descOrder = buildDescriptionOrder(candidates);
+
   // Пріоритет «Описового пазла»: спершу віддаємо collab-справи НА ПІДТВЕРДЖЕННЯ
   // (вже є розпізнана версія), чий поточний заголовок містить слово фрази дня —
   // щоб такі справи закрились швидше й слова підтвердились того ж дня.
+  // ВАЖЛИВО: пазл-пріоритет НЕ переcкакує черги описів — обмежений найстарішим
+  // описом, у якому в юзера ще є кандидати. Інакше юзер тягнеться у свіжіший опис,
+  // поки старіший ще не закритий.
   const { words: puzzleWords, titleIdx } = await getTodayPuzzleContext();
-  if (puzzleWords.size > 0 && titleIdx >= 0) {
+  if (puzzleWords.size > 0 && titleIdx >= 0 && candidates.length > 0) {
+    // Знаходимо ключ найстаршого опису серед кандидатів юзера.
+    let oldestDescKey = '';
+    let oldestAge = '';
+    for (const [k, age] of descOrder) {
+      if (!oldestAge || age.localeCompare(oldestAge) < 0) {
+        oldestAge = age;
+        oldestDescKey = k;
+      }
+    }
     const matching = candidates.filter(
       c =>
+        descriptionKey(c) === oldestDescKey &&
         c.mode === 'collaborative' &&
         c.confirmationsCount > 0 &&
         titleHasAnyWord(c.currentAnswers[titleIdx] || '', puzzleWords)
@@ -162,9 +180,6 @@ export async function selectNextCaseForUser(
       return matching[0];
     }
   }
-
-  const targetParallel = cfg.cases.targetSubmissions;
-  const descOrder = buildDescriptionOrder(candidates);
   const progressOf = (c: BotCase): number =>
     c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
   const compare = (a: BotCase, b: BotCase) => {

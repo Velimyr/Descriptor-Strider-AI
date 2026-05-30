@@ -98,16 +98,17 @@ router.get('/cron/tick', async (req, res) => {
       const ttlMs = cfg.sessionTtlHours * 3600 * 1000;
       if (ageMs > ttlMs) {
         await deleteSession(u.tgId);
-        // Звільняємо collab-лок, якщо був.
+        // Звільняємо collab-лок і фіксуємо «пропущено», щоб ту саму справу не показати знову.
         if (session.caseId) {
           try {
-            const { unlockCase, getCase } = await import('./storage.js');
+            const { unlockCase, getCase, recordSkippedCase } = await import('./storage.js');
             const cse = await getCase(session.caseId);
             if (cse?.mode === 'collaborative' && cse.lockedByTgId === u.tgId) {
               await unlockCase(session.caseId);
             }
+            await recordSkippedCase(u.tgId, session.caseId);
           } catch (e) {
-            console.error('unlockCase on tick-expiry failed', session.caseId, e);
+            console.error('unlockCase/skip on tick-expiry failed', session.caseId, e);
           }
         }
         // Повідомляємо користувача про прострочену справу.
@@ -180,20 +181,21 @@ router.get('/cron/cleanup', async (req, res) => {
   const userById = new Map(allUsers.map(u => [u.tgId, u]));
   let cleaned = 0;
   const { sendMessage } = await import('./tg-api.js');
-  const { unlockCase, getCase } = await import('./storage.js');
+  const { unlockCase, getCase, recordSkippedCase } = await import('./storage.js');
   for (const s of sessions) {
     const age = Date.now() - new Date(s.updatedAt || s.startedAt).getTime();
     if (age > ttlMs) {
       await deleteSession(s.tgId);
-      // Якщо collab-справа була залочена за цим юзером — звільняємо.
+      // Звільняємо collab-лок + фіксуємо «пропущено», щоб ту саму справу не показати знову.
       if (s.caseId) {
         try {
           const cse = await getCase(s.caseId);
           if (cse?.mode === 'collaborative' && cse.lockedByTgId === s.tgId) {
             await unlockCase(s.caseId);
           }
+          await recordSkippedCase(s.tgId, s.caseId);
         } catch (e) {
-          console.error('unlockCase on expiry failed', s.caseId, e);
+          console.error('unlockCase/skip on expiry failed', s.caseId, e);
         }
       }
       cleaned++;
