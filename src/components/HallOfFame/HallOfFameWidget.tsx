@@ -44,7 +44,7 @@ function initialsOf(name: string): string {
   return parts.map(p => p[0]!.toUpperCase()).join('') || '?';
 }
 
-const photoUrl = (tgId: string) => `/api/hof/photo/${encodeURIComponent(tgId)}`;
+const photoUrl = (tgId: string) => `/api/telegram/hof/photo/${encodeURIComponent(tgId)}`;
 
 // Тестові режими через ?hof=open|demo[&hof_month=YYYY-MM].
 // Безпечні: на проді просто не використовуй; в коді жодних дозволів не змінюють.
@@ -85,7 +85,7 @@ export const HallOfFameWidget: React.FC = () => {
     setBusy(true);
     setErr('');
     try {
-      const url = flags.month ? `/api/hof?month=${flags.month}` : '/api/hof';
+      const url = flags.month ? `/api/telegram/hof?month=${flags.month}` : '/api/telegram/hof';
       const r = await fetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as HofResponse;
@@ -116,7 +116,7 @@ export const HallOfFameWidget: React.FC = () => {
     if (day < 1 || day > 7) return;
     (async () => {
       try {
-        const r = await fetch('/api/hof');
+        const r = await fetch('/api/telegram/hof');
         if (!r.ok) return;
         const j = (await r.json()) as HofResponse;
         setData(j);

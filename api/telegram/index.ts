@@ -215,6 +215,114 @@ router.get('/cron/cleanup', async (req, res) => {
   res.json({ ok: true, cleaned });
 });
 
+// ----------- Public Hall of Fame (без авторизації) -----------
+function kyivMonthForHof(d: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: telegramBotConfig.dispatch.timezone,
+    year: 'numeric', month: '2-digit',
+  }).formatToParts(d);
+  const y = parts.find(p => p.type === 'year')?.value ?? '';
+  const m = parts.find(p => p.type === 'month')?.value ?? '';
+  return `${y}-${m}`;
+}
+function previousMonthHof(month: string): string {
+  const [y, m] = month.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 2, 15));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+// In-memory кеш для photo-proxy guard (10 хв TTL).
+let hofTopCache: { tgIds: Set<string>; expires: number } | null = null;
+async function hofIsInRecentTop3(tgId: string): Promise<boolean> {
+  if (hofTopCache && hofTopCache.expires > Date.now()) return hofTopCache.tgIds.has(tgId);
+  const { db, T, getMonthlyLeaderboard } = await import('./storage.js');
+  const tgIds = new Set<string>();
+  try {
+    const months = new Set<string>();
+    const { data, error } = await db()
+      .from(T.monthlyPoints)
+      .select('month')
+      .order('month', { ascending: false })
+      .limit(50_000);
+    if (!error && data) for (const r of data) months.add(String((r as any).month));
+    for (const m of months) {
+      const lb = await getMonthlyLeaderboard(m);
+      for (const u of lb.slice(0, 3)) tgIds.add(u.tgId);
+    }
+  } catch (e) {
+    console.warn('hof top3 cache build failed', e);
+  }
+  hofTopCache = { tgIds, expires: Date.now() + 10 * 60_000 };
+  return tgIds.has(tgId);
+}
+
+router.get('/hof', async (req, res) => {
+  const monthQ = String(req.query.month || '').trim();
+  const month = /^\d{4}-\d{2}$/.test(monthQ) ? monthQ : previousMonthHof(kyivMonthForHof());
+  try {
+    const { db, T, getMonthlyLeaderboard, getDisplayNamesMap } = await import('./storage.js');
+    const lb = await getMonthlyLeaderboard(month);
+    const top = lb.slice(0, 3);
+    if (top.length === 0) return res.json({ month, winners: [] });
+    const { data, error } = await db()
+      .from(T.users)
+      .select('tg_id, display_name, city, photo_file_id')
+      .in('tg_id', top.map(t => t.tgId));
+    if (error) throw error;
+    const meta = new Map<string, any>();
+    for (const r of data || []) meta.set(String((r as any).tg_id), r);
+    const fallbackNames = await getDisplayNamesMap(top.map(t => t.tgId));
+    const winners = top.map((t, i) => {
+      const m = meta.get(t.tgId);
+      return {
+        place: i + 1,
+        tgId: t.tgId,
+        displayName: (m?.display_name as string) || fallbackNames[t.tgId] || t.displayName || '',
+        points: Math.round(t.points * 100) / 100,
+        city: (m?.city as string) || '',
+        hasPhoto: !!(m?.photo_file_id),
+      };
+    });
+    res.set('Cache-Control', 'public, max-age=600, s-maxage=600');
+    res.json({ month, winners });
+  } catch (e: any) {
+    console.error('hof failed', e?.message || e);
+    res.status(500).json({ error: 'internal' });
+  }
+});
+
+router.get('/hof/photo/:tgId', async (req, res) => {
+  const tgId = req.params.tgId;
+  try {
+    if (!(await hofIsInRecentTop3(tgId))) return res.status(403).send('forbidden');
+    const { db, T } = await import('./storage.js');
+    const { data, error } = await db()
+      .from(T.users)
+      .select('photo_file_id')
+      .eq('tg_id', tgId)
+      .maybeSingle();
+    if (error) throw error;
+    const fileId = (data as any)?.photo_file_id || '';
+    if (!fileId) return res.status(404).send('no photo');
+    const { tg } = await import('./tg-api.js');
+    const info = await tg('getFile', { file_id: fileId });
+    const filePath = info?.file_path;
+    if (!filePath) return res.status(410).send('telegram file expired');
+    const botToken = process.env[telegramBotConfig.tg.botTokenEnv];
+    if (!botToken) return res.status(500).send('bot token missing');
+    const axios = (await import('axios')).default;
+    const upstream = await axios.get(
+      `https://api.telegram.org/file/bot${botToken}/${filePath}`,
+      { responseType: 'arraybuffer', timeout: 15000 }
+    );
+    res.setHeader('Content-Type', upstream.headers['content-type'] || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=604800, immutable');
+    res.send(Buffer.from(upstream.data));
+  } catch (e: any) {
+    console.error('hof photo failed', e?.message || e);
+    res.status(502).send('download error');
+  }
+});
+
 // ----------- Cron: групові оголошення (10:00 / 21:00 Київ) -----------
 // Зовнішній планувальник (GH Actions, `15 * * * *`) смикає ОДИН ендпоінт щогодини.
 // Сервер сам перевіряє київську годину і вирішує, чи це час морнінгу/вечора.
