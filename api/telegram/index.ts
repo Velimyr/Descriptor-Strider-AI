@@ -394,6 +394,29 @@ router.post('/admin/login', (req, res) => {
   res.json({ ok: true, token: cronSecret });
 });
 
+// Діагностика: тригерить broadcast без клейма (отже можна викликати скільки завгодно).
+// Повертає per-chat результати — видно як саме Telegram повертає помилку.
+// kind=morning|evening
+router.get('/admin/test-announce', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const kind = String(req.query.kind || 'morning');
+  try {
+    const { announceMorningTop, announceEveningPuzzle } = await import('./groupAnnounce.js');
+    const chatIds = telegramBotConfig.groupChats?.announceChatIds || [];
+    if (kind === 'morning') {
+      const r = await announceMorningTop({ skipClaim: true });
+      return res.json({ ok: true, configChatIds: chatIds, ...r });
+    }
+    if (kind === 'evening') {
+      const r = await announceEveningPuzzle({ skipClaim: true });
+      return res.json({ ok: true, configChatIds: chatIds, ...r });
+    }
+    res.status(400).json({ error: 'kind must be morning|evening' });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
 // Тестовий ендпоінт: пише в чат "ping" — щоб переконатися що бот має токен і канал ОК.
 router.post('/admin/ping-chat', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;

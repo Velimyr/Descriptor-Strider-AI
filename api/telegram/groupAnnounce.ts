@@ -47,26 +47,43 @@ function yesterdayKyivDateString(): string {
   return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
 }
 
-async function broadcast(text: string): Promise<void> {
+export interface BroadcastResult {
+  chatId: string;
+  ok: boolean;
+  error?: string;
+}
+
+async function broadcast(text: string): Promise<BroadcastResult[]> {
   const chatIds = cfg.groupChats?.announceChatIds || [];
   if (chatIds.length === 0) {
     console.warn('groupAnnounce: announceChatIds is empty — nothing to send');
-    return;
+    return [];
   }
+  const results: BroadcastResult[] = [];
   for (const chatId of chatIds) {
     try {
       await sendMessage(chatId, text, { disable_web_page_preview: true });
-    } catch (e) {
-      console.error('groupAnnounce sendMessage failed', chatId, e);
+      results.push({ chatId, ok: true });
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      console.error('groupAnnounce sendMessage failed', chatId, msg);
+      results.push({ chatId, ok: false, error: msg });
     }
   }
+  return results;
 }
 
 // === 10:00 — ранкове вітання топ-3 за вчора ===
-export async function announceMorningTop(): Promise<{ sent: boolean; reason?: string }> {
+export async function announceMorningTop(opts?: { skipClaim?: boolean }): Promise<{
+  sent: boolean;
+  reason?: string;
+  broadcast?: BroadcastResult[];
+}> {
   const yesterday = yesterdayKyivDateString();
   const claimKey = `announce:morning:${yesterday}`;
-  if (!(await tryClaimAnnouncement(claimKey))) return { sent: false, reason: 'already-sent' };
+  if (!opts?.skipClaim && !(await tryClaimAnnouncement(claimKey))) {
+    return { sent: false, reason: 'already-sent' };
+  }
 
   const leaders = await getYesterdayCaseLeaders(TZ, 3);
   let text: string;
@@ -83,12 +100,16 @@ export async function announceMorningTop(): Promise<{ sent: boolean; reason?: st
     );
     text = fmt(pickRandom(cfg.groupAnnounce.morningHeader), { leaders: lines.join('\n') });
   }
-  await broadcast(text);
-  return { sent: true };
+  const results = await broadcast(text);
+  return { sent: true, broadcast: results };
 }
 
 // === 21:00 — підсумок Описового пазла ===
-export async function announceEveningPuzzle(): Promise<{ sent: boolean; reason?: string }> {
+export async function announceEveningPuzzle(opts?: { skipClaim?: boolean }): Promise<{
+  sent: boolean;
+  reason?: string;
+  broadcast?: BroadcastResult[];
+}> {
   const today = kyivDateString();
   const claimKey = `announce:evening:${today}`;
 
@@ -96,7 +117,9 @@ export async function announceEveningPuzzle(): Promise<{ sent: boolean; reason?:
   if (!puzzle || !puzzle.sentence.trim()) {
     return { sent: false, reason: 'no-phrase' };
   }
-  if (!(await tryClaimAnnouncement(claimKey))) return { sent: false, reason: 'already-sent' };
+  if (!opts?.skipClaim && !(await tryClaimAnnouncement(claimKey))) {
+    return { sent: false, reason: 'already-sent' };
+  }
 
   const winners = await getPuzzleWinners(today);
   let text: string;
@@ -116,8 +139,8 @@ export async function announceEveningPuzzle(): Promise<{ sent: boolean; reason?:
   } else {
     text = fmt(pickRandom(cfg.groupAnnounce.eveningNobody), { sentence: esc(puzzle.sentence) });
   }
-  await broadcast(text);
-  return { sent: true };
+  const results = await broadcast(text);
+  return { sent: true, broadcast: results };
 }
 
 // === Опис закрито на 100% (викликати після того, як справа з опису перейшла в done) ===
