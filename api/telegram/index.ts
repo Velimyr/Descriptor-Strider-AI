@@ -394,6 +394,35 @@ router.post('/admin/login', (req, res) => {
   res.json({ ok: true, token: cronSecret });
 });
 
+// Діагностика: викликає Telegram getChat — якщо бот реально має доступ, повертає
+// інфо чату (title, type, id). Якщо ні — error: 'chat not found' або 'forbidden'.
+router.get('/admin/check-chat', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const chatId = String(req.query.chatId || '').trim();
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  try {
+    const { tg } = await import('./tg-api.js');
+    const info = await tg('getChat', { chat_id: chatId });
+    res.json({ ok: true, chat: info });
+  } catch (e: any) {
+    res.status(200).json({ ok: false, error: e?.message || 'internal', triedChatId: chatId });
+  }
+});
+
+// Діагностика: останні група-чати, з яких бот отримував повідомлення (через webhook).
+// Юзер пише будь-що в групу → бот записує chat_id у bot_meta. Потім тут видно.
+router.get('/admin/recent-groups', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { getMeta } = await import('./storage.js');
+    const raw = await getMeta('recent_groups');
+    const list = raw ? JSON.parse(raw) : [];
+    res.json({ ok: true, recentGroups: list });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
 // Діагностика: тригерить broadcast без клейма (отже можна викликати скільки завгодно).
 // Повертає per-chat результати — видно як саме Telegram повертає помилку.
 // kind=morning|evening

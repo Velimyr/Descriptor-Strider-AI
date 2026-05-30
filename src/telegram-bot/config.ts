@@ -187,7 +187,7 @@ export const telegramBotConfig: TelegramBotConfig = {
   groupChats: {
     // Сюди клади ID груп Telegram, у які бот має слати оголошення.
     // Для супергруп — '-100…'. Бот має бути доданий у групу й мати право писати.
-    announceChatIds: ['-1001355627446'],
+    announceChatIds: ['-1001883256453'],
   },
 
   points: {

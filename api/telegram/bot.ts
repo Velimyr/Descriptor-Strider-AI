@@ -369,12 +369,33 @@ async function getCollabLockMinutes(): Promise<number> {
 // --------- main handler ---------
 
 export async function handleUpdate(update: any): Promise<void> {
+  // Діагностика: коли бот отримує будь-що з групи/супергрупи, запам'ятовуємо її ID
+  // у bot_meta('recent_groups') — щоб адмін міг побачити правильний chat_id для
+  // налаштування announceChatIds. Fire-and-forget.
+  try {
+    const chat = update?.message?.chat || update?.callback_query?.message?.chat;
+    if (chat && (chat.type === 'group' || chat.type === 'supergroup')) {
+      rememberGroupChat({ id: String(chat.id), title: chat.title || '', type: chat.type })
+        .catch(() => {});
+    }
+  } catch {/* ignore */}
+
   if (update.callback_query) {
     return handleCallback(update.callback_query);
   }
   if (update.message) {
     return handleMessage(update.message);
   }
+}
+
+// Кеш + запис у bot_meta. Тримаємо до 10 останніх груп.
+async function rememberGroupChat(g: { id: string; title: string; type: string }) {
+  const raw = (await getMeta('recent_groups')) || '[]';
+  let list: Array<{ id: string; title: string; type: string; lastAt: string }>;
+  try { list = JSON.parse(raw); if (!Array.isArray(list)) list = []; } catch { list = []; }
+  const without = list.filter(x => x.id !== g.id);
+  without.unshift({ ...g, lastAt: nowIsoUtc() });
+  await setMeta('recent_groups', JSON.stringify(without.slice(0, 10)));
 }
 
 // Нормалізуємо текст: команда чи натискання кнопки меню → канонічна команда.
@@ -393,6 +414,11 @@ function normalizeCommand(text: string): string {
 }
 
 async function handleMessage(msg: any) {
+  // Бот спілкується лише у приватних чатах. У групах/каналах ігноруємо все,
+  // інакше реагуватиме на КОЖНЕ повідомлення учасників «надішліть /start».
+  // Захоплення group chat_id для діагностики йде ще на рівні handleUpdate.
+  if (msg.chat?.type !== 'private') return;
+
   const chatId = msg.chat.id;
   const tgId = String(msg.from.id);
   const rawText: string = msg.text || '';
@@ -708,6 +734,10 @@ async function handleMessage(msg: any) {
 }
 
 async function handleCallback(cb: any) {
+  // Так само як handleMessage — лише приват. У групах reply-кнопки бота можуть
+  // спрацювати у відповідь на чужі тапи, що не має сенсу.
+  if (cb.message?.chat?.type && cb.message.chat.type !== 'private') return;
+
   const chatId = cb.message.chat.id;
   const tgId = String(cb.from.id);
   const messageId = cb.message?.message_id;
