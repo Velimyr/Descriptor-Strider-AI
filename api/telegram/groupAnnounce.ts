@@ -122,8 +122,14 @@ export async function announceEveningPuzzle(opts?: { skipClaim?: boolean }): Pro
   }
 
   const winners = await getPuzzleWinners(today);
+  const totalPrizes = cfg.puzzle.prizes.length; // зазвичай 3
   let text: string;
-  if (winners.length > 0) {
+  if (winners.length === 0) {
+    // Гілка 3: жодного переможця — іронія + заохочення.
+    text = fmt(pickRandom(cfg.groupAnnounce.eveningPuzzleNobody), {
+      sentence: esc(puzzle.sentence),
+    });
+  } else {
     const names = await getDisplayNamesMap(winners.map(w => w.tgId));
     const lines = winners.map(w =>
       fmt(cfg.groupAnnounce.eveningWinnerLine, {
@@ -132,12 +138,20 @@ export async function announceEveningPuzzle(opts?: { skipClaim?: boolean }): Pro
         points: w.points,
       })
     );
-    text = fmt(pickRandom(cfg.groupAnnounce.eveningWinners), {
-      sentence: esc(puzzle.sentence),
-      winners: lines.join('\n'),
-    });
-  } else {
-    text = fmt(pickRandom(cfg.groupAnnounce.eveningNobody), { sentence: esc(puzzle.sentence) });
+    if (winners.length >= totalPrizes) {
+      // Гілка 1: всі призові місця зайняті — вітаємо, кличемо завтра.
+      text = fmt(pickRandom(cfg.groupAnnounce.eveningPuzzleAll), {
+        sentence: esc(puzzle.sentence),
+        winners: lines.join('\n'),
+      });
+    } else {
+      // Гілка 2: 1 або 2 переможці — лишились місця, ще можна встигнути.
+      text = fmt(pickRandom(cfg.groupAnnounce.eveningPuzzleSome), {
+        sentence: esc(puzzle.sentence),
+        winners: lines.join('\n'),
+        remainingPlaces: totalPrizes - winners.length,
+      });
+    }
   }
   const results = await broadcast(text);
   return { sent: true, broadcast: results };
