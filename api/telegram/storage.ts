@@ -304,6 +304,18 @@ export async function userExistsByDisplayName(displayName: string): Promise<bool
   return !!data;
 }
 
+// Case-insensitive варіант. Уникаємо повного скану `getAllUsers` у rename-flow.
+export async function userExistsByDisplayNameCi(
+  displayName: string,
+  excludeTgId?: string
+): Promise<boolean> {
+  let q = db().from(T.users).select('tg_id').ilike('display_name', displayName).limit(1);
+  if (excludeTgId) q = q.neq('tg_id', excludeTgId);
+  const { data, error } = await q.maybeSingle();
+  if (error) throw error;
+  return !!data;
+}
+
 export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowIndex' | 'tgId'>>) {
   const dbPatch: any = {};
   if (patch.displayName !== undefined) dbPatch.display_name = patch.displayName;
@@ -327,17 +339,35 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (error) throw error;
 }
 
-// Лагідне оновлення tg_username — викликається при кожному update від юзера.
-// Не пише, якщо значення збігається; без помилки, якщо рядок ще не створений.
-export async function captureTgUsername(tgId: string, username: string | undefined | null) {
+// In-memory кеш «вже записано» — щоб не довбати БД на кожному вебхуку.
+// Warm-серверу один UPDATE на юзера на запуск інстансу — і потім ні разу.
+const _tgUsernameCache = new Map<string, string>();
+
+// Лагідне оновлення tg_username. Передавай currentValue (з уже-завантаженого user) —
+// тоді функція уникне DB-запису, якщо значення не змінилось. Якщо currentValue
+// не передано — порівняємо з memory-cache (для викликів, де user ще не зчитаний).
+export async function captureTgUsername(
+  tgId: string,
+  username: string | undefined | null,
+  currentValue?: string
+) {
   const clean = (username || '').trim().replace(/^@/, '');
   if (!clean) return;
+  // Якщо знаємо поточне значення з БД — порівнюємо одразу.
+  if (currentValue !== undefined && currentValue === clean) {
+    _tgUsernameCache.set(tgId, clean);
+    return;
+  }
+  // Інакше — швидкий memory-check.
+  if (_tgUsernameCache.get(tgId) === clean) return;
   try {
     const { error } = await db()
       .from(T.users)
       .update({ tg_username: clean })
-      .eq('tg_id', tgId);
+      .eq('tg_id', tgId)
+      .neq('tg_username', clean); // у БД ще одна гарантія, що write не зайвий
     if (error) console.warn('captureTgUsername failed', error.message);
+    else _tgUsernameCache.set(tgId, clean);
   } catch (e: any) {
     console.warn('captureTgUsername threw', e?.message || e);
   }
@@ -606,27 +636,51 @@ export async function getSkippedForUser(tgId: string): Promise<string[]> {
   return (data || []).map((r: any) => r.case_id);
 }
 
+// Кеш для дорогих Intl.DateTimeFormat інстансів (ICU-лукапи коштують CPU при кожному new).
+// Інстанси thread-safe для read-only використання — формаюти можна тримати «вічно».
+const _dateFmtCache = new Map<string, Intl.DateTimeFormat>();
+function tzDateFmt(timeZone: string): Intl.DateTimeFormat {
+  let f = _dateFmtCache.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-CA', {
+      timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+    _dateFmtCache.set(timeZone, f);
+  }
+  return f;
+}
+const _tzNameFmtCache = new Map<string, Intl.DateTimeFormat>();
+function tzNameFmt(timeZone: string): Intl.DateTimeFormat {
+  let f = _tzNameFmtCache.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' });
+    _tzNameFmtCache.set(timeZone, f);
+  }
+  return f;
+}
+// Зсув у хв для (timeZone, dateMs). Кеш short-TTL: інакше DST/перехід можна пропустити.
+const _offsetCache = new Map<string, { mins: number; expires: number }>();
+function tzOffsetMin(timeZone: string, now: Date): number {
+  const key = `${timeZone}|${Math.floor(now.getTime() / 3600_000)}`; // bucket по годинах
+  const hit = _offsetCache.get(key);
+  if (hit && hit.expires > now.getTime()) return hit.mins;
+  const tzName = tzNameFmt(timeZone).formatToParts(now).find(p => p.type === 'timeZoneName')?.value || 'GMT+00:00';
+  const m = tzName.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+  const sign = m?.[1] === '-' ? -1 : 1;
+  const hh = parseInt(m?.[2] || '0', 10);
+  const mm = parseInt(m?.[3] || '0', 10);
+  const mins = sign * (hh * 60 + mm);
+  _offsetCache.set(key, { mins, expires: now.getTime() + 3600_000 });
+  return mins;
+}
+
 // Активність "сьогодні" у Europe/Kyiv: скільки унікальних справ опрацьовано
 // (через submissions АБО collab-події) і скільки унікальних користувачів брало
 // участь. Вибірка йде з БД незалежно від ліміту таблиці результатів.
 export async function getTodayActivity(timeZone: string): Promise<{ cases: number; users: number }> {
   const now = new Date();
-  const dateStr = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
-  const tzParts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    timeZoneName: 'longOffset',
-  }).formatToParts(now);
-  const tzName = tzParts.find(p => p.type === 'timeZoneName')?.value || 'GMT+00:00';
-  const m = tzName.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
-  const sign = m?.[1] === '-' ? -1 : 1;
-  const hh = parseInt(m?.[2] || '0', 10);
-  const mm = parseInt(m?.[3] || '0', 10);
-  const offsetMin = sign * (hh * 60 + mm);
+  const dateStr = tzDateFmt(timeZone).format(now);
+  const offsetMin = tzOffsetMin(timeZone, now);
   const startUtcMs = Date.parse(`${dateStr}T00:00:00.000Z`) - offsetMin * 60_000;
   const startUtc = new Date(startUtcMs).toISOString();
   const endUtc = new Date(startUtcMs + 24 * 60 * 60 * 1000).toISOString();
@@ -683,22 +737,8 @@ export async function getDailyActivity(
   if (days <= 0) return [];
   const safeDays = Math.min(days, 365);
   const now = new Date();
-  const fmtDay = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  const tzParts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    timeZoneName: 'longOffset',
-  }).formatToParts(now);
-  const tzName = tzParts.find(p => p.type === 'timeZoneName')?.value || 'GMT+00:00';
-  const m = tzName.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
-  const sign = m?.[1] === '-' ? -1 : 1;
-  const hh = parseInt(m?.[2] || '0', 10);
-  const mm = parseInt(m?.[3] || '0', 10);
-  const offsetMin = sign * (hh * 60 + mm);
+  const fmtDay = tzDateFmt(timeZone);
+  const offsetMin = tzOffsetMin(timeZone, now);
 
   const todayStr = fmtDay.format(now);
   const todayMidnightUtcMs = Date.parse(`${todayStr}T00:00:00.000Z`) - offsetMin * 60_000;
@@ -1471,18 +1511,8 @@ export async function getYesterdayCaseLeaders(
   limit: number = 3
 ): Promise<Array<{ tgId: string; displayName: string; casesCount: number }>> {
   const now = new Date();
-  const todayStr = new Intl.DateTimeFormat('en-CA', {
-    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(now);
-  const tzParts = new Intl.DateTimeFormat('en-US', {
-    timeZone, timeZoneName: 'longOffset',
-  }).formatToParts(now);
-  const tzName = tzParts.find(p => p.type === 'timeZoneName')?.value || 'GMT+00:00';
-  const m = tzName.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
-  const sign = m?.[1] === '-' ? -1 : 1;
-  const hh = parseInt(m?.[2] || '0', 10);
-  const mm = parseInt(m?.[3] || '0', 10);
-  const offsetMin = sign * (hh * 60 + mm);
+  const todayStr = tzDateFmt(timeZone).format(now);
+  const offsetMin = tzOffsetMin(timeZone, now);
   const todayMidnightUtcMs = Date.parse(`${todayStr}T00:00:00.000Z`) - offsetMin * 60_000;
   const startUtc = new Date(todayMidnightUtcMs - 86_400_000).toISOString();
   const endUtc = new Date(todayMidnightUtcMs).toISOString();

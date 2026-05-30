@@ -77,24 +77,34 @@ export function nowIsoUtc(): string {
   return new Date().toISOString();
 }
 
+// Intl.DateTimeFormat дуже дорого створювати (ICU-лукапи на кожен new). Тримаємо
+// інстанси на module-level — вони immutable і thread-safe для read-only використання.
+const KYIV_DATE_FMT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: cfg.dispatch.timezone,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const KYIV_MONTH_FMT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: cfg.dispatch.timezone,
+  year: 'numeric',
+  month: '2-digit',
+});
+const KYIV_UA_DATE_FMT = new Intl.DateTimeFormat('uk-UA', {
+  timeZone: cfg.dispatch.timezone || 'Europe/Kyiv',
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+});
+
 export function kyivDateString(date: Date = new Date()): string {
   // YYYY-MM-DD у Europe/Kyiv
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: cfg.dispatch.timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  return fmt.format(date);
+  return KYIV_DATE_FMT.format(date);
 }
 
 // 'YYYY-MM' у Europe/Kyiv (ключ місяця для рейтингу).
 export function kyivMonthString(date: Date = new Date()): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: cfg.dispatch.timezone,
-    year: 'numeric',
-    month: '2-digit',
-  }).formatToParts(date);
+  const parts = KYIV_MONTH_FMT.formatToParts(date);
   const y = parts.find(p => p.type === 'year')?.value ?? '';
   const m = parts.find(p => p.type === 'month')?.value ?? '';
   return `${y}-${m}`;
@@ -315,13 +325,7 @@ export function computeFundEta(cases: BotCase[], windowDays = 14): FundEta {
     const etaMs = nowMs + daysLeft * 86_400_000;
     const d = new Date(etaMs);
     etaDateIso = d.toISOString();
-    const fmtD = new Intl.DateTimeFormat('uk-UA', {
-      timeZone: cfg.dispatch.timezone || 'Europe/Kyiv',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    });
-    etaDateLocal = fmtD.format(d);
+    etaDateLocal = KYIV_UA_DATE_FMT.format(d);
   }
   return {
     fundNumber: fund.number,

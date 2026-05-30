@@ -216,11 +216,19 @@ router.get('/cron/cleanup', async (req, res) => {
 });
 
 // ----------- Public Hall of Fame (без авторизації) -----------
+// Module-level formatters: створювати new Intl.DateTimeFormat на кожен виклик
+// дорого (ICU-лукапи). Тримаємо інстанси константою.
+const KYIV_MONTH_FMT_HOF = new Intl.DateTimeFormat('en-CA', {
+  timeZone: telegramBotConfig.dispatch.timezone,
+  year: 'numeric', month: '2-digit',
+});
+const KYIV_HOUR_FMT = new Intl.DateTimeFormat('en-GB', {
+  timeZone: telegramBotConfig.dispatch.timezone || 'Europe/Kyiv',
+  hour: '2-digit', hour12: false,
+});
+
 function kyivMonthForHof(d: Date = new Date()): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: telegramBotConfig.dispatch.timezone,
-    year: 'numeric', month: '2-digit',
-  }).formatToParts(d);
+  const parts = KYIV_MONTH_FMT_HOF.formatToParts(d);
   const y = parts.find(p => p.type === 'year')?.value ?? '';
   const m = parts.find(p => p.type === 'month')?.value ?? '';
   return `${y}-${m}`;
@@ -332,10 +340,7 @@ router.get('/hof/photo/:tgId', async (req, res) => {
 router.get('/cron/group-tick', async (req, res) => {
   const expected = process.env[telegramBotConfig.cronSecretEnv];
   if (expected && req.query.secret !== expected) return res.status(403).send('forbidden');
-  const tz = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
-  const hourStr = new Intl.DateTimeFormat('en-GB', {
-    timeZone: tz, hour: '2-digit', hour12: false,
-  }).format(new Date());
+  const hourStr = KYIV_HOUR_FMT.format(new Date());
   const kyivHour = parseInt(hourStr, 10);
 
   const actions: any[] = [];

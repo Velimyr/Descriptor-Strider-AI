@@ -6,7 +6,6 @@ import {
   BotUser,
   BotCase,
   deleteSession,
-  getAllUsers,
   getCase,
   getMeta,
   setMeta,
@@ -399,12 +398,15 @@ async function handleMessage(msg: any) {
   const rawText: string = msg.text || '';
   const text = normalizeCommand(rawText);
 
-  // Лагідно фіксуємо @username — буде корисний адміну, щоб написати юзеру в особисті.
-  // Fire-and-forget.
-  captureTgUsername(tgId, msg.from?.username).catch(() => {});
-
   // Читаємо user і session паралельно — все одно потрібні для більшості шляхів.
   const [user, session] = await Promise.all([getUser(tgId), getSession(tgId)]);
+
+  // Лагідно фіксуємо @username — буде корисний адміну, щоб написати юзеру в особисті.
+  // Передаємо поточне значення з user, щоб уникнути зайвого UPDATE коли нічого не змінилось.
+  // Fire-and-forget.
+  if (msg.from?.username) {
+    captureTgUsername(tgId, msg.from.username, user?.tgUsername).catch(() => {});
+  }
 
   // --- Профіль: нетекстові повідомлення (фото / контакт) у режимі редагування. ---
   if (user) {
@@ -582,11 +584,9 @@ async function handleMessage(msg: any) {
       await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid);
       return;
     }
-    // Перевірка унікальності серед існуючих користувачів (порівняння без регістру).
-    const allUsers = await getAllUsers();
-    const taken = allUsers.some(
-      u => u.tgId !== tgId && (u.displayName || '').toLowerCase() === name.toLowerCase()
-    );
+    // Перевірка унікальності — case-insensitive, через індекс (зекономлений CPU на повний скан).
+    const { userExistsByDisplayNameCi } = await import('./storage.js');
+    const taken = await userExistsByDisplayNameCi(name, tgId);
     if (taken) {
       await sendMessage(chatId, fmt(T.nameTaken || 'Імʼя «{name}» вже зайняте, оберіть інше.', { name }));
       return;
@@ -1231,10 +1231,14 @@ async function cmdProgress(chatId: number, user: BotUser) {
   });
 }
 
-// 'YYYY-MM' → «травень 2026».
+// 'YYYY-MM' → «травень 2026». Форматер виносимо на module-level, щоб не платити
+// ICU-лукапи на кожен виклик (а викликається у Топ-10 та архіві місяців).
+const MONTH_UK_FMT = new Intl.DateTimeFormat('uk-UA', {
+  timeZone: 'UTC', month: 'long', year: 'numeric',
+});
 function formatMonthUk(month: string): string {
   const d = new Date(`${month}-01T12:00:00Z`);
-  return new Intl.DateTimeFormat('uk-UA', { timeZone: 'UTC', month: 'long', year: 'numeric' }).format(d);
+  return MONTH_UK_FMT.format(d);
 }
 
 function pts2(n: number): number {
@@ -1310,10 +1314,11 @@ async function processRenameInput(chatId: number, user: BotUser, rawText: string
     return;
   }
   // Те саме правило унікальності, що й при першій реєстрації.
-  const allUsers = await getAllUsers();
-  const taken = allUsers.some(
-    u => u.tgId !== user.tgId && (u.displayName || '').toLowerCase() === name.toLowerCase()
-  );
+  // Без getAllUsers — case-insensitive пошук по display_name через .ilike + neq tg_id.
+  const { userExistsByDisplayNameCi } = await import('./storage.js');
+  const taken =
+    name.toLowerCase() !== (user.displayName || '').toLowerCase() &&
+    (await userExistsByDisplayNameCi(name, user.tgId));
   if (taken) {
     await sendMessage(chatId, fmt(T.nameTaken, { name }), {
       reply_markup: settingsRenameCancelKeyboard(),
