@@ -189,7 +189,7 @@ export const telegramBotConfig: TelegramBotConfig = {
   groupChats: {
     // Сюди клади ID груп Telegram, у які бот має слати оголошення.
     // Для супергруп — '-100…'. Бот має бути доданий у групу й мати право писати.
-    announceChatIds: ['-1001883256453'],
+    announceChatIds: ['-1001883256453', '-1003544131443'],
   },
 
   points: {
@@ -697,7 +697,7 @@ export const telegramBotConfig: TelegramBotConfig = {
       '📜 <b>Доброго ранку!</b> Дивіться хто вчора найбільше попрацював:\n\n{leaders}',
       '📜 <b>Привіт!</b> Учорашні чемпіони з архівних справ:\n\n{leaders}',
       '📜 <b>Блукач звітує.</b> Вчора найбільше справ опрацювали:\n\n{leaders}',
-      '📜 <b>Доброго!</b> Вчорашня архівна трійка призерів:\n\n{leaders}',
+      '📜 <b>Доброго!</b> Вчорашня архівна десятка призерів:\n\n{leaders}',
     ],
     morningLine: '{place}. <b>{name}</b> — {count} {casesWord}',
     morningEmpty: [

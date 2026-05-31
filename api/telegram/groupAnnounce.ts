@@ -85,7 +85,7 @@ export async function announceMorningTop(opts?: { skipClaim?: boolean }): Promis
     return { sent: false, reason: 'already-sent' };
   }
 
-  const leaders = await getYesterdayCaseLeaders(TZ, 3);
+  const leaders = await getYesterdayCaseLeaders(TZ, 10);
   let text: string;
   if (leaders.length === 0) {
     text = pickRandom(cfg.groupAnnounce.morningEmpty);
