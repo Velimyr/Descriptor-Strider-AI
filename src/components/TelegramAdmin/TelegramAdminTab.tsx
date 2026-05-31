@@ -1671,6 +1671,63 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     setMsg(`✅ Обʼєднано ${selectedIds.size} зон в одну справу.`);
   };
 
+  // «Розплодити» спільну зону на N окремих справ. Перша виділена зона — спільна.
+  // Кожен наступний партнер утворює пару (спільна + партнер) у власній groupId.
+  // Для другої й далі пар спільна зона клонується (нові id), щоб технічно мати
+  // унікальні Box у різних групах. Оригінальна спільна зона лишається в першій парі.
+  const distributeMerge = () => {
+    if (selectedIds.size < 2) return;
+    const ordered = [...selectedIds];
+    const anchorId = ordered[0];
+    const partnerIds = ordered.slice(1);
+    // Знаходимо anchor і його сторінку.
+    let anchor: Box | null = null;
+    let anchorPage: number | null = null;
+    for (const [k, list] of Object.entries(pageBoxes) as [string, Box[]][]) {
+      const found = list.find(b => b.id === anchorId);
+      if (found) { anchor = found; anchorPage = +k; break; }
+    }
+    if (!anchor || anchorPage === null) return;
+    setPageBoxes(prev => {
+      const next: Record<number, Box[]> = {};
+      for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
+        next[+k] = [...list];
+      }
+      // По одному партнеру за крок: створюємо новий groupId; перший партнер ділить
+      // groupId з оригінальною anchor-зоною, решта — з клонами anchor.
+      partnerIds.forEach((partnerId, idx) => {
+        const groupId = newId();
+        if (idx === 0) {
+          // Оригінал anchor → groupId, order=0.
+          for (const k of Object.keys(next)) {
+            next[+k] = next[+k].map(b =>
+              b.id === anchorId
+                ? { ...b, groupId, groupOrder: 0 }
+                : b.id === partnerId
+                  ? { ...b, groupId, groupOrder: 1 }
+                  : b
+            );
+          }
+        } else {
+          // Клон anchor на тій самій сторінці + партнер у нову групу.
+          const cloneId = newId();
+          next[anchorPage!] = [
+            ...next[anchorPage!],
+            { ...anchor!, id: cloneId, groupId, groupOrder: 0 },
+          ];
+          for (const k of Object.keys(next)) {
+            next[+k] = next[+k].map(b =>
+              b.id === partnerId ? { ...b, groupId, groupOrder: 1 } : b
+            );
+          }
+        }
+      });
+      return next;
+    });
+    setSelectedIds(new Set());
+    setMsg(`✅ Створено ${partnerIds.length} справ зі спільною зоною.`);
+  };
+
   const ungroupAll = (groupId: string) => {
     setPageBoxes(prev => {
       const next: Record<number, Box[]> = {};
@@ -2619,6 +2676,14 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
                 title="Обʼєднати всі виділені зони в одну справу (склеяться як одне зображення)"
               >
                 🔗 Обʼєднати в одну справу
+              </button>
+              <button
+                onClick={distributeMerge}
+                disabled={selectedIds.size < 2}
+                className="px-3 py-1 bg-amber-700 text-white rounded text-xs disabled:opacity-50"
+                title="Перша виділена зона — спільна. Кожна наступна об'єднається з її клоном в окрему нову справу. Створиться (N-1) справ."
+              >
+                🔀 Створити справи зі спільною
               </button>
               {/* Поворот — застосовується до всіх виділених зон. */}
               {(() => {
