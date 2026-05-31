@@ -1121,16 +1121,19 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         }
         ctx.strokeRect(x, y, w, h);
         ctx.setLineDash([]);
-        // Чіп номера + позначка групи
+        // Чіп номера + позначка групи. У мультизонній групі — лейбл «N.M»,
+        // де N — номер групи, M — порядок частини всередині (1 = найвища).
+        const chipLabel = labelForBox(b, idx);
+        ctx.font = 'bold 18px sans-serif';
+        const labelWidth = ctx.measureText(chipLabel).width;
+        const chipW = Math.max(28, labelWidth + 14) + (inGroup ? 22 : 0);
         ctx.fillStyle = color;
-        const chipW = inGroup ? 56 : 28;
         ctx.fillRect(x, y, chipW, 26);
         ctx.fillStyle = 'white';
-        ctx.font = 'bold 18px sans-serif';
-        ctx.fillText(String(idx + 1), x + 7, y + 19);
+        ctx.fillText(chipLabel, x + 7, y + 19);
         if (inGroup) {
           ctx.font = 'bold 14px sans-serif';
-          ctx.fillText('🔗', x + 30, y + 19);
+          ctx.fillText('🔗', x + labelWidth + 12, y + 19);
         }
         if (dimZones) { ctx.globalAlpha = 1; ctx.restore(); return; }
         // Хрестик «видалити»
@@ -1639,6 +1642,24 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
   // Групи з > 1 зон — те, що цікаво показати у панелі.
   const multiBoxGroups = [...groups.entries()].filter(([, items]) => items.length > 1);
+
+  // Нумерація мультизонних груп: groupId → послідовний номер (1, 2, 3...). Стабільна
+  // в межах сесії: при дод/видаленні груп номери можуть зсунутись, що ОК для UI.
+  const groupNumber = new Map<string, number>(
+    multiBoxGroups.map(([gid], i) => [gid, i + 1])
+  );
+
+  // Допоміжне: повертає UI-лейбл для зони. Для самотніх зон — її індекс на сторінці
+  // (`1`, `2`...). Для зон у складі мультизонної групи — `groupN.partM` (напр., `1.1`).
+  const labelForBox = (box: Box, pageIndex: number): string => {
+    const groupItems = groups.get(box.groupId);
+    if (groupItems && groupItems.length > 1) {
+      const partIdx = groupItems.findIndex(it => it.box.id === box.id);
+      const groupN = groupNumber.get(box.groupId) || 0;
+      return `${groupN}.${partIdx + 1}`;
+    }
+    return String(pageIndex + 1);
+  };
 
   const mergeSelected = () => {
     if (selectedIds.size < 2) return;
@@ -2733,6 +2754,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
               {boxes.map((b, i) => {
                 const inGroup = (groups.get(b.groupId)?.length || 0) > 1;
                 const sel = selectedIds.has(b.id);
+                const label = labelForBox(b, i);
                 return (
                   <button
                     key={b.id}
@@ -2741,10 +2763,12 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
                     className={`px-2 py-1 rounded text-xs ${
                       sel ? 'bg-amber-300 text-amber-900' : 'bg-indigo-100 text-indigo-700 hover:bg-amber-100'
                     }`}
-                    title="Клац — виділити; Подвійний клац — видалити"
+                    title={inGroup
+                      ? `Справа №${groupNumber.get(b.groupId)}, частина ${(groups.get(b.groupId)!.findIndex(it => it.box.id === b.id) + 1)}. Клац — виділити; подвійний клац — видалити`
+                      : 'Клац — виділити; Подвійний клац — видалити'}
                     style={inGroup ? { borderLeft: `3px solid ${colorFromId(b.groupId)}` } : undefined}
                   >
-                    #{i + 1}
+                    {inGroup ? label : `#${i + 1}`}
                     {inGroup && ' 🔗'}
                   </button>
                 );
@@ -2764,15 +2788,15 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
               <div className="font-medium text-slate-700">
                 🔗 Обʼєднані справи ({multiBoxGroups.length})
               </div>
-              {multiBoxGroups.map(([gid, items]) => (
+              {multiBoxGroups.map(([gid, items], gi) => (
                 <div
                   key={gid}
                   className="flex items-center gap-2 py-1 border-l-4 pl-2"
                   style={{ borderColor: colorFromId(gid) }}
                 >
                   <span className="text-slate-700">
-                    {items.length} зон:{' '}
-                    {items.map(it => `стор. ${it.page}`).join(' + ')}
+                    <b>Справа №{gi + 1}</b> · {items.length} {items.length === 1 ? 'частина' : 'частин'}:{' '}
+                    {items.map((it, ii) => `${gi + 1}.${ii + 1} (стор. ${it.page})`).join(' + ')}
                   </span>
                   <button
                     onClick={() => ungroupAll(gid)}
