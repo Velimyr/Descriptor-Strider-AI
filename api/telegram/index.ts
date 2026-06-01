@@ -217,6 +217,22 @@ router.get('/cron/cleanup', async (req, res) => {
   res.json({ ok: true, cleaned });
 });
 
+// ----------- Простий in-memory кеш для адмін-ендпоінтів -----------
+// Кеш живе в межах warm-інстансу Vercel; на cold start спорожнюється.
+// Це OK — наша мета: уникнути 10× повторних викликів від адмін-UI поспіль.
+// Кожен ключ зберігає JSON-відповідь + дедлайн.
+type CacheEntry = { value: any; expires: number };
+const _adminCache = new Map<string, CacheEntry>();
+function cacheGet(key: string): any | null {
+  const hit = _adminCache.get(key);
+  if (!hit) return null;
+  if (hit.expires < Date.now()) { _adminCache.delete(key); return null; }
+  return hit.value;
+}
+function cacheSet(key: string, value: any, ttlMs: number) {
+  _adminCache.set(key, { value, expires: Date.now() + ttlMs });
+}
+
 // ----------- Public Hall of Fame (без авторизації) -----------
 // Module-level formatters: створювати new Intl.DateTimeFormat на кожен виклик
 // дорого (ICU-лукапи). Тримаємо інстанси константою.
@@ -870,6 +886,13 @@ router.get('/admin/integrity', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const threshold = Math.max(0, parseInt((req.query.threshold as string) || '5', 10) || 5);
   const includeResolved = String(req.query.includeResolved || '') === '1';
+  // НАЙВАЖЧИЙ ендпоінт: тягне ВСЕ — submissions, confirmations, cases, reviews.
+  // Кешуємо 30 хв за (threshold, includeResolved). nocache=1 — примусово.
+  const cacheKey = `integrity-${threshold}-${includeResolved ? 1 : 0}`;
+  if (req.query.nocache !== '1') {
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json({ ...cached, cached: true });
+  }
   try {
     const {
       getAllSubmissionsOrdered,
@@ -1017,7 +1040,9 @@ router.get('/admin/integrity', async (req, res) => {
     diffs.sort((a, b) =>
       String(b.second.submittedAt || '').localeCompare(String(a.second.submittedAt || ''))
     );
-    res.json({ ok: true, threshold, totalCases: byCase.size, diffs });
+    const integrityPayload = { ok: true, threshold, totalCases: byCase.size, diffs };
+    cacheSet(cacheKey, integrityPayload, 30 * 60_000);
+    res.json(integrityPayload);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -1184,6 +1209,12 @@ router.get('/admin/user-photo/:tgId', async (req, res) => {
 
 router.get('/admin/overview', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
+  // Кеш 5 хв. Запит ТЯГНЕ getAllUsers + getAllCases (повний скан) — головний винуватець egress.
+  // Параметр ?nocache=1 — примусове оновлення.
+  if (req.query.nocache !== '1') {
+    const cached = cacheGet('overview');
+    if (cached) return res.json({ ...cached, cached: true });
+  }
   const [users, cases] = await Promise.all([getAllUsers(), getAllCases()]);
   const tgDescriptions = progressByDescription(cases).map(d => ({ ...d, source: 'telegram' as const }));
   // Веб-описи (окремі таблиці) — тегаємо source='web'.
@@ -1196,7 +1227,7 @@ router.get('/admin/overview', async (req, res) => {
   }
   const descriptions = [...tgDescriptions, ...webDescriptions];
   const fullyDoneDescriptions = descriptions.filter(d => d.totalCases > 0 && d.doneCases >= d.totalCases).length;
-  res.json({
+  const payload = {
     users: users
       .map(u => ({
         tgId: u.tgId,
@@ -1210,14 +1241,23 @@ router.get('/admin/overview', async (req, res) => {
     progress: progressOfAllCases(cases),
     descriptions,
     fullyDoneDescriptions,
-  });
+  };
+  cacheSet('overview', payload, 5 * 60_000);
+  res.json(payload);
 });
 
 router.get('/admin/today-stats', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
+  // Кеш 2 хв — частий refresh адмінкою + 2 повних скани таблиць activity.
+  if (req.query.nocache !== '1') {
+    const cached = cacheGet('today-stats');
+    if (cached) return res.json({ ...cached, cached: true });
+  }
   const tz = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
   const stats = await getTodayActivity(tz);
-  res.json({ ...stats, timezone: tz });
+  const payload = { ...stats, timezone: tz };
+  cacheSet('today-stats', payload, 2 * 60_000);
+  res.json(payload);
 });
 
 // Місячний рейтинг: список доступних місяців + лідерборд обраного місяця.
@@ -1257,8 +1297,16 @@ router.get('/admin/daily-activity', async (req, res) => {
   const days = Math.max(1, Math.min(365, parseInt(String(req.query.days || '30'), 10) || 30));
   const sourceRaw = String(req.query.source || 'all');
   const source = (sourceRaw === 'telegram' || sourceRaw === 'web') ? sourceRaw : 'all';
+  // Дуже важкий: пагінація 3-х таблиць за N днів. Кешуємо 10 хв за ключем (days, source).
+  const cacheKey = `daily-${days}-${source}`;
+  if (req.query.nocache !== '1') {
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json({ ...cached, cached: true });
+  }
   const series = await getDailyActivity(tz, days, source);
-  res.json({ timezone: tz, days: series, source });
+  const payload = { timezone: tz, days: series, source };
+  cacheSet(cacheKey, payload, 10 * 60_000);
+  res.json(payload);
 });
 
 router.post('/admin/recompute-case', async (req, res) => {
