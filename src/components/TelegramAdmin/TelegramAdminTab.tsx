@@ -1181,6 +1181,27 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         ctx.lineTo(cx - 5, cy + 5);
         ctx.stroke();
 
+        // Кнопка «розʼєднати» — лише для виділеної зони у спільній справі.
+        // Слейт-коло з білою стрілкою «↮» ліворуч від хрестика видалення.
+        if (inGroup && selectedIds.has(b.id)) {
+          const ux = cx - 34;
+          const uy = cy;
+          ctx.fillStyle = 'rgba(71, 85, 105, 0.95)';
+          ctx.beginPath();
+          ctx.arc(ux, uy, 14, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'white';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.fillStyle = 'white';
+          ctx.font = 'bold 16px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('↮', ux, uy + 1);
+          ctx.textAlign = 'start';
+          ctx.textBaseline = 'alphabetic';
+        }
+
         // Resize-маркери (8 шт.: 4 кути + 4 середини сторін). Білі квадрати з кольоровим бордером.
         const handleSize = 12;
         const handlePoints: [number, number][] = [
@@ -1353,6 +1374,25 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     return Math.sqrt(dx * dx + dy * dy) <= 14;
   };
 
+  // Кнопка «розʼєднати» — лише коли зона виділена і входить у спільну справу.
+  // Положення: коло (r=14) ліворуч від хрестика видалення (зазор 6px між колами).
+  const hitUngroupHandle = (point: { x: number; y: number }, b: Box): boolean => {
+    if (!canvasRef.current) return false;
+    if (!selectedIds.has(b.id)) return false;
+    const items = groups.get(b.groupId);
+    if (!items || items.length <= 1) return false;
+    const W = canvasRef.current.width;
+    const H = canvasRef.current.height;
+    const lp = localPoint(point, b);
+    const cxPx = (b.x + b.w) * W - 14 - 34; // 34px ліворуч від close X
+    const cyPx = b.y * H + 14;
+    const px = lp.x * W;
+    const py = lp.y * H;
+    const dx = px - cxPx;
+    const dy = py - cyPx;
+    return Math.sqrt(dx * dx + dy * dy) <= 14;
+  };
+
   // Перевірка попадання в resize-маркер. Повертає тип маркера або null.
   const hitResizeHandle = (
     point: { x: number; y: number },
@@ -1401,10 +1441,19 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   };
 
   const toggleSelected = (id: string) => {
+    // Якщо зона у складі спільної справи (крос-сторінкова група >1 зони) —
+    // виділяємо/знімаємо ВСІ зони цієї справи разом, бо вони працюють як одне ціле.
+    const target = allBoxesWithPage.find(it => it.box.id === id);
+    const groupItems = target ? groups.get(target.box.groupId) : null;
+    const ids =
+      groupItems && groupItems.length > 1 ? groupItems.map(it => it.box.id) : [id];
     setSelectedIds(prev => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        for (const i of ids) next.delete(i);
+      } else {
+        for (const i of ids) next.add(i);
+      }
       return next;
     });
   };
@@ -1457,6 +1506,14 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         addHorizontalLine(p.x, p.y);
       }
       return;
+    }
+    // 0) Кнопка «розʼєднати» — пріоритет (тільки для виділеної зони у спільній справі).
+    for (const b of boxes) {
+      if (hitUngroupHandle(p, b)) {
+        ungroupAll(b.groupId);
+        actionRef.current = null;
+        return;
+      }
     }
     // 1) Хрестик «видалити» — пріоритет.
     const idx = boxes.findIndex(b => hitCloseHandle(p, b));
@@ -2834,16 +2891,19 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
                   style={{ borderColor: colorFromId(gid) }}
                 >
                   <span className="text-slate-700">
-                    <b>Справа №{gi + 1}</b> · {items.length} {items.length === 1 ? 'частина' : 'частин'}:{' '}
-                    {items.map((it, ii) => `${gi + 1}.${ii + 1} (стор. ${it.page})`).join(' + ')}
+                    <b>Справа №{gi + 1}</b>
                   </span>
                   <button
                     onClick={() => ungroupAll(gid)}
-                    className="ml-auto text-slate-500 hover:text-red-600"
-                    title="Розгрупувати — кожна зона стане окремою справою"
+                    className="text-xs text-slate-500 hover:text-red-600 underline"
+                    title="Розгрупувати цю справу — кожна її зона стане окремою справою"
                   >
                     розгрупувати
                   </button>
+                  <span className="text-slate-700">
+                    · {items.length} {items.length === 1 ? 'частина' : 'частин'}:{' '}
+                    {items.map((it, ii) => `${gi + 1}.${ii + 1} (стор. ${it.page})`).join(' + ')}
+                  </span>
                 </div>
               ))}
             </div>
