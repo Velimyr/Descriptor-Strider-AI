@@ -1788,53 +1788,66 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     setMsg(`✅ Обʼєднано ${selectedIds.size} зон в одну справу.`);
   };
 
-  // «Розплодити» спільну зону на N окремих справ. Перша виділена зона — спільна.
-  // Кожен наступний партнер утворює пару (спільна + партнер) у власній groupId.
-  // Для другої й далі пар спільна зона клонується (нові id), щоб технічно мати
-  // унікальні Box у різних групах. Оригінальна спільна зона лишається в першій парі.
+  // «Розплодити» спільну СПРАВУ (одну або кілька зон) на N окремих справ.
+  // Anchor-набір = усі зони групи першої виділеної зони. Якщо перша виділена
+  // у складі спільної справи (1.1+1.2) — anchor-набір = [1.1, 1.2]; інакше —
+  // одна зона. Решта виділених зон, що НЕ належать цій групі, — партнери.
+  // Перший партнер «забирає» оригінальні anchor-зони у нову групу; кожен
+  // наступний — клонує anchor-зони (нові id, та сама геометрія) і додається сам.
   const distributeMerge = () => {
     if (selectedIds.size < 2) return;
     const ordered = [...selectedIds];
-    const anchorId = ordered[0];
-    const partnerIds = ordered.slice(1);
-    // Знаходимо anchor і його сторінку.
-    let anchor: Box | null = null;
-    let anchorPage: number | null = null;
-    for (const [k, list] of Object.entries(pageBoxes) as [string, Box[]][]) {
-      const found = list.find(b => b.id === anchorId);
-      if (found) { anchor = found; anchorPage = +k; break; }
-    }
-    if (!anchor || anchorPage === null) return;
+    const firstId = ordered[0];
+    const firstItem = allBoxesWithPage.find(it => it.box.id === firstId);
+    if (!firstItem) return;
+    const anchorGroupId = firstItem.box.groupId;
+    const anchorItems = allBoxesWithPage
+      .filter(it => it.box.groupId === anchorGroupId)
+      .sort((a, b) => {
+        const oa = a.box.groupOrder ?? -1;
+        const ob = b.box.groupOrder ?? -1;
+        if (oa !== ob && oa >= 0 && ob >= 0) return oa - ob;
+        return a.page - b.page || a.box.y - b.box.y;
+      });
+    const anchorIdSet = new Set(anchorItems.map(it => it.box.id));
+    const partnerIds = ordered.filter(id => !anchorIdSet.has(id));
+    if (partnerIds.length === 0) return;
+    const anchorN = anchorItems.length;
     setPageBoxes(prev => {
       const next: Record<number, Box[]> = {};
       for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
         next[+k] = [...list];
       }
-      // По одному партнеру за крок: створюємо новий groupId; перший партнер ділить
-      // groupId з оригінальною anchor-зоною, решта — з клонами anchor.
       partnerIds.forEach((partnerId, idx) => {
         const groupId = newId();
         if (idx === 0) {
-          // Оригінал anchor → groupId, order=0.
+          // Перший партнер: усі anchor-зони + партнер ідуть у нову групу.
+          // Anchor-зони отримують groupOrder 0..N-1 (у тому порядку, що в anchorItems),
+          // партнер — groupOrder N.
           for (const k of Object.keys(next)) {
-            next[+k] = next[+k].map(b =>
-              b.id === anchorId
-                ? { ...b, groupId, groupOrder: 0 }
-                : b.id === partnerId
-                  ? { ...b, groupId, groupOrder: 1 }
-                  : b
-            );
+            next[+k] = next[+k].map(b => {
+              if (anchorIdSet.has(b.id)) {
+                const order = anchorItems.findIndex(it => it.box.id === b.id);
+                return { ...b, groupId, groupOrder: order };
+              }
+              if (b.id === partnerId) {
+                return { ...b, groupId, groupOrder: anchorN };
+              }
+              return b;
+            });
           }
         } else {
-          // Клон anchor на тій самій сторінці + партнер у нову групу.
-          const cloneId = newId();
-          next[anchorPage!] = [
-            ...next[anchorPage!],
-            { ...anchor!, id: cloneId, groupId, groupOrder: 0 },
-          ];
+          // Наступні партнери: клонуємо КОЖНУ anchor-зону на її сторінці у нову групу,
+          // партнер додається останнім.
+          anchorItems.forEach((it, ai) => {
+            next[it.page] = [
+              ...next[it.page],
+              { ...it.box, id: newId(), groupId, groupOrder: ai },
+            ];
+          });
           for (const k of Object.keys(next)) {
             next[+k] = next[+k].map(b =>
-              b.id === partnerId ? { ...b, groupId, groupOrder: 1 } : b
+              b.id === partnerId ? { ...b, groupId, groupOrder: anchorN } : b
             );
           }
         }
@@ -1842,7 +1855,8 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       return next;
     });
     setSelectedIds(new Set());
-    setMsg(`✅ Створено ${partnerIds.length} справ зі спільною зоною.`);
+    const shared = anchorN === 1 ? 'спільною зоною' : `спільними ${anchorN} зонами`;
+    setMsg(`✅ Створено ${partnerIds.length} справ зі ${shared}.`);
   };
 
   const ungroupAll = (groupId: string) => {
