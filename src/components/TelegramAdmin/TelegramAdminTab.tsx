@@ -745,6 +745,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         startBoxRotation: number;
       };
   const actionRef = useRef<CanvasAction | null>(null);
+  // Прямокутники чіпів номерів зон (у нормованих координатах) — для того, щоб
+  // клацанням по конкретному номеру можна було виділити саме потрібну зону зі
+  // стопки накладених. Заповнюється під час малювання канвасу.
+  const chipRectsRef = useRef<Array<{ id: string; x: number; y: number; w: number; h: number }>>([]);
 
   const metaValid = !!(archive.trim() && fund.trim() && opys.trim());
   const boxes: Box[] = pageBoxes[page] || [];
@@ -1092,6 +1096,8 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       ctx.drawImage(img, 0, 0);
       // У Lines-режимі ручні зони показуємо тьмяніше і без маркерів.
       const dimZones = inputMode === 'lines';
+      // Скидаємо реєстр чіпів — заповниться нижче під час обходу зон.
+      chipRectsRef.current = [];
       boxes.forEach((b, idx) => {
         const x = b.x * canvas.width;
         const y = b.y * canvas.height;
@@ -1127,13 +1133,36 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         ctx.font = 'bold 18px sans-serif';
         const labelWidth = ctx.measureText(chipLabel).width;
         const chipW = Math.max(28, labelWidth + 14) + (inGroup ? 22 : 0);
+        const chipH = 26;
+        // Якщо чіп перекривається з уже намальованим чіпом іншої зони — опускаємо
+        // його на висоту чіпа + 2px зазору, щоб номери накладених зон були всі видні.
+        let chipX = x;
+        let chipY = y;
+        for (let guard = 0; guard < 20; guard++) {
+          const overlap = chipRectsRef.current.some(r => {
+            const rx = r.x * canvas.width;
+            const ry = r.y * canvas.height;
+            const rw = r.w * canvas.width;
+            const rh = r.h * canvas.height;
+            return !(chipX + chipW < rx || chipX > rx + rw || chipY + chipH < ry || chipY > ry + rh);
+          });
+          if (!overlap) break;
+          chipY += chipH + 2;
+        }
+        chipRectsRef.current.push({
+          id: b.id,
+          x: chipX / canvas.width,
+          y: chipY / canvas.height,
+          w: chipW / canvas.width,
+          h: chipH / canvas.height,
+        });
         ctx.fillStyle = color;
-        ctx.fillRect(x, y, chipW, 26);
+        ctx.fillRect(chipX, chipY, chipW, chipH);
         ctx.fillStyle = 'white';
-        ctx.fillText(chipLabel, x + 7, y + 19);
+        ctx.fillText(chipLabel, chipX + 7, chipY + 19);
         if (inGroup) {
           ctx.font = 'bold 14px sans-serif';
-          ctx.fillText('🔗', x + labelWidth + 12, y + 19);
+          ctx.fillText('🔗', chipX + labelWidth + 12, chipY + 19);
         }
         if (dimZones) { ctx.globalAlpha = 1; ctx.restore(); return; }
         // Хрестик «видалити»
@@ -1583,6 +1612,16 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     const h = Math.abs(p.y - a.startY);
     // Малий жест → клік: toggle selection якщо потрапили в існуючу зону.
     if (w < 0.02 || h < 0.02) {
+      // Спершу перевіряємо клік по чіпу номера (у зворотному порядку — верхній
+      // намальований чіп має пріоритет). Це дає змогу клацанням саме по номеру
+      // виділити потрібну зону зі стопки накладених, а не «верхню» за тілом.
+      for (let i = chipRectsRef.current.length - 1; i >= 0; i--) {
+        const r = chipRectsRef.current[i];
+        if (p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) {
+          toggleSelected(r.id);
+          return;
+        }
+      }
       const hit = boxes.find(b => pointInsideBox(p, b));
       if (hit) toggleSelected(hit.id);
       return;
