@@ -553,3 +553,54 @@ create table if not exists bot_verif_login_codes (
 );
 create index if not exists idx_verif_login_codes_exp on bot_verif_login_codes(expires_at);
 alter table bot_verif_login_codes enable row level security;
+
+-- =====================================================================
+-- LEADERBOARD RPC. Замінюють повний скан bot_users у віджеті (egress-фікс).
+-- Один індекс по total_points робить top-N та віконну функцію rank() швидкими.
+-- =====================================================================
+create index if not exists idx_bot_users_total_points_desc
+  on bot_users (total_points desc, tg_id);
+
+-- Топ-N для рейтингу. Повертає лише ті поля, які реально показує віджет.
+create or replace function bot_leaderboard_top(p_limit int)
+returns table (tg_id text, display_name text, total_points numeric)
+language sql security definer as $$
+  select tg_id, display_name, total_points
+  from bot_users
+  order by total_points desc, tg_id
+  limit greatest(p_limit, 0);
+$$;
+revoke all on function bot_leaderboard_top(int) from public, anon, authenticated;
+
+-- Ранг і кількість юзерів для конкретного tg_id (без витягання всієї таблиці).
+-- Якщо юзера нема — повертаємо rank = total_users (тобто "в кінці"), points = 0.
+create or replace function bot_user_rank(p_tg_id text)
+returns table (rank int, total_users int, total_points numeric)
+language sql security definer as $$
+  with ranked as (
+    select tg_id, total_points,
+           rank() over (order by total_points desc, tg_id) as r
+    from bot_users
+  ),
+  agg as (
+    select count(*)::int as cnt from bot_users
+  )
+  select
+    coalesce((select r::int from ranked where tg_id = p_tg_id),
+             (select cnt from agg)) as rank,
+    (select cnt from agg) as total_users,
+    coalesce((select total_points from ranked where tg_id = p_tg_id), 0) as total_points;
+$$;
+revoke all on function bot_user_rank(text) from public, anon, authenticated;
+
+-- Лічильники для cron/tick stats. Замінюють `select * from bot_users` лише
+-- заради того, щоб порахувати скільки активних/паузнутих/всього.
+create or replace function bot_user_status_counts()
+returns table (total int, active int, paused int) language sql security definer as $$
+  select
+    count(*)::int as total,
+    count(*) filter (where status = 'active')::int as active,
+    count(*) filter (where status <> 'active')::int as paused
+  from bot_users;
+$$;
+revoke all on function bot_user_status_counts() from public, anon, authenticated;

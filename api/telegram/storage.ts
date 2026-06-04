@@ -32,6 +32,9 @@ const RPC_AWARD_PUZZLE_WINNER = `${PREFIX}award_puzzle_winner`;
 const RPC_INC_MONTHLY = `${PREFIX}inc_monthly`;
 const RPC_MONTHLY_MONTHS = `${PREFIX}monthly_months`;
 const RPC_INC_TOTAL_POINTS = `${PREFIX}inc_total_points`;
+const RPC_LEADERBOARD_TOP = `${PREFIX}leaderboard_top`;
+const RPC_USER_RANK = `${PREFIX}user_rank`;
+const RPC_USER_STATUS_COUNTS = `${PREFIX}user_status_counts`;
 
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
@@ -227,6 +230,98 @@ export async function getAllUsers(): Promise<BotUser[]> {
     out.push(...rows.map(mapUser));
     if (rows.length < pageSize) break;
     from += pageSize;
+  }
+  return out;
+}
+
+// Топ-N рейтингу. Повертає лише потрібні віджету поля. RPC + index по total_points.
+// Замінює `getAllUsers()`-based підхід для рейтингу (egress-фікс).
+export interface LeaderboardRow {
+  tgId: string;
+  displayName: string;
+  totalPoints: number;
+}
+export async function getLeaderboardTop(limit: number): Promise<LeaderboardRow[]> {
+  const { data, error } = await db().rpc(RPC_LEADERBOARD_TOP, { p_limit: limit });
+  if (error) throw error;
+  return (data || []).map((r: any) => ({
+    tgId: r.tg_id,
+    displayName: r.display_name || '',
+    totalPoints: Number(r.total_points || 0),
+  }));
+}
+
+// Ранг + кількість юзерів + бали для конкретного tg_id. Один query замість скану.
+export async function getUserRank(tgId: string): Promise<{
+  rank: number;
+  totalUsers: number;
+  totalPoints: number;
+}> {
+  const { data, error } = await db().rpc(RPC_USER_RANK, { p_tg_id: tgId });
+  if (error) throw error;
+  // RPC повертає setof — Supabase віддає масив. Беремо першу й єдину строку.
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    rank: Number(row?.rank || 0),
+    totalUsers: Number(row?.total_users || 0),
+    totalPoints: Number(row?.total_points || 0),
+  };
+}
+
+// Тільки tg_id активних юзерів — для cron/tick диспатчу. Paused пропускаємо
+// на рівні БД (вони все одно ігноруються циклом). Egress: ~10 байт/юзер
+// замість ~5 KB/юзер. Пагінація — на випадок >1000 активних юзерів.
+export async function getActiveUserTgIds(): Promise<string[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: string[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.users)
+      .select('tg_id')
+      .eq('status', 'active')
+      .order('tg_id', { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(...rows.map((r: any) => r.tg_id as string));
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
+// Один рядок: загалом, активних, паузнутих. Замінює повний скан bot_users
+// лише задля статистики у cron/tick.
+export async function getUserStatusCounts(): Promise<{
+  total: number;
+  active: number;
+  paused: number;
+}> {
+  const { data, error } = await db().rpc(RPC_USER_STATUS_COUNTS);
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    total: Number(row?.total || 0),
+    active: Number(row?.active || 0),
+    paused: Number(row?.paused || 0),
+  };
+}
+
+// Точкове отримання юзерів за списком tg_id. Уникає `getAllUsers()` у місцях,
+// де треба підтягнути дані лише для відомого підмножини (напр. session-cleanup).
+export async function getUsersByIds(tgIds: string[]): Promise<BotUser[]> {
+  if (tgIds.length === 0) return [];
+  // Дедуплікація + захист від занадто довгих IN-списків (PostgREST ліміт URL).
+  const unique = Array.from(new Set(tgIds));
+  const out: BotUser[] = [];
+  const CHUNK = 200;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const slice = unique.slice(i, i + CHUNK);
+    const { data, error } = await db().from(T.users).select('*').in('tg_id', slice);
+    if (error) throw error;
+    out.push(...(data || []).map(mapUser));
   }
   return out;
 }

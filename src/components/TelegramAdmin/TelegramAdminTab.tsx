@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { X, RefreshCw, Save, UploadCloud, Wand2, Trash2, Plus } from 'lucide-react';
+import { X, RefreshCw, Save, UploadCloud, Wand2, Trash2, Plus, AlertTriangle } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import { TableColumn } from '../../types';
 import { tgApi, getAdminSecret, clearAdminSecret, adminLogin } from '../../services/telegramApi';
@@ -3024,6 +3024,39 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   );
 };
 
+// ==================== EGRESS DISCLAIMER ====================
+// Невеликий банер-попередження для вкладок, які тягнуть багато даних з БД.
+// Мета — нагадати адміну: відкриття/оновлення цієї вкладки спалює quota Supabase
+// (egress 5 GB/міс на Free tier). Бекендна частина вже кешує важкі ендпоінти, але
+// часті ручні оновлення (особливо ?nocache=1) усе ще створюють навантаження.
+const EgressWarning: React.FC<{
+  level?: 'heavy' | 'very-heavy';
+  endpoints: string[];      // напр. ['/admin/integrity'] — для прозорості
+  cacheNote?: string;       // напр. 'Кешується 30 хв на бекенді.'
+  children?: React.ReactNode; // довільний додатковий текст
+}> = ({ level = 'heavy', endpoints, cacheNote, children }) => {
+  const isVeryHeavy = level === 'very-heavy';
+  const cls = isVeryHeavy
+    ? 'bg-rose-50 border-rose-300 text-rose-900'
+    : 'bg-amber-50 border-amber-300 text-amber-900';
+  const label = isVeryHeavy ? 'Дуже важка вкладка' : 'Важка вкладка';
+  return (
+    <div className={`flex gap-2 items-start border rounded px-3 py-2 text-xs ${cls}`}>
+      <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+      <div className="space-y-1">
+        <div>
+          <b>{label} за egress.</b>{' '}
+          Кожне завантаження тягне багато даних з Supabase. На Free tier (5 GB/міс)
+          часті оновлення швидко вичерпують квоту — оновлюйте лише за потреби.
+        </div>
+        {cacheNote && <div className="opacity-80">{cacheNote}</div>}
+        <div className="opacity-60">Запити: {endpoints.join(', ')}</div>
+        {children && <div>{children}</div>}
+      </div>
+    </div>
+  );
+};
+
 // ==================== RESULTS ====================
 
 const ResultsView: React.FC = () => {
@@ -3244,6 +3277,13 @@ const ResultsView: React.FC = () => {
 
   return (
     <div className="space-y-3">
+      <EgressWarning
+        level="heavy"
+        endpoints={['/admin/results', '/admin/overview', '/admin/fund-eta', '/admin/today-stats']}
+        cacheNote="overview і today-stats кешуються 2–5 хв; results і fund-eta — без кешу."
+      >
+        Кнопка «Завантажити результати» тягне до {`${5000}`} останніх сабмішнів з усіма відповідями — найважчий запит цієї вкладки.
+      </EgressWarning>
       <div className="flex flex-wrap gap-3 text-sm">
         <div className="border rounded px-3 py-1.5 bg-slate-50">
           Сьогодні опрацьовано справ: <b>{statsBusy ? '…' : todayStats?.cases ?? '—'}</b>
@@ -3516,6 +3556,13 @@ const OverviewView: React.FC = () => {
 
   return (
     <div className="space-y-4 max-w-4xl">
+      <EgressWarning
+        level="heavy"
+        endpoints={['/admin/overview', '/admin/monthly']}
+        cacheNote="/admin/overview кешується 5 хв на бекенді."
+      >
+        Один запит тягне усіх юзерів + усі описи справ. Натискай «Оновити» тільки коли реально треба свіжі дані.
+      </EgressWarning>
       <div className="flex items-center gap-2">
         <button onClick={refresh} disabled={busy} className="px-3 py-1.5 bg-slate-200 rounded text-sm flex items-center gap-1">
           <RefreshCw size={14} /> Оновити
@@ -3882,6 +3929,14 @@ const ChartView: React.FC = () => {
 
   return (
     <div className="space-y-3 max-w-5xl">
+      <EgressWarning
+        level="heavy"
+        endpoints={['/admin/daily-activity']}
+        cacheNote="Кешується 10 хв за ключем (days, source)."
+      >
+        Зміна періоду / джерела викликає новий запит з пагінацією по 3 таблицях за N днів.
+        Не «клацай» опції без потреби — особливо 60/90 днів.
+      </EgressWarning>
       <div className="flex flex-wrap gap-2 items-center">
         <label className="text-sm text-slate-600">Період:</label>
         <select
@@ -4888,6 +4943,14 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
 
   return (
     <div className="space-y-3">
+      <EgressWarning
+        level="heavy"
+        endpoints={['/admin/overview', '/admin/submissions-by-description', '/admin/verif-submissions-by-description']}
+        cacheNote="/admin/overview кешується 5 хв; submissions-by-description — без кешу (тягне всі рядки опису)."
+      >
+        Вибір опису + крок 1 завантажує ВСІ сабмішни/підтвердження для цього опису.
+        Великі описи (сотні справ × 3 підтвердження) — це мегабайти на один клік.
+      </EgressWarning>
       <div className="flex items-center gap-2">
         <button
           onClick={refresh}
@@ -5616,6 +5679,14 @@ const IntegrityView: React.FC = () => {
 
   return (
     <div className="space-y-3">
+      <EgressWarning
+        level="very-heavy"
+        endpoints={['/admin/integrity']}
+        cacheNote="Кешується 30 хв за ключем (threshold, includeResolved). Зміна порогу = новий ключ = новий запит."
+      >
+        НАЙВАЖЧИЙ ендпоінт адмінки: тягне ВСІ сабмішни, підтвердження, справи й перевірки.
+        Не міняй поріг туди-сюди без потреби — кожна нова комбінація створює окремий важкий запит.
+      </EgressWarning>
       <div className="text-sm text-slate-600">
         Шукаємо пари підтверджень однієї справи, де відповідь відрізняється від
         попередньої більше ніж на N символів (Levenshtein). Допомагає виявити

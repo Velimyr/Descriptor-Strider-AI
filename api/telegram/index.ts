@@ -62,16 +62,20 @@ router.get('/cron/tick', async (req, res) => {
   const cfg = telegramBotConfig.dispatch;
   // selectNextCaseForUser тепер тягне кандидатів через SQL-RPC per-user,
   // тож префетч усіх справ більше не потрібен.
-  const [users, sessions] = await Promise.all([
-    getAllUsers(),
+  // Egress-фікс: тягнемо тільки tg_id активних юзерів (~10 байт/юзер замість ~5 KB),
+  // а лічильники total/active/paused отримуємо одним маленьким RPC.
+  const { getActiveUserTgIds, getUserStatusCounts } = await import('./storage.js');
+  const [activeTgIds, sessions, counts] = await Promise.all([
+    getActiveUserTgIds(),
     getAllSessions(),
+    getUserStatusCounts(),
   ]);
   const sessionMap = new Map(sessions.map(s => [s.tgId, s]));
 
   const stats = {
-    totalUsers: users.length,
+    totalUsers: counts.total,
     activeUsers: 0,
-    pausedUsers: 0,
+    pausedUsers: counts.paused,
     skippedSessionOpen: 0,
     sent: 0,
     noCases: 0,
@@ -82,31 +86,27 @@ router.get('/cron/tick', async (req, res) => {
   // Bounded concurrency — щоб і Vercel-функція укладалася в ліміт,
   // і Telegram API не отримував шторм одночасних запитів.
   const CONCURRENCY = 6;
-  const queue = [...users];
+  const queue = [...activeTgIds];
   const workers: Promise<void>[] = [];
 
-  const processOne = async (u: any) => {
-    if (u.status !== 'active') {
-      stats.pausedUsers++;
-      return;
-    }
+  const processOne = async (tgId: string) => {
     stats.activeUsers++;
 
-    const session = sessionMap.get(u.tgId);
+    const session = sessionMap.get(tgId);
     if (session && cfg.skipIfSessionOpen) {
       const ageMs = Date.now() - new Date(session.updatedAt || session.startedAt).getTime();
       const ttlMs = cfg.sessionTtlHours * 3600 * 1000;
       if (ageMs > ttlMs) {
-        await deleteSession(u.tgId);
+        await deleteSession(tgId);
         // Звільняємо collab-лок і фіксуємо «пропущено», щоб ту саму справу не показати знову.
         if (session.caseId) {
           try {
             const { unlockCase, getCase, recordSkippedCase } = await import('./storage.js');
             const cse = await getCase(session.caseId);
-            if (cse?.mode === 'collaborative' && cse.lockedByTgId === u.tgId) {
+            if (cse?.mode === 'collaborative' && cse.lockedByTgId === tgId) {
               await unlockCase(session.caseId);
             }
-            await recordSkippedCase(u.tgId, session.caseId);
+            await recordSkippedCase(tgId, session.caseId);
           } catch (e) {
             console.error('unlockCase/skip on tick-expiry failed', session.caseId, e);
           }
@@ -118,42 +118,42 @@ router.get('/cron/tick', async (req, res) => {
             '{button}',
             telegramBotConfig.texts.menuNext
           );
-          await sendMessage(u.tgId, notice);
+          await sendMessage(tgId, notice);
         } catch (e) {
-          console.error('tick-expiry notice failed', u.tgId, e);
+          console.error('tick-expiry notice failed', tgId, e);
         }
       } else {
         stats.skippedSessionOpen++;
-        results.push({ tgId: u.tgId, skipped: 'session-open' });
+        results.push({ tgId, skipped: 'session-open' });
         return;
       }
     }
 
     try {
       try {
-        await sendScheduledGreeting(u.tgId);
+        await sendScheduledGreeting(tgId);
       } catch (e) {
-        console.error('greeting failed', u.tgId, e);
+        console.error('greeting failed', tgId, e);
       }
-      const sent = await dispatchCaseToUser(u.tgId, false);
+      const sent = await dispatchCaseToUser(tgId, false);
       if (sent) {
         stats.sent++;
-        results.push({ tgId: u.tgId, sent: true });
+        results.push({ tgId, sent: true });
       } else {
         stats.noCases++;
-        results.push({ tgId: u.tgId, sent: false, reason: 'no-cases-or-inactive' });
+        results.push({ tgId, sent: false, reason: 'no-cases-or-inactive' });
       }
     } catch (e: any) {
       stats.errors++;
-      results.push({ tgId: u.tgId, error: e.message });
+      results.push({ tgId, error: e.message });
     }
   };
 
   const runWorker = async () => {
     while (queue.length > 0) {
-      const u = queue.shift();
-      if (!u) break;
-      await processOne(u);
+      const next = queue.shift();
+      if (!next) break;
+      await processOne(next);
     }
   };
   for (let i = 0; i < CONCURRENCY; i++) workers.push(runWorker());
@@ -175,10 +175,14 @@ router.get('/cron/cleanup', async (req, res) => {
     '{button}',
     telegramBotConfig.texts.menuNext
   );
-  // Завантажуємо юзерів один раз — інакше для кожної простроченої сесії
-  // тягнули б усіх з БД.
-  const allUsers = await getAllUsers();
-  const userById = new Map(allUsers.map(u => [u.tgId, u]));
+  // Тягнемо лише тих юзерів, чиї сесії реально прострочились (egress-фікс):
+  // раніше тут робився повний скан bot_users на кожному cleanup-tick.
+  const expiredTgIds = sessions
+    .filter(s => Date.now() - new Date(s.updatedAt || s.startedAt).getTime() > ttlMs)
+    .map(s => s.tgId);
+  const { getUsersByIds } = await import('./storage.js');
+  const affectedUsers = expiredTgIds.length ? await getUsersByIds(expiredTgIds) : [];
+  const userById = new Map(affectedUsers.map(u => [u.tgId, u]));
   let cleaned = 0;
   const { sendMessage } = await import('./tg-api.js');
   const { unlockCase, getCase, recordSkippedCase } = await import('./storage.js');
