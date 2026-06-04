@@ -3509,9 +3509,8 @@ const OverviewView: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    refresh();
-  }, []);
+  // Egress-фікс: не вантажимо автоматично при відкритті вкладки — лише по кнопці «Оновити».
+  // (Раніше тут був useEffect(() => refresh(), []).)
 
   useEffect(() => {
     setDescPage(1);
@@ -3580,6 +3579,12 @@ const OverviewView: React.FC = () => {
         </div>
       </div>
       {msg && <div className="text-sm">{msg}</div>}
+
+      {!data && !busy && (
+        <div className="p-6 text-center text-sm text-slate-500 border border-dashed rounded">
+          Дані не завантажено. Натисніть «Оновити», щоб підвантажити з БД.
+        </div>
+      )}
 
       {data && sub === 'progress' && (
         <section>
@@ -3891,10 +3896,8 @@ const ChartView: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    load(days);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days, source]);
+  // Egress-фікс: не вантажимо автоматично — ні на mount, ні при зміні period/source.
+  // Адмін явно натискає «Оновити», коли реально треба свіжі дані.
 
   // Геометрія SVG.
   const width = 900;
@@ -3932,10 +3935,10 @@ const ChartView: React.FC = () => {
       <EgressWarning
         level="heavy"
         endpoints={['/admin/daily-activity']}
-        cacheNote="Кешується 10 хв за ключем (days, source)."
+        cacheNote="Кешується 10 хв за ключем (days, source). Автозавантаження вимкнено — тягне дані лише по кнопці «Оновити»."
       >
-        Зміна періоду / джерела викликає новий запит з пагінацією по 3 таблицях за N днів.
-        Не «клацай» опції без потреби — особливо 60/90 днів.
+        Один запит — пагінація по 3 таблицях за N днів (особливо важко для 60/90 днів).
+        Зміна періоду / джерела сама по собі НЕ робить запит — потрібно явно натиснути «Оновити».
       </EgressWarning>
       <div className="flex flex-wrap gap-2 items-center">
         <label className="text-sm text-slate-600">Період:</label>
@@ -4088,7 +4091,11 @@ const ChartView: React.FC = () => {
           </svg>
         ) : (
           <div className="p-8 text-center text-sm text-slate-500">
-            {busy ? 'Завантаження…' : 'Немає даних за обраний період.'}
+            {busy
+              ? 'Завантаження…'
+              : data
+                ? 'Немає даних за обраний період.'
+                : 'Дані не завантажено. Натисніть «Оновити», щоб підвантажити з БД.'}
           </div>
         )}
       </div>
@@ -4342,6 +4349,10 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const [descKey, setDescKey] = useState('');
   const [descSource, setDescSource] = useState<'tg' | 'web'>('tg');
   const [webCache, setWebCache] = useState<{ key: string; submissions: any[] } | null>(null);
+  // Те саме для TG — щоб повторне «Побудувати групи» для того ж descKey
+  // не робило ще один важкий запит. Це state-memo (живе доки відкрита вкладка),
+  // НЕ TTL-кеш — користувач явно просив без кешу.
+  const [tgCache, setTgCache] = useState<{ key: string; submissions: any[] } | null>(null);
   const [numberColIdx, setNumberColIdx] = useState<number>(0);
   const [groups, setGroups] = useState<ProcessGroup[]>([]);
   const [step2Rows, setStep2Rows] = useState<Step2Row[]>([]);
@@ -4356,32 +4367,30 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const refresh = async () => {
     setBusy(true);
     setMsg('');
+    // Явна «Оновити дані» = адмін хоче свіжі дані. Скидаємо state-memo підвантажених
+    // груп — інакше повторний buildGroups для того ж descKey віддав би старі subs.
+    setTgCache(null);
+    setWebCache(null);
     try {
-      const [q, ov, verif] = await Promise.all([
+      // Egress-фікс: замість важкого overview() (всі юзери + всі описи) —
+      // легкий /admin/descriptions, який віддає лише агрегати по описах
+      // (TG-частина через SQL bot_description_progress, без скану bot_cases у коді).
+      const [q, descs] = await Promise.all([
         tgApi.getQuestions(),
-        tgApi.overview(),
-        tgApi.verifDescriptions().catch(() => ({ descriptions: [] as any[] })),
+        tgApi.descriptions('all'),
       ]);
       const qs = Array.isArray(q.questions) ? q.questions : [];
       setTgQuestions(qs);
       setQuestions(prev => (descSource === 'web' ? prev : qs));
-      const tgDescs = ((ov.descriptions || []) as any[]).map(d => ({
+      const all = ((descs.descriptions || []) as any[]).map(d => ({
         key: d.key,
-        name: `${d.name} (телеграм)`,
+        name: `${d.name} ${d.source === 'web' ? '(веб)' : '(телеграм)'}`,
         donePct: Number(d.donePct) || 0,
         doneCases: Number(d.doneCases) || 0,
         totalCases: Number(d.totalCases) || 0,
-        source: 'tg' as const,
+        source: (d.source === 'web' ? 'web' : 'tg') as 'tg' | 'web',
       }));
-      const webDescs = ((verif.descriptions || []) as any[]).map(d => ({
-        key: d.key,
-        name: `${d.name} (веб)`,
-        donePct: Number(d.donePct) || 0,
-        doneCases: Number(d.doneCases) || 0,
-        totalCases: Number(d.totalCases) || 0,
-        source: 'web' as const,
-      }));
-      setDescriptions([...tgDescs, ...webDescs].sort((a, b) => a.name.localeCompare(b.name)));
+      setDescriptions(all.sort((a, b) => a.name.localeCompare(b.name)));
       if (descSource === 'tg' && numberColIdx >= qs.length) setNumberColIdx(qs.length > 0 ? 0 : -1);
     } catch (e: any) {
       setMsg('❌ ' + e.message);
@@ -4444,10 +4453,19 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         } else {
           const r = await tgApi.verifSubmissionsByDescription(archive, fund, opys);
           subs = Array.isArray(r.submissions) ? r.submissions : [];
+          setWebCache({ key: descKey, submissions: subs });
         }
       } else {
-        const r = await tgApi.submissionsByDescription(archive, fund, opys);
-        subs = Array.isArray(r.submissions) ? r.submissions : [];
+        // Egress-фікс: state-memo для TG. Якщо для того ж descKey уже тягнули в цій
+        // сесії — не повторюємо важкий запит. Очищається лише при перезавантаженні
+        // вкладки/сторінки (як просив користувач — без TTL-кешу).
+        if (tgCache && tgCache.key === descKey) {
+          subs = tgCache.submissions;
+        } else {
+          const r = await tgApi.submissionsByDescription(archive, fund, opys);
+          subs = Array.isArray(r.submissions) ? r.submissions : [];
+          setTgCache({ key: descKey, submissions: subs });
+        }
       }
       setLoadedCount(subs.length);
     } catch (e: any) {
@@ -4945,11 +4963,12 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     <div className="space-y-3">
       <EgressWarning
         level="heavy"
-        endpoints={['/admin/overview', '/admin/submissions-by-description', '/admin/verif-submissions-by-description']}
-        cacheNote="/admin/overview кешується 5 хв; submissions-by-description — без кешу (тягне всі рядки опису)."
+        endpoints={['/admin/descriptions', '/admin/submissions-by-description', '/admin/verif-submissions-by-description']}
+        cacheNote="Список описів — легка SQL-агрегація. Submissions-by-description — без кешу, але в межах сесії результат для того ж опису перевикористовується (не тягнемо знову)."
       >
-        Вибір опису + крок 1 завантажує ВСІ сабмішни/підтвердження для цього опису.
-        Великі описи (сотні справ × 3 підтвердження) — це мегабайти на один клік.
+        «Побудувати групи» завантажує ВСІ сабмішни/підтвердження обраного опису.
+        Великі описи (сотні справ × 3 підтвердження) — мегабайти на один клік.
+        Натискання «Оновити дані» свідомо скидає state-memo й змусить повторне завантаження.
       </EgressWarning>
       <div className="flex items-center gap-2">
         <button
@@ -5446,14 +5465,9 @@ const IntegrityView: React.FC = () => {
     }
   };
 
-  // Debounce авто-перезавантаження при зміні порогу / тогла «вже опрацьовані» —
-  // лише після першого ручного завантаження.
-  useEffect(() => {
-    if (!loaded) return;
-    const t = setTimeout(() => refresh(threshold, includeResolved), 400);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threshold, includeResolved]);
+  // Egress-фікс: прибрали авто-перезавантаження при зміні порогу / тогла.
+  // Раніше debounce 400мс підтягував свіжий результат після кожної правки —
+  // тепер адмін явно натискає «Оновити», коли вибрав цільові параметри.
 
   const pairKeyOf = (d: IntegrityDiff) => {
     const a = d.first.tgId || '';
@@ -5682,10 +5696,11 @@ const IntegrityView: React.FC = () => {
       <EgressWarning
         level="very-heavy"
         endpoints={['/admin/integrity']}
-        cacheNote="Кешується 30 хв за ключем (threshold, includeResolved). Зміна порогу = новий ключ = новий запит."
+        cacheNote="Кешується 30 хв за ключем (threshold, includeResolved). Автозавантаження вимкнено — запит лише по кнопці."
       >
         НАЙВАЖЧИЙ ендпоінт адмінки: тягне ВСІ сабмішни, підтвердження, справи й перевірки.
-        Не міняй поріг туди-сюди без потреби — кожна нова комбінація створює окремий важкий запит.
+        Виставляй поріг і тогл «вже опрацьовані» до бажаних значень, далі — кнопка
+        «Завантажити перевірку» / «Оновити». Зміна параметрів сама по собі НЕ робить запит.
       </EgressWarning>
       <div className="text-sm text-slate-600">
         Шукаємо пари підтверджень однієї справи, де відповідь відрізняється від

@@ -678,6 +678,56 @@ router.post('/admin/upload-verif-case', async (req, res) => {
   }
 });
 
+// Легкий ендпоінт для ProcessDescriptionView: лише список описів (TG + web),
+// без юзерів/case-агрегацій. Заміна важкого /admin/overview у refresh().
+// Egress: TG-частина — це SQL-aggregate (bot_description_progress RPC, не повний скан),
+// web-частина — теж агрегат. Параметр ?source=tg|web|all (за замовч. all) дозволяє
+// зекономити запит, якщо адмін свідомо працює лише з одним джерелом.
+router.get('/admin/descriptions', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const sourceRaw = String(req.query.source || 'all');
+  const source = (sourceRaw === 'tg' || sourceRaw === 'web') ? sourceRaw : 'all';
+  try {
+    const { getDescriptionProgressViaRpc } = await import('./storage.js');
+    const target = telegramBotConfig.cases.targetSubmissions;
+
+    const wantTg = source === 'all' || source === 'tg';
+    const wantWeb = source === 'all' || source === 'web';
+
+    const [tgRows, webRows] = await Promise.all([
+      wantTg ? getDescriptionProgressViaRpc(target) : Promise.resolve([]),
+      wantWeb
+        ? import('../core/verifCases.js')
+            .then(m => m.getVerifDescriptions())
+            .catch(e => {
+              console.warn('descriptions: web skipped:', e?.message || e);
+              return [];
+            })
+        : Promise.resolve([]),
+    ]);
+
+    const tgDescriptions = tgRows.map(d => ({
+      key: `${d.archive}|${d.fund}|${d.opys}`,
+      name: `${d.archive} ${d.fund}-${d.opys}`,
+      earliestCreatedAt: d.earliestCreatedAt || '',
+      totalCases: d.totalCases,
+      doneCases: d.doneCases,
+      donePct: d.totalCases > 0
+        ? Math.round((d.doneCases / d.totalCases) * 1000) / 10
+        : 0,
+      source: 'telegram' as const,
+    }));
+    const webDescriptions = (webRows as any[]).map(d => ({
+      ...d,
+      earliestCreatedAt: d.earliestCreatedAt || '',
+      source: 'web' as const,
+    }));
+    res.json({ descriptions: [...tgDescriptions, ...webDescriptions] });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/admin/verif-descriptions', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   try {

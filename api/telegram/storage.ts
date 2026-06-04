@@ -923,6 +923,11 @@ export async function getResultsTotals(): Promise<{ totalSubmissions: number }> 
 
 // Усі підтвердження для конкретного опису (без ліміту, посторінково).
 // Supabase/PostgREST за замовчанням має обмеження ~1000 рядків на запит — обходимо range-pагінацією.
+// Egress-фікс: явний список колонок (без id, source_link, sprava — не використовуються
+// у ProcessDescriptionView / submissions-by-description response).
+const SUBMISSION_COLS_FOR_DESC =
+  'case_id, tg_id, display_name, submitted_at, answers, archive, fund, opys, source_pdf, page';
+
 export async function getSubmissionsByDescription(
   archive: string,
   fund: string,
@@ -935,7 +940,7 @@ export async function getSubmissionsByDescription(
   while (true) {
     const { data, error } = await db()
       .from(T.submissions)
-      .select('*')
+      .select(SUBMISSION_COLS_FOR_DESC)
       .eq('archive', archive)
       .eq('fund', fund)
       .eq('opys', opys)
@@ -1134,6 +1139,13 @@ export async function confirmCase(
 }
 
 // Усі collab-справи в межах опису (для експорту як "віртуальні submissions").
+// Egress-фікс: явний список колонок. Зокрема НЕ тягнемо bbox (часто довгий),
+// tg_file_id/tg_chat_id/tg_message_id, locked_*, submissions_count — нічого з цього
+// не потрібно для collabCaseToSubmission().
+const COLLAB_CASE_COLS_FOR_DESC =
+  'case_id, archive, fund, opys, sprava, source_pdf, page, mode, status, ' +
+  'current_answers, current_author_tg_id, confirmations_count, created_at, updated_at';
+
 export async function getCollabCasesByDescription(
   archive: string,
   fund: string,
@@ -1146,7 +1158,7 @@ export async function getCollabCasesByDescription(
   while (true) {
     const { data, error } = await db()
       .from(T.cases)
-      .select('*')
+      .select(COLLAB_CASE_COLS_FOR_DESC)
       .eq('archive', archive)
       .eq('fund', fund)
       .eq('opys', opys)

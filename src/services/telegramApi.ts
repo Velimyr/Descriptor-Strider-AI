@@ -91,6 +91,20 @@ export const tgApi = {
       body: JSON.stringify({ imageBase64, mime, apiKey }),
     }),
   overview: () => call('/admin/overview'),
+  // Лёгкий запит: лише список описів (TG + web), без юзерів/інших агрегацій.
+  // Заміна `overview()` у місцях, де потрібен тільки селектор опису.
+  descriptions: (source: 'tg' | 'web' | 'all' = 'all') =>
+    call(`/admin/descriptions?source=${source}`) as Promise<{
+      descriptions: Array<{
+        key: string;
+        name: string;
+        earliestCreatedAt: string;
+        totalCases: number;
+        doneCases: number;
+        donePct: number;
+        source: 'telegram' | 'web';
+      }>;
+    }>,
   monthly: (month?: string) =>
     call(`/admin/monthly${month ? `?month=${encodeURIComponent(month)}` : ''}`) as Promise<{
       months: string[];
