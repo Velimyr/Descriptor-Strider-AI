@@ -1200,6 +1200,26 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           ctx.fillText('↮', ux, uy + 1);
           ctx.textAlign = 'start';
           ctx.textBaseline = 'alphabetic';
+
+          // Кнопка «змінити послідовність» — ліворуч від «розʼєднати».
+          // Клік: натиснута зона міняється місцями з попередньою у груповому порядку
+          // (з обгортанням). Для пари 1.1↔1.2 — простий своп.
+          const rx = cx - 66;
+          const ry = cy;
+          ctx.fillStyle = 'rgba(71, 85, 105, 0.95)';
+          ctx.beginPath();
+          ctx.arc(rx, ry, 14, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = 'white';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.fillStyle = 'white';
+          ctx.font = 'bold 16px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('⇅', rx, ry + 1);
+          ctx.textAlign = 'start';
+          ctx.textBaseline = 'alphabetic';
         }
 
         // Resize-маркери (8 шт.: 4 кути + 4 середини сторін). Білі квадрати з кольоровим бордером.
@@ -1393,6 +1413,24 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     return Math.sqrt(dx * dx + dy * dy) <= 14;
   };
 
+  // Кнопка «змінити послідовність» — ліворуч від «розʼєднати», ще на 32px.
+  const hitReorderHandle = (point: { x: number; y: number }, b: Box): boolean => {
+    if (!canvasRef.current) return false;
+    if (!selectedIds.has(b.id)) return false;
+    const items = groups.get(b.groupId);
+    if (!items || items.length <= 1) return false;
+    const W = canvasRef.current.width;
+    const H = canvasRef.current.height;
+    const lp = localPoint(point, b);
+    const cxPx = (b.x + b.w) * W - 14 - 66;
+    const cyPx = b.y * H + 14;
+    const px = lp.x * W;
+    const py = lp.y * H;
+    const dx = px - cxPx;
+    const dy = py - cyPx;
+    return Math.sqrt(dx * dx + dy * dy) <= 14;
+  };
+
   // Перевірка попадання в resize-маркер. Повертає тип маркера або null.
   const hitResizeHandle = (
     point: { x: number; y: number },
@@ -1507,7 +1545,15 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       }
       return;
     }
-    // 0) Кнопка «розʼєднати» — пріоритет (тільки для виділеної зони у спільній справі).
+    // 0) Кнопка «змінити послідовність» — найвищий пріоритет (виділена зона + у групі).
+    for (const b of boxes) {
+      if (hitReorderHandle(p, b)) {
+        reorderGroupOnClick(b.id, b.groupId);
+        actionRef.current = null;
+        return;
+      }
+    }
+    // 0.1) Кнопка «розʼєднати» — пріоритет (тільки для виділеної зони у спільній справі).
     for (const b of boxes) {
       if (hitUngroupHandle(p, b)) {
         ungroupAll(b.groupId);
@@ -1864,6 +1910,45 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       const next: Record<number, Box[]> = {};
       for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
         next[+k] = list.map(b => (b.groupId === groupId ? { ...b, groupId: b.id } : b));
+      }
+      return next;
+    });
+  };
+
+  // Поміняти натиснуту зону місцями з попередньою у груповому порядку (з обгортанням).
+  // Для пари — простий своп (1.1 ↔ 1.2). Для більших груп — кожен клік піднімає
+  // натиснуту зону на одну позицію вгору; коли вона зверху, наступний клік скидає
+  // її в самий низ. Послідовні кліки циклічно перебирають усі позиції.
+  const reorderGroupOnClick = (clickedBoxId: string, groupId: string) => {
+    setPageBoxes(prev => {
+      type Mem = { page: number; box: Box };
+      const members: Mem[] = [];
+      for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
+        for (const b of list) {
+          if (b.groupId === groupId) members.push({ page: +k, box: b });
+        }
+      }
+      if (members.length < 2) return prev;
+      // Той самий порядок сортування, що й у viewer `groups`:
+      // groupOrder якщо заданий, інакше — геометричний (page, y).
+      members.sort((a, b) => {
+        const oa = a.box.groupOrder ?? -1;
+        const ob = b.box.groupOrder ?? -1;
+        if (oa !== ob && oa >= 0 && ob >= 0) return oa - ob;
+        return a.page - b.page || a.box.y - b.box.y;
+      });
+      const idx = members.findIndex(m => m.box.id === clickedBoxId);
+      if (idx < 0) return prev;
+      const prevIdx = (idx - 1 + members.length) % members.length;
+      const newSeq = members.slice();
+      [newSeq[idx], newSeq[prevIdx]] = [newSeq[prevIdx], newSeq[idx]];
+      const orderById = new Map<string, number>();
+      newSeq.forEach((m, i) => orderById.set(m.box.id, i));
+      const next: Record<number, Box[]> = {};
+      for (const [k, list] of Object.entries(prev) as [string, Box[]][]) {
+        next[+k] = list.map(b =>
+          orderById.has(b.id) ? { ...b, groupOrder: orderById.get(b.id)! } : b
+        );
       }
       return next;
     });
