@@ -35,6 +35,7 @@ const RPC_INC_TOTAL_POINTS = `${PREFIX}inc_total_points`;
 const RPC_LEADERBOARD_TOP = `${PREFIX}leaderboard_top`;
 const RPC_USER_RANK = `${PREFIX}user_rank`;
 const RPC_USER_STATUS_COUNTS = `${PREFIX}user_status_counts`;
+const RPC_FUND_ETA_STATS = `${PREFIX}fund_eta_stats`;
 
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
@@ -228,6 +229,43 @@ export async function getAllUsers(): Promise<BotUser[]> {
     if (error) throw error;
     const rows = data || [];
     out.push(...rows.map(mapUser));
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
+// Компактний список юзерів для адмін-overview: тільки 5 полів,
+// без важких photo_file_id/photo_message_id/created_at/etc. Замінює `getAllUsers()`
+// у місцях, де адмінка показує таблицю рейтингу.
+export interface CompactUser {
+  tgId: string;
+  displayName: string;
+  totalPoints: number;
+  status: string;
+  consecutiveMisses: number;
+}
+export async function getCompactUsersForOverview(): Promise<CompactUser[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: CompactUser[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.users)
+      .select('tg_id, display_name, total_points, status, consecutive_misses')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(
+      ...rows.map((r: any) => ({
+        tgId: r.tg_id,
+        displayName: r.display_name || '',
+        totalPoints: Number(r.total_points || 0),
+        status: r.status || '',
+        consecutiveMisses: Number(r.consecutive_misses || 0),
+      }))
+    );
     if (rows.length < pageSize) break;
     from += pageSize;
   }
@@ -1220,6 +1258,25 @@ export async function getDescriptionProgressViaRpc(target: number): Promise<
     doneCases: Number(r.done_cases || 0),
     cappedSum: Number(r.capped_sum || 0),
   }));
+}
+
+// Агрегати для прогнозу завершення фонду. Повертає тільки 2 числа —
+// решту (ETA-дату, totalDescriptions/baseline) рахуємо вже в API з конфіга.
+// Заміна `getAllCases() + computeFundEta(cases)` — основне джерело egress.
+export async function getFundEtaStats(
+  target: number,
+  windowDays: number
+): Promise<{ fullyDoneByBot: number; completionsInWindow: number }> {
+  const { data, error } = await db().rpc(RPC_FUND_ETA_STATS, {
+    p_target: target,
+    p_window_days: windowDays,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    fullyDoneByBot: Number(row?.fully_done_by_bot || 0),
+    completionsInWindow: Number(row?.completions_in_window || 0),
+  };
 }
 
 // Кандидати для dispatch для конкретного юзера (виключає вже опрацьовані).

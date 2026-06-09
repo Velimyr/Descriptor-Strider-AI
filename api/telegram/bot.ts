@@ -20,7 +20,7 @@ import {
   upsertUser,
   getDailyCount,
   getResultsTotals,
-  getAllCases,
+  getFundEtaStats,
   getDescriptionProgressViaRpc,
   getMonthlyLeaderboard,
   getMonthlyMonths,
@@ -41,7 +41,7 @@ import {
   sendPhotoByFileId,
 } from './tg-api.js';
 import {
-  computeFundEta,
+  computeFundEtaFromStats,
   computePointsForToday,
   getTodayProcessedCases,
   kyivDateString,
@@ -73,13 +73,37 @@ function fmt(template: string, values: Record<string, string | number>): string 
   return template.replace(/\{(\w+)\}/g, (_, k) => String(values[k] ?? `{${k}}`));
 }
 
+// Питання змінюються максимум кілька разів за весь час життя проєкту,
+// але читаються в кожному dispatch / submit / preview — до сотень разів на день.
+// Кеш у пам'яті Vercel-інстансу на 5 хв скорочує читання bot_meta до 1/5хв
+// (warm-window). Cold-start скине кеш — ОК, перше читання все одно піде в БД.
+let questionsCache: { value: TableColumn[]; expiresAt: number } | null = null;
+const QUESTIONS_TTL_MS = 5 * 60 * 1000;
+
+// Викликати з ендпоінту /admin/save-questions після setMeta — щоб одразу побачити
+// нові питання, а не чекати до 5 хв на природний TTL. Кеш живе в межах одного
+// інстансу, тож інші теплі інстанси оновляться лише через TTL — для рідких
+// правок питань це прийнятно.
+export function invalidateQuestionsCache(): void {
+  questionsCache = null;
+}
+
 async function getQuestions(): Promise<TableColumn[]> {
+  if (questionsCache && questionsCache.expiresAt > Date.now()) {
+    return questionsCache.value;
+  }
   const raw = await getMeta('questions');
-  if (!raw) return [];
+  if (!raw) {
+    questionsCache = { value: [], expiresAt: Date.now() + QUESTIONS_TTL_MS };
+    return [];
+  }
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const value = Array.isArray(parsed) ? parsed : [];
+    questionsCache = { value, expiresAt: Date.now() + QUESTIONS_TTL_MS };
+    return value;
   } catch {
+    questionsCache = { value: [], expiresAt: Date.now() + QUESTIONS_TTL_MS };
     return [];
   }
 }
@@ -1207,14 +1231,19 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
 }
 
 async function cmdProgress(chatId: number, user: BotUser) {
-  // SQL-агрегація для списку описів + усі справи для прогнозу завершення фонду
-  // (той самий computeFundEta, що й в адмінці — щоб цифри збігались).
+  // SQL-агрегація для списку описів + такі ж SQL-агрегати для ETA фонду.
+  // Раніше тут робився getAllCases() — головне джерело egress (11 МБ/виклик).
   const target = telegramBotConfig.cases.targetSubmissions;
-  const [rawDescriptions, allCases] = await Promise.all([
+  const ETA_WINDOW_DAYS = 14;
+  const [rawDescriptions, etaStats] = await Promise.all([
     getDescriptionProgressViaRpc(target),
-    getAllCases(),
+    getFundEtaStats(target, ETA_WINDOW_DAYS),
   ]);
-  const eta = computeFundEta(allCases);
+  const eta = computeFundEtaFromStats(
+    etaStats.fullyDoneByBot,
+    etaStats.completionsInWindow,
+    ETA_WINDOW_DAYS
+  );
   const etaLine =
     eta.remaining <= 0
       ? fmt(T.fundEtaDone, { fundNumber: eta.fundNumber })

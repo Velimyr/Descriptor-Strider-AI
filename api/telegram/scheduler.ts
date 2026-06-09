@@ -3,7 +3,6 @@ import {
   BotCase,
   BotUser,
   countSubmissionsByCase,
-  getAllCases,
   getCandidateCasesForUser,
   getLastUserCaseKind,
   getMeta,
@@ -301,8 +300,47 @@ export interface FundEta {
   etaDateLocal: string | null;
 }
 
+// Чисто-арифметична версія: бере вже готові агрегати з RPC `bot_fund_eta_stats`
+// і дораховує ETA-дату + remaining з конфіга. Без `BotCase[]` — нуль egress.
+// Використовуй СКРІЗЬ замість `computeFundEta(allCases)`.
+export function computeFundEtaFromStats(
+  fullyDoneByBot: number,
+  completionsInWindow: number,
+  windowDays = 14
+): FundEta {
+  const fund = cfg.fund;
+  const ratePerDay = completionsInWindow / windowDays;
+  const totalDone = fullyDoneByBot + fund.baselineDoneDescriptions;
+  const remaining = Math.max(0, fund.totalDescriptions - totalDone);
+  let etaDateIso: string | null = null;
+  let etaDateLocal: string | null = null;
+  if (remaining > 0 && ratePerDay > 0) {
+    const daysLeft = Math.ceil(remaining / ratePerDay);
+    const etaMs = Date.now() + daysLeft * 86_400_000;
+    const d = new Date(etaMs);
+    etaDateIso = d.toISOString();
+    etaDateLocal = KYIV_UA_DATE_FMT.format(d);
+  }
+  return {
+    fundNumber: fund.number,
+    totalDescriptions: fund.totalDescriptions,
+    baselineDoneDescriptions: fund.baselineDoneDescriptions,
+    fullyDoneByBot,
+    totalDone,
+    remaining,
+    windowDays,
+    completionsInWindow,
+    ratePerDay,
+    etaDateIso,
+    etaDateLocal,
+  };
+}
+
 // Спільна логіка прогнозу завершення фонду. Використовується і в адмін-ендпоінті,
 // і в /progress-команді бота, щоб користувачі бачили одну й ту саму цифру.
+// LEGACY: цей варіант робить повний скан bot_cases. Залишений для адмінських
+// місць, які поки що тягнуть `getAllCases()` (integrity тощо). Нові виклики —
+// через `getFundEtaStats() + computeFundEtaFromStats()`.
 export function computeFundEta(cases: BotCase[], windowDays = 14): FundEta {
   const fund = cfg.fund;
   const target = cfg.cases.targetSubmissions;

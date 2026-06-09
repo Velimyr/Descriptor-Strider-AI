@@ -81,6 +81,7 @@ create table if not exists botdev_case_confirmations (
   primary key (case_id, tg_id)
 );
 create index if not exists idx_botdev_confirms_case on botdev_case_confirmations(case_id);
+create index if not exists idx_botdev_confirms_user_at on botdev_case_confirmations(tg_id, at desc);
 
 -- Снапшот відповідей користувача в момент події (create/edit/confirm).
 -- Потрібен для перевірки доброчесності у collab-режимі: без нього старі
@@ -308,6 +309,35 @@ returns table (
   group by c.archive, c.fund, c.opys;
 $$;
 revoke all on function botdev_description_progress(int) from public, anon, authenticated;
+
+-- Агрегати для прогнозу завершення фонду. Аналог bot_fund_eta_stats.
+create or replace function botdev_fund_eta_stats(p_target int, p_window_days int)
+returns table (fully_done_by_bot int, completions_in_window int)
+language sql security definer as $$
+  with per_desc as (
+    select
+      archive, fund, opys,
+      count(*) as total_cases,
+      count(*) filter (
+        where status = 'done'
+           or (mode = 'collaborative' and confirmations_count >= p_target)
+           or (mode <> 'collaborative' and submissions_count >= p_target)
+      ) as done_cases,
+      max(updated_at) as last_updated
+    from botdev_cases
+    group by archive, fund, opys
+  ),
+  fully as (
+    select last_updated from per_desc
+    where total_cases > 0 and done_cases = total_cases
+  )
+  select
+    (select count(*)::int from fully) as fully_done_by_bot,
+    (select count(*)::int from fully
+      where last_updated > now() - (p_window_days || ' days')::interval
+    ) as completions_in_window;
+$$;
+revoke all on function botdev_fund_eta_stats(int, int) from public, anon, authenticated;
 
 -- Кандидати на dispatch: відкриті справи, не заблоковані іншим юзером,
 -- де користувач НЕ брав участі (не сабмітив, не пропустив, не торкався в collab).

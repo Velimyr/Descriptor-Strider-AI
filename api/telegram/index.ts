@@ -2,9 +2,7 @@ import express from 'express';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import {
   appendCases,
-  getAllCases,
   getAllSessions,
-  getAllUsers,
   getMeta,
   patchUser,
   setMeta,
@@ -16,11 +14,9 @@ import { handleUpdate, dispatchCaseToUser, sendScheduledGreeting } from './bot.j
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
 import { detectCaseBoxes } from './slicer.js';
 import {
-  computeFundEta,
+  computeFundEtaFromStats,
   kyivDateString,
   nowIsoUtc,
-  progressByDescription,
-  progressOfAllCases,
   recomputeCaseSubmissionCount,
 } from './scheduler.js';
 
@@ -530,6 +526,10 @@ router.post('/admin/save-questions', async (req, res) => {
   const { questions } = req.body || {};
   if (!Array.isArray(questions)) return res.status(400).json({ error: 'questions array required' });
   await setMeta('questions', JSON.stringify(questions));
+  // Скинути in-memory кеш питань у цьому інстансі — інші теплі інстанси
+  // оновляться через TTL (5 хв).
+  const { invalidateQuestionsCache } = await import('./bot.js');
+  invalidateQuestionsCache();
   res.json({ ok: true, count: questions.length });
 });
 
@@ -1095,7 +1095,9 @@ router.get('/admin/integrity', async (req, res) => {
       String(b.second.submittedAt || '').localeCompare(String(a.second.submittedAt || ''))
     );
     const integrityPayload = { ok: true, threshold, totalCases: byCase.size, diffs };
-    cacheSet(cacheKey, integrityPayload, 30 * 60_000);
+    // 2 години замість 30 хв: integrity-результати міняються повільно,
+    // а кожен miss коштує 32+ МБ egress (getAllConfirmations + getAllCases + subs).
+    cacheSet(cacheKey, integrityPayload, 120 * 60_000);
     res.json(integrityPayload);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -1263,14 +1265,28 @@ router.get('/admin/user-photo/:tgId', async (req, res) => {
 
 router.get('/admin/overview', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  // Кеш 5 хв. Запит ТЯГНЕ getAllUsers + getAllCases (повний скан) — головний винуватець egress.
-  // Параметр ?nocache=1 — примусове оновлення.
+  // Кеш 5 хв. Раніше тут тягнули getAllUsers + getAllCases (повний скан з JSONB) —
+  // це був головний винуватець egress адмінки. Тепер: компактний select юзерів
+  // (5 полів) + getDescriptionProgressViaRpc (агрегати, без рядків кейсів).
   if (req.query.nocache !== '1') {
     const cached = cacheGet('overview');
     if (cached) return res.json({ ...cached, cached: true });
   }
-  const [users, cases] = await Promise.all([getAllUsers(), getAllCases()]);
-  const tgDescriptions = progressByDescription(cases).map(d => ({ ...d, source: 'telegram' as const }));
+  const target = telegramBotConfig.cases.targetSubmissions;
+  const { getCompactUsersForOverview, getDescriptionProgressViaRpc } = await import('./storage.js');
+  const [compactUsers, tgDescRaw] = await Promise.all([
+    getCompactUsersForOverview(),
+    getDescriptionProgressViaRpc(target),
+  ]);
+  const tgDescriptions = tgDescRaw.map(d => ({
+    key: `${d.archive}|${d.fund}|${d.opys}`,
+    name: `${d.archive} ${d.fund}-${d.opys}`,
+    earliestCreatedAt: d.earliestCreatedAt,
+    totalCases: d.totalCases,
+    doneCases: d.doneCases,
+    donePct: d.totalCases > 0 ? Math.round((d.doneCases / d.totalCases) * 1000) / 10 : 0,
+    source: 'telegram' as const,
+  }));
   // Веб-описи (окремі таблиці) — тегаємо source='web'.
   let webDescriptions: any[] = [];
   try {
@@ -1281,18 +1297,14 @@ router.get('/admin/overview', async (req, res) => {
   }
   const descriptions = [...tgDescriptions, ...webDescriptions];
   const fullyDoneDescriptions = descriptions.filter(d => d.totalCases > 0 && d.doneCases >= d.totalCases).length;
+  // Загальні лічильники кейсів — сума агрегатів по описах (без повного скану).
+  const totalCases = tgDescriptions.reduce((s, d) => s + d.totalCases, 0);
+  const doneCases = tgDescriptions.reduce((s, d) => s + d.doneCases, 0);
+  const donePct = totalCases > 0 ? Math.round((doneCases / totalCases) * 1000) / 10 : 0;
   const payload = {
-    users: users
-      .map(u => ({
-        tgId: u.tgId,
-        displayName: u.displayName,
-        totalPoints: u.totalPoints,
-        status: u.status,
-        consecutiveMisses: u.consecutiveMisses,
-      }))
-      .sort((a, b) => b.totalPoints - a.totalPoints),
-    cases: cases.length,
-    progress: progressOfAllCases(cases),
+    users: compactUsers.sort((a, b) => b.totalPoints - a.totalPoints),
+    cases: totalCases,
+    progress: { totalCases, doneCases, donePct },
     descriptions,
     fullyDoneDescriptions,
   };
@@ -1341,8 +1353,10 @@ router.get('/admin/fund-eta', async (req, res) => {
     1,
     Math.min(60, parseInt(String(req.query.windowDays || '14'), 10) || 14)
   );
-  const cases = await getAllCases();
-  res.json(computeFundEta(cases, windowDays));
+  const target = telegramBotConfig.cases.targetSubmissions;
+  const { getFundEtaStats } = await import('./storage.js');
+  const stats = await getFundEtaStats(target, windowDays);
+  res.json(computeFundEtaFromStats(stats.fullyDoneByBot, stats.completionsInWindow, windowDays));
 });
 
 router.get('/admin/daily-activity', async (req, res) => {

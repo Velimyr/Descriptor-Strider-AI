@@ -92,6 +92,9 @@ create table if not exists bot_case_confirmations (
   primary key (case_id, tg_id)
 );
 create index if not exists idx_confirms_case on bot_case_confirmations(case_id);
+-- За tg_id PK покривав погано (case_id перший), і `getLastUserCaseKind`
+-- (читається з кожного dispatch) робив повний скан PK.
+create index if not exists idx_confirms_user_at on bot_case_confirmations(tg_id, at desc);
 
 -- Снапшот відповідей користувача в момент події (create/edit/confirm).
 -- Потрібен для перевірки доброчесності у collab-режимі: без нього старі
@@ -353,6 +356,45 @@ returns table (
   group by c.archive, c.fund, c.opys;
 $$;
 revoke all on function bot_description_progress(int) from public, anon, authenticated;
+
+-- Агрегати для прогнозу завершення фонду. Замінює `getAllCases()` +
+-- `computeFundEta()` у JS — повертає одним рядком лише те, що реально
+-- використовується для формули. ETA-дата рахується вже на сервері API
+-- (вона тривіальна арифметика, але потребує константи фонду з конфіга).
+--
+-- p_target            — мін. підтверджень/сабмітів, щоб справа = "done".
+-- p_window_days       — вікно для оцінки швидкості (днів).
+--
+-- fully_done_by_bot   — кількість описів, де ВСІ справи done.
+-- completions_in_window — серед fully_done — скільки завершились за останні
+--                        p_window_days днів (max(updated_at) у вікні).
+create or replace function bot_fund_eta_stats(p_target int, p_window_days int)
+returns table (fully_done_by_bot int, completions_in_window int)
+language sql security definer as $$
+  with per_desc as (
+    select
+      archive, fund, opys,
+      count(*) as total_cases,
+      count(*) filter (
+        where status = 'done'
+           or (mode = 'collaborative' and confirmations_count >= p_target)
+           or (mode <> 'collaborative' and submissions_count >= p_target)
+      ) as done_cases,
+      max(updated_at) as last_updated
+    from bot_cases
+    group by archive, fund, opys
+  ),
+  fully as (
+    select last_updated from per_desc
+    where total_cases > 0 and done_cases = total_cases
+  )
+  select
+    (select count(*)::int from fully) as fully_done_by_bot,
+    (select count(*)::int from fully
+      where last_updated > now() - (p_window_days || ' days')::interval
+    ) as completions_in_window;
+$$;
+revoke all on function bot_fund_eta_stats(int, int) from public, anon, authenticated;
 
 -- Кандидати на dispatch: відкриті справи, не заблоковані іншим юзером,
 -- де користувач НЕ брав участі (не сабмітив, не пропустив, не торкався в collab).
