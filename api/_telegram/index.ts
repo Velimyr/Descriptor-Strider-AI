@@ -654,7 +654,7 @@ router.post('/admin/upload-verif-case', async (req, res) => {
   const channelId = process.env[telegramBotConfig.tg.channelIdEnv];
   if (!channelId) return res.status(400).json({ error: `Missing ${telegramBotConfig.tg.channelIdEnv}` });
   try {
-    const { appendVerifCase } = await import('../core/verifCases.js');
+    const { appendVerifCase } = await import('../_core/verifCases.js');
     const buf = Buffer.from(imageBase64, 'base64');
     const result = await sendPhotoByBuffer(channelId, buf, 'verif-case.jpg');
     const photoArr = result?.photo || [];
@@ -697,7 +697,7 @@ router.get('/admin/descriptions', async (req, res) => {
     const [tgRows, webRows] = await Promise.all([
       wantTg ? getDescriptionProgressViaRpc(target) : Promise.resolve([]),
       wantWeb
-        ? import('../core/verifCases.js')
+        ? import('../_core/verifCases.js')
             .then(m => m.getVerifDescriptions())
             .catch(e => {
               console.warn('descriptions: web skipped:', e?.message || e);
@@ -731,7 +731,7 @@ router.get('/admin/descriptions', async (req, res) => {
 router.get('/admin/verif-descriptions', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   try {
-    const { getVerifDescriptions } = await import('../core/verifCases.js');
+    const { getVerifDescriptions } = await import('../_core/verifCases.js');
     res.json({ descriptions: await getVerifDescriptions() });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -745,7 +745,7 @@ router.get('/admin/verif-submissions-by-description', async (req, res) => {
   const opys = String(req.query.opys || '');
   if (!archive || !fund || !opys) return res.status(400).json({ error: 'archive, fund, opys required' });
   try {
-    const { getVerifSubmissionsByDescription } = await import('../core/verifCases.js');
+    const { getVerifSubmissionsByDescription } = await import('../_core/verifCases.js');
     const { questions, submissions } = await getVerifSubmissionsByDescription(archive, fund, opys);
     res.json({ ok: true, questions, submissions });
   } catch (e: any) {
@@ -841,7 +841,7 @@ router.get('/admin/results', async (req, res) => {
       questions = [];
     }
     // Веб-перевірка (окремі таблиці) — додаємо як рядки з source='web'.
-    const { getRecentVerifResults } = await import('../core/verifCases.js');
+    const { getRecentVerifResults } = await import('../_core/verifCases.js');
     let webResults: any[] = [];
     try {
       webResults = await getRecentVerifResults(limit);
@@ -1314,7 +1314,7 @@ router.get('/admin/overview', async (req, res) => {
   // Веб-описи (окремі таблиці) — тегаємо source='web'.
   let webDescriptions: any[] = [];
   try {
-    const { getVerifDescriptions } = await import('../core/verifCases.js');
+    const { getVerifDescriptions } = await import('../_core/verifCases.js');
     webDescriptions = (await getVerifDescriptions()).map(d => ({ ...d, earliestCreatedAt: '', source: 'web' as const }));
   } catch (e: any) {
     console.warn('overview: web descriptions skipped:', e?.message || e);
@@ -1659,7 +1659,7 @@ router.post('/admin/puzzle/bulk', async (req, res) => {
 router.get('/admin/partners', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   try {
-    const { listPartners } = await import('../core/partners.js');
+    const { listPartners } = await import('../_core/partners.js');
     res.json({ partners: await listPartners() });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'internal' });
@@ -1674,7 +1674,7 @@ router.get('/admin/partners/stats', async (req, res) => {
   const from = String(req.query.from || defaultFrom.toISOString());
   const to = String(req.query.to || now.toISOString());
   try {
-    const { getPartnerStats } = await import('../core/partners.js');
+    const { getPartnerStats } = await import('../_core/partners.js');
     res.json({ stats: await getPartnerStats(from, to), from, to });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'internal' });
@@ -1692,7 +1692,7 @@ router.post('/admin/partners', async (req, res) => {
   }
   const origins = Array.isArray(allowedOrigins) ? allowedOrigins.map(String).filter(Boolean) : [];
   try {
-    const { createPartner } = await import('../core/partners.js');
+    const { createPartner } = await import('../_core/partners.js');
     const result = await createPartner({ partnerId, name, nicknamePrefix, allowedOrigins: origins, customization });
     res.json({ partner: result.partner, apiKey: result.apiKey });
   } catch (e: any) {
@@ -1704,7 +1704,7 @@ router.patch('/admin/partners/:id', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const { name, nicknamePrefix, allowedOrigins, active, customization } = req.body || {};
   try {
-    const { updatePartner } = await import('../core/partners.js');
+    const { updatePartner } = await import('../_core/partners.js');
     await updatePartner(req.params.id, {
       name,
       nicknamePrefix,
@@ -1721,7 +1721,7 @@ router.patch('/admin/partners/:id', async (req, res) => {
 router.delete('/admin/partners/:id', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   try {
-    const { deletePartner } = await import('../core/partners.js');
+    const { deletePartner } = await import('../_core/partners.js');
     await deletePartner(req.params.id);
     res.json({ ok: true });
   } catch (e: any) {

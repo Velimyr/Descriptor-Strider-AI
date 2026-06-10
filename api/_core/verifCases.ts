@@ -9,8 +9,8 @@ import {
   incTotalPoints,
   incMonthlyPoints,
   incDailyCount,
-} from '../telegram/storage.js';
-import { kyivDateString, kyivMonthString } from '../telegram/scheduler.js';
+} from '../_telegram/storage.js';
+import { kyivDateString, kyivMonthString } from '../_telegram/scheduler.js';
 
 const PREFIX = process.env.TABLE_PREFIX ?? 'bot_';
 const T = {
@@ -284,7 +284,7 @@ export async function submitVerification(opts: {
   // Бейджі — тихо (без Telegram-картки); помилка тут не має ламати підтвердження.
   let earnedBadges: { id: string; title: string; text: string; media: 'image' | 'video' }[] = [];
   try {
-    const { evaluateWebBadges } = await import('../telegram/badges.js');
+    const { evaluateWebBadges } = await import('../_telegram/badges.js');
     const newly = await evaluateWebBadges({ tgId: opts.verifierId, totalPoints: total, todayCount });
     earnedBadges = newly.map(b => ({
       id: b.id,

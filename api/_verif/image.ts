@@ -2,8 +2,8 @@
 // Авторизація — HMAC-токен на caseId (verifImageToken), як у віджеті. Кеш на CDN.
 import type { Request, Response } from 'express';
 import axios from 'axios';
-import { getVerifCaseFileId, verifImageToken } from '../core/verifCases.js';
-import { tg } from '../telegram/tg-api.js';
+import { getVerifCaseFileId, verifImageToken } from '../_core/verifCases.js';
+import { tg } from '../_telegram/tg-api.js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 export async function proxyVerifImage(req: Request, res: Response) {

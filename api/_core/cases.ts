@@ -1,9 +1,9 @@
 // Видача справ web-юзерам. Перевикористовує існуючий dispatch (selectNextCaseForUser),
 // додає collab-локінг і метадані для віджета (питання, поточні відповіді, тип задачі).
-import { BotCase, BotUser, getCase, lockCase, unlockCase } from '../telegram/storage.js';
-import { selectNextCaseForUser } from '../telegram/scheduler.js';
+import { BotCase, BotUser, getCase, lockCase, unlockCase } from '../_telegram/storage.js';
+import { selectNextCaseForUser } from '../_telegram/scheduler.js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
-import { getMeta } from '../telegram/storage.js';
+import { getMeta } from '../_telegram/storage.js';
 
 export type CaseTaskType = 'recognize' | 'review';
 

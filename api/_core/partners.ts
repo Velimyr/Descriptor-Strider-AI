@@ -3,7 +3,7 @@
 // одноразово (далі — тільки sha256 у БД). Кожен запит з віджета валідується по
 // X-Partner-Key + Origin (точний рядок, без wildcard).
 import { createHash, randomBytes } from 'node:crypto';
-import { db, T } from '../telegram/storage.js';
+import { db, T } from '../_telegram/storage.js';
 
 // Допустимі значення для presetColor у кастомізації віджета. Кожне мапиться
 // на конкретний hex у віджеті (widget/App.tsx) — щоб партнер не міг ввести

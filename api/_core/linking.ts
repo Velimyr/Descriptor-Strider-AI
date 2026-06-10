@@ -12,7 +12,7 @@
 // Edge-кейс: TG-юзер може отримати справу, яку web-юзер уже опрацьовував.
 // Прийнятно на MVP.
 import { randomBytes } from 'node:crypto';
-import { BotUser, db, getUser, T } from '../telegram/storage.js';
+import { BotUser, db, getUser, T } from '../_telegram/storage.js';
 
 const PREFIX = process.env.TABLE_PREFIX ?? 'bot_';
 const RPC_MERGE_USERS = `${PREFIX}merge_users`;

@@ -10,8 +10,8 @@
 //   POST /me/rename          — змінити імʼя для рейтингу
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { requireSession } from '../public/middleware.js';
-import { issueSessionToken, verifySessionToken } from '../core/sessionToken.js';
+import { requireSession } from '../_public/middleware.js';
+import { issueSessionToken, verifySessionToken } from '../_core/sessionToken.js';
 import {
   createWebUser,
   getUser,
@@ -19,9 +19,9 @@ import {
   patchUser,
   userExistsByDisplayName,
   getEarnedBadgeIds,
-} from '../telegram/storage.js';
-import { getStatsForUser } from '../core/stats.js';
-import { mergeWebUserIntoTelegram } from '../core/linking.js';
+} from '../_telegram/storage.js';
+import { getStatsForUser } from '../_core/stats.js';
+import { mergeWebUserIntoTelegram } from '../_core/linking.js';
 import {
   getNextForVerifier,
   submitVerification,
@@ -29,7 +29,7 @@ import {
   releaseVerification,
   getVerifStats,
   VerifError,
-} from '../core/verifCases.js';
+} from '../_core/verifCases.js';
 import { proxyVerifImage } from './image.js';
 import { serveBadgeImage } from './badge.js';
 import {
@@ -37,8 +37,8 @@ import {
   telegramDisplayName,
   VERIF_PARTNER_ID,
   TelegramLoginData,
-} from '../core/verifAuth.js';
-import { createLoginCode, getLoginCode } from '../core/verifLogin.js';
+} from '../_core/verifAuth.js';
+import { createLoginCode, getLoginCode } from '../_core/verifLogin.js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 const TG_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || 'descriptorstriderbot';

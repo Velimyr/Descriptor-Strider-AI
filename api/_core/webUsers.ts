@@ -2,7 +2,7 @@
 // Формат tg_id: "web:<uuid>". Формат nickname: "<prefix>-<4 hex>".
 // Колізії по nickname розв'язуються retry-loop (4 hex = 65k комбінацій на префікс).
 import { randomBytes, randomUUID } from 'node:crypto';
-import { BotUser, createWebUser, userExistsByDisplayName } from '../telegram/storage.js';
+import { BotUser, createWebUser, userExistsByDisplayName } from '../_telegram/storage.js';
 import { Partner } from './partners.js';
 
 const MAX_NICKNAME_RETRIES = 8;

@@ -510,7 +510,7 @@ async function handleMessage(msg: any) {
 
     if (linkCode) {
       try {
-        const { consumeLinkCode } = await import('../core/linking.js');
+        const { consumeLinkCode } = await import('../_core/linking.js');
         const r = await consumeLinkCode(linkCode, tgId);
         if (r.ok) {
           const updated = await getUser(tgId);
@@ -542,7 +542,7 @@ async function handleMessage(msg: any) {
     // /start login_XXXX — підтвердження «Вхід через бота» на сайті перевірки.
     if (loginCode) {
       try {
-        const { consumeLoginCode } = await import('../core/verifLogin.js');
+        const { consumeLoginCode } = await import('../_core/verifLogin.js');
         const ok = await consumeLoginCode(loginCode, tgId);
         await sendMessage(
           chatId,
@@ -589,7 +589,7 @@ async function handleMessage(msg: any) {
       return;
     }
     try {
-      const { consumeLinkCode } = await import('../core/linking.js');
+      const { consumeLinkCode } = await import('../_core/linking.js');
       const r = await consumeLinkCode(code, tgId);
       if (r.ok) {
         const updated = await getUser(tgId);

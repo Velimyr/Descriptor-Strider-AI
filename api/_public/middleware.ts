@@ -4,9 +4,9 @@
 //   2. Origin порівнюємо з allowedOrigins партнера.
 // Сесія юзера — окремий Authorization: Bearer <token>.
 import type { Request, Response, NextFunction } from 'express';
-import { Partner, getPartnerByApiKey, isOriginAllowed } from '../core/partners.js';
-import { BotUser, getUser } from '../telegram/storage.js';
-import { SessionPayload, verifySessionToken } from '../core/sessionToken.js';
+import { Partner, getPartnerByApiKey, isOriginAllowed } from '../_core/partners.js';
+import { BotUser, getUser } from '../_telegram/storage.js';
+import { SessionPayload, verifySessionToken } from '../_core/sessionToken.js';
 
 declare global {
   namespace Express {

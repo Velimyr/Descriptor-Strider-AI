@@ -2,7 +2,7 @@
 // сайт створює одноразовий код → юзер тисне /start login_<code> у боті →
 // бот фіксує свій tg_id у коді → сайт опитує статус і отримує сесію.
 import { randomBytes } from 'node:crypto';
-import { db } from '../telegram/storage.js';
+import { db } from '../_telegram/storage.js';
 
 const PREFIX = process.env.TABLE_PREFIX ?? 'bot_';
 const T_CODES = `${PREFIX}verif_login_codes`;

@@ -10,8 +10,8 @@
 import type { Request, Response } from 'express';
 import { createHmac } from 'node:crypto';
 import axios from 'axios';
-import { getCaseFileId } from '../telegram/storage.js';
-import { tg } from '../telegram/tg-api.js';
+import { getCaseFileId } from '../_telegram/storage.js';
+import { tg } from '../_telegram/tg-api.js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 function expectedToken(caseId: string): string {

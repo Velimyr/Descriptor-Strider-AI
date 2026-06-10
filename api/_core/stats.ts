@@ -9,11 +9,11 @@ import {
   getDailyCount,
   getLeaderboardTop,
   getUserRank,
-} from '../telegram/storage.js';
+} from '../_telegram/storage.js';
 import {
   computePointsForToday,
   kyivDateString,
-} from '../telegram/scheduler.js';
+} from '../_telegram/scheduler.js';
 
 export interface UserStats {
   nickname: string;

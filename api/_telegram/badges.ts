@@ -53,10 +53,10 @@ async function getBadgeMedia(badge: BadgeDef): Promise<BadgeMedia | null> {
     const path = await import('path');
     // На Vercel у бандл потрапляють лише файли, перелічені в includeFiles (vercel.json).
     const candidates = [
-      path.join(process.cwd(), 'api', 'telegram', 'badges', badge.image),
+      path.join(process.cwd(), 'api', '_telegram', 'badges', badge.image),
       path.join(process.cwd(), 'public', 'badges', badge.image),
       // Fallback-плейсхолдер, якщо реальної картинки бейджа ще нема.
-      path.join(process.cwd(), 'api', 'telegram', 'badges', 'sample.png'),
+      path.join(process.cwd(), 'api', '_telegram', 'badges', 'sample.png'),
     ];
     let buf: Buffer | null = null;
     let usedPath = '';

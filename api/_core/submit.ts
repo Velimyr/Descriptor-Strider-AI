@@ -14,15 +14,15 @@ import {
   setCaseCreated,
   setCaseEdited,
   upsertUser,
-} from '../telegram/storage.js';
+} from '../_telegram/storage.js';
 import {
   computePointsForToday,
   kyivDateString,
   kyivMonthString,
   recomputeCaseSubmissionCount,
-} from '../telegram/scheduler.js';
+} from '../_telegram/scheduler.js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
-import { getMeta } from '../telegram/storage.js';
+import { getMeta } from '../_telegram/storage.js';
 
 export type SubmitAction = 'submit' | 'confirm';
 
@@ -129,7 +129,7 @@ async function submitParallel(user: BotUser, cse: BotCase, answers: string[]): P
   // Якщо саме цим сабмітом справу закрили — перевіримо, чи закрився ВЕСЬ опис.
   if (newCaseCount >= telegramBotConfig.cases.targetSubmissions) {
     try {
-      const { maybeAnnounceDescriptionDone } = await import('../telegram/groupAnnounce.js');
+      const { maybeAnnounceDescriptionDone } = await import('../_telegram/groupAnnounce.js');
       await maybeAnnounceDescriptionDone(cse.archive, cse.fund, cse.opys);
     } catch (e) {
       console.error('maybeAnnounceDescriptionDone (parallel) failed', e);
@@ -174,12 +174,12 @@ async function submitCollabConfirm(user: BotUser, cse: BotCase): Promise<SubmitR
   // що їх зібрав TG-розпізнавач. Режим (перше підтвердження / повне закриття) —
   // у config.puzzle.confirmMode.
   {
-    const { onCollabCaseConfirmed } = await import('../telegram/puzzle.js');
+    const { onCollabCaseConfirmed } = await import('../_telegram/puzzle.js');
     await onCollabCaseConfirmed(cse.caseId, closed);
   }
   if (closed) {
     try {
-      const { maybeAnnounceDescriptionDone } = await import('../telegram/groupAnnounce.js');
+      const { maybeAnnounceDescriptionDone } = await import('../_telegram/groupAnnounce.js');
       await maybeAnnounceDescriptionDone(cse.archive, cse.fund, cse.opys);
     } catch (e) {
       console.error('maybeAnnounceDescriptionDone (collab) failed', e);

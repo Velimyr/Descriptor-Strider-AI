@@ -13,9 +13,9 @@ export async function serveBadgeImage(req: Request, res: Response) {
     const fs = await import('fs/promises');
     const path = await import('path');
     const candidates = [
-      path.join(process.cwd(), 'api', 'telegram', 'badges', badge.image),
+      path.join(process.cwd(), 'api', '_telegram', 'badges', badge.image),
       path.join(process.cwd(), 'public', 'badges', badge.image),
-      path.join(process.cwd(), 'api', 'telegram', 'badges', 'sample.png'),
+      path.join(process.cwd(), 'api', '_telegram', 'badges', 'sample.png'),
     ];
     for (const p of candidates) {
       try {

@@ -15,13 +15,13 @@
 //   GET    /case/:id/image          — проксі фото з TG (без сесії, по imageToken)
 import express from 'express';
 import { widgetCors, requirePartner, requireSession } from './middleware.js';
-import { createAnonymousWebUser } from '../core/webUsers.js';
-import { issueSessionToken } from '../core/sessionToken.js';
-import { getNextCaseForUser, heartbeatCase, releaseCase } from '../core/cases.js';
-import { SubmitError, submitAnswers } from '../core/submit.js';
-import { skipCase } from '../core/skip.js';
-import { getLeaderboard, getStatsForUser } from '../core/stats.js';
-import { createLinkCode, getLinkCode } from '../core/linking.js';
+import { createAnonymousWebUser } from '../_core/webUsers.js';
+import { issueSessionToken } from '../_core/sessionToken.js';
+import { getNextCaseForUser, heartbeatCase, releaseCase } from '../_core/cases.js';
+import { SubmitError, submitAnswers } from '../_core/submit.js';
+import { skipCase } from '../_core/skip.js';
+import { getLeaderboard, getStatsForUser } from '../_core/stats.js';
+import { createLinkCode, getLinkCode } from '../_core/linking.js';
 import { proxyCaseImage } from './image.js';
 
 // Telegram-username бота (без @), куди йде deep-link для лінкінгу.
