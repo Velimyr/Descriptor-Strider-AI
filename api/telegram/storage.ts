@@ -527,6 +527,52 @@ export async function getAllCases(): Promise<BotCase[]> {
   return out;
 }
 
+// Полегшена версія getAllCases для integrity: лише ідентифікація опису.
+// Повний рядок bot_cases тягне bbox/tg_file_id/JSONB — тут вони не потрібні.
+export interface SlimCase {
+  caseId: string;
+  archive: string;
+  fund: string;
+  opys: string;
+}
+export async function getAllCasesSlim(): Promise<SlimCase[]> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: SlimCase[] = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.cases)
+      .select('case_id, archive, fund, opys')
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(
+      ...rows.map((r: any) => ({
+        caseId: r.case_id,
+        archive: r.archive || '',
+        fund: r.fund || '',
+        opys: r.opys || '',
+      }))
+    );
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
+// Тільки tg_file_id — для image-проксі, якому решта рядка не потрібна.
+export async function getCaseFileId(caseId: string): Promise<string | null> {
+  const { data, error } = await db()
+    .from(T.cases)
+    .select('tg_file_id')
+    .eq('case_id', caseId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return data.tg_file_id || '';
+}
+
 export async function getCase(caseId: string): Promise<BotCase | null> {
   const { data, error } = await db().from(T.cases).select('*').eq('case_id', caseId).maybeSingle();
   if (error) throw error;
@@ -1347,6 +1393,38 @@ export async function getAllConfirmationsWithAnswers(): Promise<
     from += pageSize;
   }
   return out;
+}
+
+// Watermark стану даних, від яких залежить integrity-звіт: кількість + найновіший
+// timestamp по submissions, confirmations і reviews. Якщо watermark не змінився —
+// можна віддати збережений звіт без перевитягування ~30 МБ сирих даних.
+export async function getIntegrityWatermark(): Promise<string> {
+  const count = async (table: string) => {
+    const { count: n, error } = await db()
+      .from(table)
+      .select('*', { count: 'exact', head: true });
+    if (error) throw error;
+    return n || 0;
+  };
+  const maxTs = async (table: string, col: string) => {
+    const { data, error } = await db()
+      .from(table)
+      .select(col)
+      .order(col, { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return (data as any)?.[col] || '';
+  };
+  const [subsN, subsTs, confN, confTs, revN, revTs] = await Promise.all([
+    count(T.submissions),
+    maxTs(T.submissions, 'submitted_at'),
+    count(T.caseConfirmations),
+    maxTs(T.caseConfirmations, 'at'),
+    count(T.integrityReviews),
+    maxTs(T.integrityReviews, 'at'),
+  ]);
+  return `${subsN}:${subsTs}|${confN}:${confTs}|${revN}:${revTs}`;
 }
 
 // ---------- INTEGRITY REVIEWS ----------

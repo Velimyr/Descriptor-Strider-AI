@@ -940,28 +940,48 @@ router.get('/admin/integrity', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const threshold = Math.max(0, parseInt((req.query.threshold as string) || '5', 10) || 5);
   const includeResolved = String(req.query.includeResolved || '') === '1';
-  // НАЙВАЖЧИЙ ендпоінт: тягне ВСЕ — submissions, confirmations, cases, reviews.
-  // Кешуємо 30 хв за (threshold, includeResolved). nocache=1 — примусово.
+  // НАЙВАЖЧИЙ ендпоінт: тягне ВСЕ — submissions, confirmations, cases, reviews
+  // (~30 МБ egress за перерахунок). Тому кеш двошаровий, валідований watermark-ом
+  // (count + max(timestamp) трьох таблиць): in-memory + durable у bot_meta —
+  // останній переживає холодні старти serverless. nocache=1 — примусовий перерахунок.
   const cacheKey = `integrity-${threshold}-${includeResolved ? 1 : 0}`;
-  if (req.query.nocache !== '1') {
-    const cached = cacheGet(cacheKey);
-    if (cached) return res.json({ ...cached, cached: true });
-  }
+  const metaKey = `integrity_cache:${threshold}:${includeResolved ? 1 : 0}`;
   try {
     const {
       getAllSubmissionsOrdered,
       getMeta,
+      setMeta,
       getAllConfirmationsWithAnswers,
-      getAllCases,
+      getAllCasesSlim,
       getDisplayNamesMap,
       getAllIntegrityReviews,
+      getIntegrityWatermark,
       integrityPairKey,
     } = await import('./storage.js');
+
+    const watermark = await getIntegrityWatermark();
+    if (req.query.nocache !== '1') {
+      const memCached = cacheGet(cacheKey);
+      if (memCached?.watermark === watermark && memCached.payload) {
+        return res.json({ ...memCached.payload, cached: true });
+      }
+      try {
+        const raw = await getMeta(metaKey);
+        const stored = raw ? JSON.parse(raw) : null;
+        if (stored?.watermark === watermark && stored.payload) {
+          cacheSet(cacheKey, stored, 120 * 60_000);
+          return res.json({ ...stored.payload, cached: true });
+        }
+      } catch (e: any) {
+        console.warn('integrity durable cache read failed', e?.message || e);
+      }
+    }
+
     const [subs, qRaw, confirms, cases, reviews] = await Promise.all([
       getAllSubmissionsOrdered(),
       getMeta('questions'),
       getAllConfirmationsWithAnswers(),
-      getAllCases(),
+      getAllCasesSlim(),
       getAllIntegrityReviews(),
     ]);
     // Мапа resolved-пар: ключ "caseId|first|second" (відсортовані tg_id) → review.
@@ -1095,9 +1115,13 @@ router.get('/admin/integrity', async (req, res) => {
       String(b.second.submittedAt || '').localeCompare(String(a.second.submittedAt || ''))
     );
     const integrityPayload = { ok: true, threshold, totalCases: byCase.size, diffs };
-    // 2 години замість 30 хв: integrity-результати міняються повільно,
-    // а кожен miss коштує 32+ МБ egress (getAllConfirmations + getAllCases + subs).
-    cacheSet(cacheKey, integrityPayload, 120 * 60_000);
+    const cacheEntry = { watermark, payload: integrityPayload };
+    cacheSet(cacheKey, cacheEntry, 120 * 60_000);
+    try {
+      await setMeta(metaKey, JSON.stringify(cacheEntry));
+    } catch (e: any) {
+      console.warn('integrity durable cache write failed', e?.message || e);
+    }
     res.json(integrityPayload);
   } catch (e: any) {
     res.status(500).json({ error: e.message });

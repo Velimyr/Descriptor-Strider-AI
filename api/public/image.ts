@@ -10,7 +10,7 @@
 import type { Request, Response } from 'express';
 import { createHmac } from 'node:crypto';
 import axios from 'axios';
-import { getCase } from '../telegram/storage.js';
+import { getCaseFileId } from '../telegram/storage.js';
 import { tg } from '../telegram/tg-api.js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
@@ -25,19 +25,19 @@ export async function proxyCaseImage(req: Request, res: Response) {
   if (!caseId || !token) return res.status(400).send('bad request');
   if (token !== expectedToken(caseId)) return res.status(403).send('invalid token');
 
-  let cse;
+  let fileId: string | null;
   try {
-    cse = await getCase(caseId);
+    fileId = await getCaseFileId(caseId);
   } catch (e: any) {
-    console.error('image: getCase failed', e?.message || e);
+    console.error('image: getCaseFileId failed', e?.message || e);
     return res.status(500).send('internal');
   }
-  if (!cse) return res.status(404).send('case not found');
-  if (!cse.tgFileId) return res.status(410).send('image unavailable');
+  if (fileId === null) return res.status(404).send('case not found');
+  if (!fileId) return res.status(410).send('image unavailable');
 
   let filePath: string;
   try {
-    const fileInfo = await tg('getFile', { file_id: cse.tgFileId });
+    const fileInfo = await tg('getFile', { file_id: fileId });
     filePath = fileInfo?.file_path;
     if (!filePath) return res.status(410).send('telegram file expired');
   } catch (e: any) {

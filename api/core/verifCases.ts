@@ -136,6 +136,19 @@ function mapCaseRow(r: any): VerifCaseRow {
   };
 }
 
+// Тільки tg_file_id — для image-проксі. Повний рядок тягне JSONB-питання й
+// відповіді (~2 КБ), які проксі не потрібні.
+export async function getVerifCaseFileId(caseId: string): Promise<string | null> {
+  const { data, error } = await db()
+    .from(T.cases)
+    .select('tg_file_id')
+    .eq('case_id', caseId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return data.tg_file_id || '';
+}
+
 export async function getVerifCase(caseId: string): Promise<VerifCaseRow | null> {
   const { data, error } = await db().from(T.cases).select('*').eq('case_id', caseId).maybeSingle();
   if (error) throw error;
