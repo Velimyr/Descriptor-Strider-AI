@@ -28,6 +28,7 @@ export const T = {
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
 const RPC_CANDIDATE_CASES = `${PREFIX}candidate_cases`;
+const RPC_CANDIDATE_CASES_V2 = `${PREFIX}candidate_cases_v2`;
 const RPC_AWARD_PUZZLE_WINNER = `${PREFIX}award_puzzle_winner`;
 const RPC_INC_MONTHLY = `${PREFIX}inc_monthly`;
 const RPC_MONTHLY_MONTHS = `${PREFIX}monthly_months`;
@@ -1331,6 +1332,43 @@ export async function getCandidateCasesForUser(tgId: string): Promise<BotCase[]>
   const { data, error } = await db().rpc(RPC_CANDIDATE_CASES, { p_tg_id: tgId });
   if (error) throw error;
   return ((data as any[]) || []).map(mapCase);
+}
+
+// Слім-кандидати для вибору наступної справи (egress-фікс): RPC v2 повертає лише
+// справи одного-двох релевантних описів і лише колонки, потрібні логіці вибору в
+// selectNextCaseForUser. Повний рядок обраної справи добирається точковим getCase().
+// v1 (getCandidateCasesForUser) лишається як фолбек на час розкатки SQL.
+export interface CandidateCase {
+  caseId: string;
+  archive: string;
+  fund: string;
+  opys: string;
+  mode: 'parallel' | 'collaborative';
+  confirmationsCount: number;
+  submissionsCount: number;
+  createdAt: string;
+  currentAnswers: string[];
+}
+export async function getCandidateCasesSlimForUser(
+  tgId: string,
+  target: number
+): Promise<CandidateCase[]> {
+  const { data, error } = await db().rpc(RPC_CANDIDATE_CASES_V2, {
+    p_tg_id: tgId,
+    p_target: target,
+  });
+  if (error) throw error;
+  return ((data as any[]) || []).map(r => ({
+    caseId: r.case_id,
+    archive: r.archive || '',
+    fund: r.fund || '',
+    opys: r.opys || '',
+    mode: (r.mode || 'parallel') as 'parallel' | 'collaborative',
+    confirmationsCount: r.confirmations_count || 0,
+    submissionsCount: r.submissions_count || 0,
+    createdAt: r.created_at || '',
+    currentAnswers: Array.isArray(r.current_answers) ? r.current_answers.map(String) : [],
+  }));
 }
 
 // Усі рядки confirmations для заданого набору case_id (для адмін-перегляду).

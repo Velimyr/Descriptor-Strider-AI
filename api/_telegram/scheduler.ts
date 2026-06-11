@@ -2,8 +2,11 @@ import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import {
   BotCase,
   BotUser,
+  CandidateCase,
   countSubmissionsByCase,
   getCandidateCasesForUser,
+  getCandidateCasesSlimForUser,
+  getCase,
   getLastUserCaseKind,
   getMeta,
   getPuzzle,
@@ -119,7 +122,9 @@ export function descriptionName(c: { archive: string; fund: string; opys: string
 }
 
 // Найраніша createdAt серед справ опису — використовуємо як "вік опису" для черговості.
-function buildDescriptionOrder(cases: BotCase[]): Map<string, string> {
+function buildDescriptionOrder(
+  cases: Array<{ archive: string; fund: string; opys: string; createdAt: string }>
+): Map<string, string> {
   const order = new Map<string, string>();
   for (const c of cases) {
     const k = descriptionKey(c);
@@ -135,15 +140,29 @@ export async function selectNextCaseForUser(
 ): Promise<BotCase | null> {
   // Один SQL: тільки кандидати, які цьому юзеру можна показати.
   // Фільтри: status='open', не сабмітив/пропустив/торкався, не лочена іншим.
+  // v2 (egress-фікс): слім-рядки лише з релевантних описів. Фолбек на v1 —
+  // на випадок, якщо код задеплоєно раніше, ніж SQL-функцію v2.
+  const targetParallel = cfg.cases.targetSubmissions;
+  const fetchCandidates = async (): Promise<CandidateCase[]> => {
+    try {
+      return await getCandidateCasesSlimForUser(tgId, targetParallel);
+    } catch (e: any) {
+      console.error('candidate_cases_v2 failed, fallback to v1:', e?.message || e);
+      return getCandidateCasesForUser(tgId);
+    }
+  };
   const [candidates, lastKind] = await Promise.all([
-    getCandidateCasesForUser(tgId),
+    fetchCandidates(),
     getLastUserCaseKind(tgId),
   ]);
   if (candidates.length === 0) return null;
 
+  // Слім-кандидат → повний рядок справи (одна точкова вибірка замість того,
+  // щоб тягнути всі колонки для всіх кандидатів).
+  const resolveFull = (c: CandidateCase): Promise<BotCase | null> => getCase(c.caseId);
+
   // Порядок описів за віком (найстаріший — першим) потрібен і для пазл-пріоритету,
   // і для основного сортування — будуємо один раз.
-  const targetParallel = cfg.cases.targetSubmissions;
   const descOrder = buildDescriptionOrder(candidates);
 
   // Пріоритет «Описового пазла»: спершу віддаємо collab-справи НА ПІДТВЕРДЖЕННЯ
@@ -176,12 +195,12 @@ export async function selectNextCaseForUser(
         (a, b) =>
           b.confirmationsCount - a.confirmationsCount || a.createdAt.localeCompare(b.createdAt)
       );
-      return matching[0];
+      return resolveFull(matching[0]);
     }
   }
-  const progressOf = (c: BotCase): number =>
+  const progressOf = (c: CandidateCase): number =>
     c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
-  const compare = (a: BotCase, b: BotCase) => {
+  const compare = (a: CandidateCase, b: CandidateCase) => {
     const ageA = descOrder.get(descriptionKey(a)) || a.createdAt;
     const ageB = descOrder.get(descriptionKey(b)) || b.createdAt;
     if (ageA !== ageB) return ageA.localeCompare(ageB);
@@ -201,13 +220,13 @@ export async function selectNextCaseForUser(
     const collabCreate = sameDesc.find(c => c.mode === 'collaborative' && c.confirmationsCount === 0);
     const collabReview = sameDesc.find(c => c.mode === 'collaborative' && c.confirmationsCount > 0);
     if (collabCreate && collabReview) {
-      return lastKind === 'create' ? collabReview : collabCreate;
+      return resolveFull(lastKind === 'create' ? collabReview : collabCreate);
     }
-    return primary[0];
+    return resolveFull(primary[0]);
   }
   if (cfg.cases.allowExtraAfterTarget) {
     const extra = [...candidates].sort(compare);
-    if (extra.length > 0) return extra[0];
+    if (extra.length > 0) return resolveFull(extra[0]);
   }
   return null;
 }

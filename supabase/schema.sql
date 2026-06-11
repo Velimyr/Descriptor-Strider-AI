@@ -417,6 +417,71 @@ returns setof bot_cases language sql security definer as $$
 $$;
 revoke all on function bot_candidate_cases(text) from public, anon, authenticated;
 
+-- v2 (egress-фікс): v1 повертає ВСІ доступні справи (~1000 рядків × ~1.2 КБ JSON
+-- на кожну видачу). Логіка вибору в selectNextCaseForUser завжди бере справу або
+-- з найстарішого опису серед кандидатів (puzzle/extra-шляхи), або з найстарішого
+-- опису, де ще є справи з progress < p_target (primary-шлях). Тому повертаємо лише
+-- кандидатів цих одного-двох описів і лише колонки, потрібні для вибору; повний
+-- рядок обраної справи код добирає окремим точковим getCase().
+create or replace function bot_candidate_cases_v2(p_tg_id text, p_target integer)
+returns table (
+  case_id text,
+  archive text,
+  fund text,
+  opys text,
+  mode text,
+  confirmations_count integer,
+  submissions_count integer,
+  created_at timestamptz,
+  current_answers jsonb
+) language sql security definer as $$
+  with cand as (
+    select c.case_id, c.archive, c.fund, c.opys, c.mode,
+           c.confirmations_count, c.submissions_count, c.created_at, c.current_answers,
+           case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end as progress
+    from bot_cases c
+    where c.status = 'open'
+      and not exists (select 1 from bot_submissions s where s.case_id = c.case_id and s.tg_id = p_tg_id)
+      and not exists (select 1 from bot_skipped sk where sk.case_id = c.case_id and sk.tg_id = p_tg_id)
+      and not exists (select 1 from bot_case_confirmations cc where cc.case_id = c.case_id and cc.tg_id = p_tg_id)
+      and (
+        c.mode <> 'collaborative'
+        or c.locked_until is null
+        or c.locked_until < now()
+        or c.locked_by_tg_id = p_tg_id
+      )
+  ),
+  ages as (
+    select archive, fund, opys, min(created_at) as age
+    from cand
+    group by archive, fund, opys
+  ),
+  d_all as (
+    select archive, fund, opys from ages order by age, archive, fund, opys limit 1
+  ),
+  d_prim as (
+    select a.archive, a.fund, a.opys
+    from ages a
+    where exists (
+      select 1 from cand c
+      where c.archive = a.archive and c.fund = a.fund and c.opys = a.opys
+        and c.progress < p_target
+    )
+    order by a.age, a.archive, a.fund, a.opys
+    limit 1
+  )
+  select c.case_id, c.archive, c.fund, c.opys, c.mode,
+         c.confirmations_count, c.submissions_count, c.created_at, c.current_answers
+  from cand c
+  where (c.archive, c.fund, c.opys) in (
+    select archive, fund, opys from d_all
+    union
+    select archive, fund, opys from d_prim
+  )
+  order by c.created_at, c.case_id;
+$$;
+revoke all on function bot_candidate_cases_v2(text, integer) from public, anon, authenticated;
+
 -- =====================================================================
 -- ВЕБ-ПЕРЕВІРКА справ (вкладка «Перевірка»). Окремі таблиці — бот їх НЕ читає.
 -- Лише колаборативний режим: AI наперед заповнює варіант, люди підтверджують/
