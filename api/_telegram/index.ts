@@ -1263,6 +1263,17 @@ router.post('/admin/integrity/ban', async (req, res) => {
   }
 });
 
+// Список заблокованих користувачів (для адмінки).
+router.get('/admin/banned-users', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { getBannedUsers } = await import('./storage.js');
+    res.json({ ok: true, users: await getBannedUsers() });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Розблокувати користувача (відкат бана).
 router.post('/admin/integrity/unban', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;

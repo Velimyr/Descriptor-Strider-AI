@@ -5537,6 +5537,12 @@ const IntegrityView: React.FC = () => {
   const [penaltyState, setPenaltyState] = useState<Record<string, string>>({});
   // Стан кнопок «Заблокувати»: tgId|caseId → 'busy' | 'done' | 'err:<msg>'
   const [banState, setBanState] = useState<Record<string, string>>({});
+  // Список заблокованих користувачів (вантажиться по кнопці) + стан кнопок «Розблокувати».
+  type BannedUser = { tgId: string; displayName: string; banReason: string; bannedAt: string; bannedBy: string; source: 'tg' | 'web' };
+  const [bannedList, setBannedList] = useState<BannedUser[] | null>(null);
+  const [bannedBusy, setBannedBusy] = useState(false);
+  const [bannedErr, setBannedErr] = useState('');
+  const [unbanState, setUnbanState] = useState<Record<string, string>>({});
 
   const refresh = async (t = threshold, resolved = includeResolved) => {
     setBusy(true);
@@ -5812,6 +5818,33 @@ const IntegrityView: React.FC = () => {
     }
   };
 
+  // Завантажити список заблокованих (легкий slim-запит).
+  const loadBanned = async () => {
+    setBannedBusy(true);
+    setBannedErr('');
+    try {
+      const r = await tgApi.bannedUsers();
+      setBannedList(r.users || []);
+    } catch (e: any) {
+      setBannedErr(e.message || 'помилка');
+    } finally {
+      setBannedBusy(false);
+    }
+  };
+
+  // Розблокувати одного користувача.
+  const unbanOne = async (tgId: string) => {
+    if (!window.confirm('Розблокувати цього користувача? Він знову зможе виконувати дії.')) return;
+    setUnbanState(s => ({ ...s, [tgId]: 'busy' }));
+    try {
+      await tgApi.integrityUnban(tgId);
+      setUnbanState(s => ({ ...s, [tgId]: 'done' }));
+      setBannedList(list => (list ? list.filter(u => u.tgId !== tgId) : list));
+    } catch (e: any) {
+      setUnbanState(s => ({ ...s, [tgId]: `err:${e.message || 'помилка'}` }));
+    }
+  };
+
   return (
     <div className="space-y-3">
       <EgressWarning
@@ -5876,6 +5909,64 @@ const IntegrityView: React.FC = () => {
         <div className="text-sm text-slate-600 ml-auto">
           {loaded ? <>Справ зі суперечками: <b>{groups.length}</b></> : 'Натисніть «Завантажити перевірку»'}
         </div>
+      </div>
+
+      {/* Заблоковані користувачі — окрема легка панель (slim-запит, вантажиться по кнопці). */}
+      <div className="border rounded p-3 bg-white">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={loadBanned}
+            disabled={bannedBusy}
+            className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm flex items-center gap-1 disabled:opacity-50"
+          >
+            <RefreshCw size={14} />
+            {bannedBusy ? 'Завантаження…' : bannedList ? 'Оновити список заблокованих' : '🚫 Показати заблокованих'}
+          </button>
+          {bannedList && (
+            <span className="text-sm text-slate-600">Заблоковано: <b>{bannedList.length}</b></span>
+          )}
+        </div>
+        {bannedErr && <div className="text-sm text-rose-700 mt-2">{bannedErr}</div>}
+        {bannedList && bannedList.length === 0 && (
+          <div className="text-sm text-slate-500 mt-2">Заблокованих користувачів немає.</div>
+        )}
+        {bannedList && bannedList.length > 0 && (
+          <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+            {bannedList.map(u => {
+              const ust = unbanState[u.tgId] || '';
+              const ubusy = ust === 'busy';
+              const uerr = ust.startsWith('err:');
+              return (
+                <div
+                  key={u.tgId}
+                  className="border rounded p-2 bg-slate-50 flex items-start justify-between gap-2 text-sm"
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">
+                      {u.displayName || '—'}{' '}
+                      <span className="text-xs text-slate-400">({u.source === 'web' ? 'веб' : 'TG'})</span>
+                    </div>
+                    <div className="text-xs text-slate-500 font-mono truncate">{u.tgId}</div>
+                    {u.bannedAt && (
+                      <div className="text-xs text-slate-400">
+                        заблоковано: {new Date(u.bannedAt).toLocaleString('uk-UA')}
+                      </div>
+                    )}
+                    {u.banReason && <div className="text-xs text-slate-500">причина: {u.banReason}</div>}
+                    {uerr && <div className="text-xs text-rose-700">{ust.slice(4)}</div>}
+                  </div>
+                  <button
+                    onClick={() => unbanOne(u.tgId)}
+                    disabled={ubusy}
+                    className="px-2 py-1 text-xs rounded font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 shrink-0"
+                  >
+                    {ubusy ? 'Розблокування…' : 'Розблокувати'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {msg && <div className="text-sm">{msg}</div>}

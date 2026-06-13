@@ -476,6 +476,34 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (error) throw error;
 }
 
+export interface BannedUserRow {
+  tgId: string;
+  displayName: string;
+  banReason: string;
+  bannedAt: string;
+  bannedBy: string;
+  source: 'tg' | 'web';
+}
+
+// Список заблокованих користувачів для адмінки. Slim-select (без важких колонок) —
+// заблокованих зазвичай одиниці, egress нехтовний.
+export async function getBannedUsers(): Promise<BannedUserRow[]> {
+  const { data, error } = await db()
+    .from(T.users)
+    .select('tg_id, display_name, ban_reason, banned_at, banned_by, source')
+    .eq('banned', true)
+    .order('banned_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map((r: any) => ({
+    tgId: r.tg_id,
+    displayName: r.display_name || '',
+    banReason: r.ban_reason || '',
+    bannedAt: r.banned_at || '',
+    bannedBy: r.banned_by || '',
+    source: (r.source || 'tg') as 'tg' | 'web',
+  }));
+}
+
 // Бан/розбан користувача (перевірка доброчесності). Окремо від patchUser, бо
 // ban_reason/banned_at/banned_by не входять у BotUser.
 export async function setUserBanned(

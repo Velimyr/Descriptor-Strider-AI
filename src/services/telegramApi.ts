@@ -166,6 +166,18 @@ export const tgApi = {
   }) => call('/admin/integrity/ban', { method: 'POST', body: JSON.stringify(payload) }),
   integrityUnban: (tgId: string) =>
     call('/admin/integrity/unban', { method: 'POST', body: JSON.stringify({ tgId }) }),
+  bannedUsers: () =>
+    call('/admin/banned-users') as Promise<{
+      ok: boolean;
+      users: Array<{
+        tgId: string;
+        displayName: string;
+        banReason: string;
+        bannedAt: string;
+        bannedBy: string;
+        source: 'tg' | 'web';
+      }>;
+    }>,
   submissionsByDescription: (archive: string, fund: string, opys: string) =>
     call(
       `/admin/submissions-by-description?archive=${encodeURIComponent(archive)}` +
