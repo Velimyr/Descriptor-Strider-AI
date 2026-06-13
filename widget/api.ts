@@ -35,6 +35,7 @@ export interface SubmitResult {
   total: number;
   closed: boolean;
   actionTaken: string;
+  marathon?: { name: string; coefficient: number } | null;
 }
 
 export interface HelpTexts {

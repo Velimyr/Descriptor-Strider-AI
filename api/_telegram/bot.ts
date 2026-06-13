@@ -52,6 +52,12 @@ import {
   selectNextCaseForUser,
 } from './scheduler.js';
 import {
+  applyMarathonBonus,
+  getActiveMarathon,
+  marathonActionWord,
+  type MarathonAction,
+} from './marathon.js';
+import {
   evaluateBadges,
   countEarnedInCatalog,
   sendBadgesList,
@@ -1219,6 +1225,16 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
     rank,
     totalUsers: monthly.length,
   });
+  // Якщо сьогодні марафон — додаємо рядок із нагадуванням і коефіцієнтом.
+  const marathon = getActiveMarathon();
+  if (marathon) {
+    body += '\n\n' + fmt(T.marathonStatsLine, {
+      name: marathon.name,
+      actionWord: marathonActionWord(marathon),
+      coef: marathon.coefficient,
+      endDate: marathon.endDateLocal,
+    });
+  }
   // Inline-кнопки під «Мої бали»: досягнення (якщо є каталог) + «Мій Описовий пазл».
   // Reply-меню внизу лишається (воно is_persistent), тож inline тут не конфліктує.
   const rows: any[] = [];
@@ -1283,7 +1299,17 @@ async function cmdProgress(chatId: number, user: BotUser) {
       totalCases: d.totalCases,
     })
   );
-  const body = [etaLine, header, ...blocks].join('\n\n');
+  // Якщо сьогодні марафон — додаємо рядок із датою завершення та коефіцієнтом.
+  const marathon = getActiveMarathon();
+  const marathonLine = marathon
+    ? fmt(T.marathonProgressLine, {
+        name: marathon.name,
+        actionWord: marathonActionWord(marathon),
+        coef: marathon.coefficient,
+        endDate: marathon.endDateLocal,
+      })
+    : '';
+  const body = [marathonLine, etaLine, header, ...blocks].filter(Boolean).join('\n\n');
   // Inline-кнопка гри «Описовий пазл». Reply-меню внизу лишається (is_persistent).
   await sendMessage(chatId, body, {
     reply_markup: { inline_keyboard: [[{ text: T.menuPuzzle, callback_data: 'puzzle' }]] },
@@ -1819,7 +1845,10 @@ async function confirmAndSubmit(
 
   const pts = computePointsForToday(todayCount);
   const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1) : { multiplier: 1 };
-  const newTotal = Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100;
+  // Марафон: розпізнавання (parallel-сабміт). Коефіцієнт — поверх денного множника.
+  const bonus = applyMarathonBonus(pts.pointsEarned, 'recognition');
+  const earned = bonus.points;
+  const newTotal = Math.round((user.totalPoints + earned) * 100) / 100;
 
   // Мотиваційне повідомлення:
   // • при переході в tier1 або tier2 (множник зріс) — одне повідомлення з відповідного списку;
@@ -1836,20 +1865,26 @@ async function confirmAndSubmit(
     tierMsg = pickRandom(tierMsgs.tier1);
   }
 
-  const finalText = fmt(T.pointsEarned, {
-    points: pts.pointsEarned,
+  let finalText = fmt(T.pointsEarned, {
+    points: earned,
     todayCount,
     total: newTotal,
     todayDone,
     goal: telegramBotConfig.cases.dailyGoal,
   });
+  if (bonus.marathon) {
+    finalText += '\n' + fmt(T.marathonConfirmLine, {
+      name: bonus.marathon.name,
+      coef: bonus.marathon.coefficient,
+    });
+  }
   await Promise.all([
     upsertUser(
       { ...user, totalPoints: newTotal, consecutiveMisses: 0 },
       user.rowIndex
     ),
     // Місячний рейтинг: ті самі бали — у рядок поточного київського місяця.
-    incMonthlyPoints(kyivMonthString(), tgId, pts.pointsEarned, user.displayName),
+    incMonthlyPoints(kyivMonthString(), tgId, earned, user.displayName),
     // Редагуємо ack-повідомлення на фінальний текст замість надсилання нового.
     // ВАЖЛИВО: editMessageText дозволяє тільки inline_keyboard у reply_markup.
     // mainMenuKeyboard — це reply keyboard (постійна, унизу екрана), її не треба
@@ -1909,7 +1944,8 @@ async function collabSubmit(
 
   // Розпізнавання (create) — 3 бали база; редагування — 1 (це перевірка з правкою).
   const actionBase = alreadyEdit ? 1 : 3;
-  await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase);
+  const action: MarathonAction = alreadyEdit ? 'verification' : 'recognition';
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase, action);
   await deleteSession(tgId);
 }
 
@@ -1932,7 +1968,7 @@ async function collabConfirm(
   await recordCaseEvent(caseId, tgId, 'confirm', cse.currentAnswers || []);
   const { closed } = await confirmCase(caseId, min);
   // Перевірка — 1 бал база.
-  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1);
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1, 'verification');
   await deleteSession(tgId);
   // Описовий пазл: зараховуємо слова (для розпізнавача). Чи на кожне підтвердження,
   // чи лише на повне закриття — вирішує config.puzzle.confirmMode.
@@ -1954,7 +1990,8 @@ async function deliverCollabPoints(
   user: BotUser,
   ackMessageId: number | undefined,
   closed: boolean,
-  actionBase: number
+  actionBase: number,
+  action: MarathonAction
 ) {
   const today = kyivDateString();
   const [todayCount, todayDone] = await Promise.all([
@@ -1963,7 +2000,10 @@ async function deliverCollabPoints(
   ]);
   const pts = computePointsForToday(todayCount, actionBase);
   const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1, actionBase) : { multiplier: 1 };
-  const newTotal = Math.round((user.totalPoints + pts.pointsEarned) * 100) / 100;
+  // Марафон: коефіцієнт поверх денного множника, якщо ця дія бере участь.
+  const bonus = applyMarathonBonus(pts.pointsEarned, action);
+  const earned = bonus.points;
+  const newTotal = Math.round((user.totalPoints + earned) * 100) / 100;
 
   const cfgPts = telegramBotConfig.points;
   const tierMsgs = telegramBotConfig.tierMessages;
@@ -1976,18 +2016,24 @@ async function deliverCollabPoints(
 
   const finalText =
     fmt(T.pointsEarned, {
-      points: pts.pointsEarned,
+      points: earned,
       todayCount,
       total: newTotal,
       todayDone,
       goal: telegramBotConfig.cases.dailyGoal,
     }) +
+    (bonus.marathon
+      ? '\n' + fmt(T.marathonConfirmLine, {
+          name: bonus.marathon.name,
+          coef: bonus.marathon.coefficient,
+        })
+      : '') +
     (closed ? '\n\n✅ Справу зведено — дякую за допомогу!' : '');
 
   await Promise.all([
     upsertUser({ ...user, totalPoints: newTotal, consecutiveMisses: 0 }, user.rowIndex),
     // Місячний рейтинг: ті самі бали — у поточний київський місяць.
-    incMonthlyPoints(kyivMonthString(), tgId, pts.pointsEarned, user.displayName),
+    incMonthlyPoints(kyivMonthString(), tgId, earned, user.displayName),
     ackMessageId
       ? editMessageText(chatId, ackMessageId, finalText)
           .catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))

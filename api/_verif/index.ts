@@ -402,7 +402,22 @@ router.post('/case/:id/release', requireSession, async (req, res) => {
 
 router.get('/stats', requireSession, async (_req, res) => {
   try {
-    res.json(await getVerifStats());
+    const stats = await getVerifStats();
+    // Марафон на сьогодні (для банера на вкладці «Перевірка»). null — якщо немає
+    // або сьогоднішній марафон не включає дію 'verification'.
+    const { marathonForAction, marathonActionWord } = await import('../_telegram/marathon.js');
+    const m = marathonForAction('verification');
+    res.json({
+      ...stats,
+      marathon: m
+        ? {
+            name: m.name,
+            coefficient: m.coefficient,
+            actionWord: marathonActionWord(m),
+            endDate: m.endDateLocal,
+          }
+        : null,
+    });
   } catch (e: any) {
     console.error('verif/stats failed', e?.message || e);
     res.status(500).json({ error: 'internal' });

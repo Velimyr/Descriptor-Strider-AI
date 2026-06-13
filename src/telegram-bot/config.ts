@@ -3,6 +3,31 @@
 
 import type { BadgeDef } from '../types.js';
 
+// Дія, за яку марафон може давати підвищені бали.
+// 'recognition' — розпізнавання (нова справа з нуля / parallel-сабміт);
+// 'verification' — перевірка (підтвердження або виправлення), і в боті, і на сайті.
+export type MarathonAction = 'recognition' | 'verification';
+
+// Контур, у якому діє марафон. Dev/прод розрізняються env-змінною TABLE_PREFIX
+// (botdev_ → dev/staging, інакше → prod). 'all' (або відсутнє поле) — обидва.
+export type MarathonEnv = 'dev' | 'prod' | 'all';
+
+export interface MarathonConfig {
+  // Назва марафону для текстів (підставляється в {name}).
+  name: string;
+  // Початок марафону за київським часом (dispatch.timezone), формат 'YYYY-MM-DD HH:mm'.
+  // Можна без часу ('YYYY-MM-DD') — тоді 00:00.
+  start: string;
+  // Кінець марафону за київським часом, формат 'YYYY-MM-DD HH:mm' (момент НЕ включно).
+  end: string;
+  // Множник балів за дії з actions у цей проміжок (стакається з денним множником ×1/×1.5/×2).
+  coefficient: number;
+  // Які дії беруть участь у марафоні.
+  actions: MarathonAction[];
+  // На якому контурі діє марафон. За замовч. (undefined) — на обох (dev і prod).
+  env?: MarathonEnv;
+}
+
 export interface TelegramBotConfig {
   tg: {
     botTokenEnv: string;        // назва env-змінної з токеном
@@ -55,6 +80,11 @@ export interface TelegramBotConfig {
     tier1: { thresholdInclusive: number; multiplier: number };
     tier2: { thresholdInclusive: number; multiplier: number };
   };
+
+  // Марафони. У задані дні бали за вказані дії множаться на coefficient.
+  // Дати — у конфізі (не в БД). Можна задати кілька марафонів; на конкретну дату
+  // береться перший зі списку, що містить цю дату.
+  marathons: MarathonConfig[];
 
   sheets: {
     resultsSheetName: string;
@@ -198,6 +228,29 @@ export const telegramBotConfig: TelegramBotConfig = {
     tier2: { thresholdInclusive: 10, multiplier: 2 },
   },
 
+  // Марафони. Додавай об'єкти сюди — і у проміжок [start; end) бали за відповідні
+  // дії множаться на coefficient (понад денний множник). Час — київський.
+  // env: 'dev' | 'prod' | 'all' (відсутнє = обидва контури). Dev/prod визначає TABLE_PREFIX.
+  // Для несуміжних періодів — кілька об'єктів. Приклад нижче закоментовано.
+  // {
+  //   name: 'Вечірній марафон',
+  //   start: '2026-06-14 18:00',
+  //   end: '2026-06-14 23:00',
+  //   coefficient: 2,
+  //   actions: ['recognition', 'verification'],
+  //   env: 'prod',
+  // },
+  marathons: [
+    {
+        name: 'Вечірній марафон',
+         start: '2026-06-13 21:00',
+         end: '2026-06-14 23:59',
+         coefficient: 2,
+         actions: ['verification'],
+         env: 'dev',
+       },
+  ],
+
   sheets: {
     resultsSheetName: 'Results',
     metaSheetName: '_meta',
@@ -291,6 +344,20 @@ export const telegramBotConfig: TelegramBotConfig = {
     pointsEarned:
       '✅ Збережено! +{points} балів. Сьогодні: {todayCount} справ. Всього: {total} балів.\n' +
       '🎯 Оброблено сьогодні: {todayDone} з {goal} справ.',
+    // Рядок про марафон у розділі «Мої бали» (показується, поки марафон триває).
+    // {name} — назва марафону; {actionWord} — «розпізнану»/«перевірену»/«розпізнану чи перевірену»;
+    // {coef} — коефіцієнт; {endDate} — момент завершення марафону (ДД.ММ.РРРР ГГ:ХХ, київський час).
+    marathonStatsLine:
+      '🔥 Зараз триває марафон «<b>{name}</b>» (до <b>{endDate}</b>)! ' +
+      'За кожну {actionWord} справу ти отримуєш бали з коефіцієнтом ×{coef}! ' +
+      'Не втрачай нагоди отримати більше балів! 🚀',
+    // Рядок про марафон у розділі «Прогрес».
+    marathonProgressLine:
+      '🔥 Зараз триває марафон «<b>{name}</b>» до <b>{endDate}</b> — бали за {actionWord} ' +
+      'справу з коефіцієнтом ×{coef}! 🚀',
+    // Нагадування про марафон у повідомленні «Збережено» (коли коефіцієнт застосовано).
+    marathonConfirmLine:
+      '🔥 Марафон «<b>{name}</b>»: бали нараховано з коефіцієнтом ×{coef}! Не зупиняйся! 🚀',
     confirmHeader: 'Перевірте відповіді:',
     questionPrefix: 'Питання {n}/{total}',
     helpText:

@@ -429,6 +429,7 @@ const Submitted: React.FC<{
   <>
     <div className="blkch-success">
       ✅ Дякую! Ви отримали +{result.pointsEarned} балів.
+      {result.marathon && ` 🔥 Марафон «${result.marathon.name}»: ×${result.marathon.coefficient}!`}
       {result.closed && ' Справу зведено!'}
     </div>
     {stats && (

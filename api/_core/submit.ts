@@ -23,6 +23,7 @@ import {
 } from '../_telegram/scheduler.js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import { getMeta } from '../_telegram/storage.js';
+import { applyMarathonBonus, type MarathonAction } from '../_telegram/marathon.js';
 
 export type SubmitAction = 'submit' | 'confirm';
 
@@ -33,6 +34,8 @@ export interface SubmitResult {
   total: number;
   closed: boolean;            // тільки collab: справу зведено цим підтвердженням
   actionTaken: 'parallel-create' | 'collab-create' | 'collab-edit' | 'collab-confirm';
+  // Якщо діє марафон і ця дія в ньому бере участь — інфо для повідомлення; інакше null.
+  marathon: { name: string; coefficient: number } | null;
 }
 
 export class SubmitError extends Error {
@@ -136,14 +139,16 @@ async function submitParallel(user: BotUser, cse: BotCase, answers: string[]): P
     }
   }
   const pts = computePointsForToday(todayCount);
-  const newTotal = await applyUserPoints(user, pts.pointsEarned);
+  const bonus = applyMarathonBonus(pts.pointsEarned, 'recognition');
+  const newTotal = await applyUserPoints(user, bonus.points);
   return {
-    pointsEarned: pts.pointsEarned,
+    pointsEarned: bonus.points,
     multiplier: pts.multiplier,
     todayCount,
     total: newTotal,
     closed: false,
     actionTaken: 'parallel-create',
+    marathon: bonus.marathon ? { name: bonus.marathon.name, coefficient: bonus.marathon.coefficient } : null,
   };
 }
 
@@ -153,7 +158,7 @@ async function submitCollabCreate(user: BotUser, cse: BotCase, answers: string[]
     setCaseCreated(cse.caseId, user.tgId, answers),
     recordCaseEvent(cse.caseId, user.tgId, 'create', answers, user.partnerId),
   ]);
-  return deliverCollabPoints(user, false, 3, 'collab-create');
+  return deliverCollabPoints(user, false, 3, 'collab-create', 'recognition');
 }
 
 // ---- Collab: edit ----
@@ -162,7 +167,7 @@ async function submitCollabEdit(user: BotUser, cse: BotCase, answers: string[]):
     setCaseEdited(cse.caseId, user.tgId, answers),
     recordCaseEvent(cse.caseId, user.tgId, 'edit', answers, user.partnerId),
   ]);
-  return deliverCollabPoints(user, false, 1, 'collab-edit');
+  return deliverCollabPoints(user, false, 1, 'collab-edit', 'verification');
 }
 
 // ---- Collab: confirm ----
@@ -185,26 +190,29 @@ async function submitCollabConfirm(user: BotUser, cse: BotCase): Promise<SubmitR
       console.error('maybeAnnounceDescriptionDone (collab) failed', e);
     }
   }
-  return deliverCollabPoints(user, closed, 1, 'collab-confirm');
+  return deliverCollabPoints(user, closed, 1, 'collab-confirm', 'verification');
 }
 
 async function deliverCollabPoints(
   user: BotUser,
   closed: boolean,
   actionBase: number,
-  actionTaken: SubmitResult['actionTaken']
+  actionTaken: SubmitResult['actionTaken'],
+  action: MarathonAction
 ): Promise<SubmitResult> {
   const today = kyivDateString();
   const todayCount = await incDailyCount(user.tgId, today);
   const pts = computePointsForToday(todayCount, actionBase);
-  const newTotal = await applyUserPoints(user, pts.pointsEarned);
+  const bonus = applyMarathonBonus(pts.pointsEarned, action);
+  const newTotal = await applyUserPoints(user, bonus.points);
   return {
-    pointsEarned: pts.pointsEarned,
+    pointsEarned: bonus.points,
     multiplier: pts.multiplier,
     todayCount,
     total: newTotal,
     closed,
     actionTaken,
+    marathon: bonus.marathon ? { name: bonus.marathon.name, coefficient: bonus.marathon.coefficient } : null,
   };
 }
 

@@ -130,10 +130,18 @@ export interface VerifDescription {
   done: number;
 }
 
+export interface VerifMarathon {
+  name: string;
+  coefficient: number;
+  actionWord: string;
+  endDate: string; // момент завершення, 'ДД.ММ.РРРР ГГ:ХХ' (київський час)
+}
+
 export interface VerifStatsResp {
   descriptions: VerifDescription[];
   total_descriptions: number;
   remaining_descriptions: number;
+  marathon?: VerifMarathon | null;
 }
 
 export interface VerifSubmitResult {
@@ -142,6 +150,7 @@ export interface VerifSubmitResult {
   pointsEarned: number;
   correctedWords: number;
   earnedBadges?: { id: string; title: string; text: string; media: 'image' | 'video' }[];
+  marathon?: { name: string; coefficient: number } | null;
 }
 
 export async function getNext(): Promise<VerifCase | null> {

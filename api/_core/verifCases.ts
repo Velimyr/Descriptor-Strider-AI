@@ -11,6 +11,7 @@ import {
   incDailyCount,
 } from '../_telegram/storage.js';
 import { kyivDateString, kyivMonthString } from '../_telegram/scheduler.js';
+import { applyMarathonBonus } from '../_telegram/marathon.js';
 
 const PREFIX = process.env.TABLE_PREFIX ?? 'bot_';
 const T = {
@@ -65,6 +66,8 @@ export interface VerifSubmitResult {
   pointsEarned: number;
   correctedWords: number;
   earnedBadges: { id: string; title: string; text: string; media: 'image' | 'video' }[];
+  // Якщо діє марафон на перевірку — інфо для повідомлення; інакше null.
+  marathon: { name: string; coefficient: number } | null;
 }
 
 interface VerifCaseRow {
@@ -278,7 +281,10 @@ export async function submitVerification(opts: {
   const count = Number(row?.new_count ?? 0);
   const done = String(row?.new_status ?? 'open') === 'done';
 
-  const pts = Math.round((POINTS_BASE + POINTS_PER_WORD * corrected) * 100) / 100;
+  const basePts = Math.round((POINTS_BASE + POINTS_PER_WORD * corrected) * 100) / 100;
+  // Веб-перевірка — це дія 'verification'. У дні марафону множимо на коефіцієнт.
+  const bonus = applyMarathonBonus(basePts, 'verification');
+  const pts = bonus.points;
   const { total, todayCount } = await awardPoints(opts.verifierId, opts.displayName, pts);
 
   // Бейджі — тихо (без Telegram-картки); помилка тут не має ламати підтвердження.
@@ -296,7 +302,14 @@ export async function submitVerification(opts: {
     console.error('verif badge eval failed', e?.message || e);
   }
 
-  return { confirmationsCount: count, done, pointsEarned: pts, correctedWords: corrected, earnedBadges };
+  return {
+    confirmationsCount: count,
+    done,
+    pointsEarned: pts,
+    correctedWords: corrected,
+    earnedBadges,
+    marathon: bonus.marathon ? { name: bonus.marathon.name, coefficient: bonus.marathon.coefficient } : null,
+  };
 }
 
 // ---------- skip ----------

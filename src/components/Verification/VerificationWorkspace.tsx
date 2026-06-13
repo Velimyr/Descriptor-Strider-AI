@@ -260,6 +260,7 @@ export const VerificationWorkspace: React.FC<{ opysBaseUrl?: string }> = ({ opys
       const r = await verifApi.submitCase(cse.caseId, working);
       ownedRef.current = null;
       const parts = [`+${r.pointsEarned} б.`];
+      if (r.marathon) parts.push(`🔥 марафон ×${r.marathon.coefficient}`);
       if (r.correctedWords > 0) parts.push(`виправлено слів: ${r.correctedWords}`);
       if (r.done) parts.push('справу перевірено повністю ✓');
       else parts.push(`підтверджень: ${r.confirmationsCount}/3`);
@@ -362,6 +363,18 @@ export const VerificationWorkspace: React.FC<{ opysBaseUrl?: string }> = ({ opys
           </button>
         </div>
       </div>
+
+      {stats?.marathon && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <span className="text-lg leading-none">🔥</span>
+          <span>
+            Зараз триває марафон «<b>{stats.marathon.name}</b>» (до{' '}
+            <b>{stats.marathon.endDate}</b>)! За кожну {stats.marathon.actionWord}{' '}
+            справу ти отримуєш бали з коефіцієнтом <b>×{stats.marathon.coefficient}</b>.
+            Не втрачай нагоди отримати більше балів! 🚀
+          </span>
+        </div>
+      )}
 
       {err && <div className="text-sm text-red-600">{err}</div>}
 
