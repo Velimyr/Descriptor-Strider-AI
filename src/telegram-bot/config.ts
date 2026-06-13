@@ -249,6 +249,15 @@ export const telegramBotConfig: TelegramBotConfig = {
          actions: ['verification'],
          env: 'dev',
        },
+
+       {
+        name: 'Недільний рейд на архів',
+         start: '2026-06-14 00:00',
+         end: '2026-06-14 23:59',
+         coefficient: 2,
+         actions: ['verification'],
+         env: 'prod',
+       },
   ],
 
   sheets: {
