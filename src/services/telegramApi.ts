@@ -157,6 +157,15 @@ export const tgApi = {
       method: 'POST',
       body: JSON.stringify({ caseId, pairTgIdA, pairTgIdB }),
     }),
+  integrityBan: (payload: {
+    tgId: string;
+    reason?: string;
+    caseId?: string;
+    pairTgIdA?: string;
+    pairTgIdB?: string;
+  }) => call('/admin/integrity/ban', { method: 'POST', body: JSON.stringify(payload) }),
+  integrityUnban: (tgId: string) =>
+    call('/admin/integrity/unban', { method: 'POST', body: JSON.stringify({ tgId }) }),
   submissionsByDescription: (archive: string, fund: string, opys: string) =>
     call(
       `/admin/submissions-by-description?archive=${encodeURIComponent(archive)}` +

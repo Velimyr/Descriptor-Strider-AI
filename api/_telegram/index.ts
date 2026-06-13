@@ -1225,6 +1225,58 @@ router.post('/admin/integrity/reopen', async (req, res) => {
   }
 });
 
+// Заблокувати користувача (перевірка доброчесності): після цього він не може
+// виконати жодну дію — бот і веб повертають texts.bannedNotice. Бан за tg_id;
+// для web-юзера (tg_id="web:…") це водночас банить його унікальний нік.
+router.post('/admin/integrity/ban', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { tgId, reason, caseId, pairTgIdA, pairTgIdB } = req.body || {};
+  if (!tgId) return res.status(400).json({ error: 'tgId обовʼязковий' });
+  try {
+    const { getUser, setUserBanned, addIntegrityReview } = await import('./storage.js');
+    const { isWebUserId } = await import('../_core/webUsers.js');
+    const user = await getUser(String(tgId));
+    if (!user) return res.status(404).json({ error: 'Користувача не знайдено' });
+    await setUserBanned(String(tgId), true, String(reason || ''), 'admin');
+
+    // Якщо передано пару — прибираємо її зі списку «Перевірка доброчесності».
+    if (caseId && pairTgIdA && pairTgIdB) {
+      try {
+        await addIntegrityReview(String(caseId), String(pairTgIdA), String(pairTgIdB), 'dismissed');
+      } catch (e) {
+        console.error('addIntegrityReview (ban) failed', e);
+      }
+    }
+
+    // Повідомляємо лише TG-юзерів (web:… не мають приватного чату з ботом).
+    if (!isWebUserId(String(tgId))) {
+      try {
+        const { sendMessage } = await import('./tg-api.js');
+        await sendMessage(String(tgId), telegramBotConfig.texts.bannedNotice);
+      } catch (e: any) {
+        return res.json({ ok: true, warning: `Заблоковано, але повідомлення не доставлено: ${e?.message || e}` });
+      }
+    }
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Розблокувати користувача (відкат бана).
+router.post('/admin/integrity/unban', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { tgId } = req.body || {};
+  if (!tgId) return res.status(400).json({ error: 'tgId обовʼязковий' });
+  try {
+    const { setUserBanned } = await import('./storage.js');
+    await setUserBanned(String(tgId), false);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ----- Профіль юзера: повна інформація (вкл. приватні поля), для адмін-UI -----
 router.get('/admin/user-profile/:tgId', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;

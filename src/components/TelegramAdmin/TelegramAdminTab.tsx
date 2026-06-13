@@ -5535,6 +5535,8 @@ const IntegrityView: React.FC = () => {
   const [loaded, setLoaded] = useState(false);
   // Локальний стан по кнопках «Зняти бали»: tgId|caseId → 'busy' | 'done:<msg>' | 'err:<msg>'
   const [penaltyState, setPenaltyState] = useState<Record<string, string>>({});
+  // Стан кнопок «Заблокувати»: tgId|caseId → 'busy' | 'done' | 'err:<msg>'
+  const [banState, setBanState] = useState<Record<string, string>>({});
 
   const refresh = async (t = threshold, resolved = includeResolved) => {
     setBusy(true);
@@ -5776,6 +5778,40 @@ const IntegrityView: React.FC = () => {
     }
   };
 
+  // Заблокувати учасника: після цього він не зможе виконати жодну дію (бот + веб).
+  const banParticipant = async (g: CaseGroup, tgId: string) => {
+    const u = g.participants.find(p => p.tgId === tgId);
+    if (!u || !tgId) return;
+    if (!window.confirm(
+      `Заблокувати "${userLabel(u)}"?\n\nКористувач більше не зможе виконати жодну дію — ` +
+      `і в боті, і на сайті йому повертатиметься повідомлення про блокування.`
+    )) return;
+    const key = `${tgId}|${g.caseId}`;
+    setBanState(s => ({ ...s, [key]: 'busy' }));
+    try {
+      // Прикріплюємо одну з відкритих пар із цим юзером — щоб вона зникла зі списку.
+      const openPair = g.pairs.find(
+        p => !p.review && (p.first.tgId === tgId || p.second.tgId === tgId)
+      );
+      const r = await tgApi.integrityBan({
+        tgId,
+        caseId: openPair?.caseId,
+        pairTgIdA: openPair?.first.tgId,
+        pairTgIdB: openPair?.second.tgId,
+      });
+      const warn = (r as any)?.warning ? ` ⚠️ ${(r as any).warning}` : '';
+      setBanState(s => ({ ...s, [key]: warn ? `err:${warn.trim()}` : 'done' }));
+      // Локально прибираємо всі пари з цим юзером — для нього все вирішено.
+      if (diffs) {
+        setDiffs(
+          diffs.filter(x => !(x.caseId === g.caseId && (x.first.tgId === tgId || x.second.tgId === tgId)))
+        );
+      }
+    } catch (e: any) {
+      setBanState(s => ({ ...s, [key]: `err:${e.message || 'помилка'}` }));
+    }
+  };
+
   return (
     <div className="space-y-3">
       <EgressWarning
@@ -5898,11 +5934,15 @@ const IntegrityView: React.FC = () => {
                     const isBusy = st === 'busy';
                     const isDone = st.startsWith('done:');
                     const isErr = st.startsWith('err:');
+                    const bst = banState[key] || '';
+                    const banBusy = bst === 'busy';
+                    const banDone = bst === 'done';
+                    const banErr = bst.startsWith('err:');
                     return (
                       <div key={u.tgId} className="border rounded p-2 bg-slate-50 flex flex-col gap-1">
                         <div className="font-medium">{userLabel(u)}</div>
                         <div className="text-xs text-slate-500">{u.submittedAt}</div>
-                        <div className="flex items-center gap-2 mt-1">
+                        <div className="flex items-center flex-wrap gap-2 mt-1">
                           <button
                             disabled={!u.tgId || isBusy || isDone}
                             onClick={() => penalizeUser(g, u.tgId)}
@@ -5915,9 +5955,22 @@ const IntegrityView: React.FC = () => {
                           >
                             {isBusy ? 'Надсилаю…' : isDone ? '✓ Знято −100' : `Зняти −${PENALTY_POINTS} балів`}
                           </button>
+                          <button
+                            disabled={!u.tgId || banBusy || banDone}
+                            onClick={() => banParticipant(g, u.tgId)}
+                            className={`px-2 py-1 text-xs rounded font-medium ${
+                              banDone
+                                ? 'bg-slate-300 text-slate-700 cursor-default'
+                                : 'bg-red-600 text-white hover:bg-red-700 disabled:opacity-50'
+                            }`}
+                            title="Заблокувати користувача — він не зможе виконати жодну дію"
+                          >
+                            {banBusy ? 'Блокую…' : banDone ? '✓ Заблоковано' : '🚫 Заблокувати'}
+                          </button>
                         </div>
                         {isDone && <span className="text-xs text-green-700">{st.slice(5)}</span>}
                         {isErr && <span className="text-xs text-rose-700">{st.slice(4)}</span>}
+                        {banErr && <span className="text-xs text-rose-700">{bst.slice(4)}</span>}
                       </div>
                     );
                   })}

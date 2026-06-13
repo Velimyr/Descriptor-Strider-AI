@@ -86,6 +86,7 @@ async function ensureTelegramUser(tgId: string, name: string): Promise<void> {
     facebookUrl: '',
     photoFileId: '',
     photoMessageId: '',
+    banned: false,
   });
 }
 

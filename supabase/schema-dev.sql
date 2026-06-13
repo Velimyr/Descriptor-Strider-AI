@@ -18,6 +18,11 @@ alter table botdev_users add column if not exists pending_action text not null d
 alter table botdev_users add column if not exists intro_shown_at timestamptz;
 -- Час "засіву" бейджів (див. коментар у schema.sql). NULL = тиха видача на першій перевірці.
 alter table botdev_users add column if not exists badges_seeded_at timestamptz;
+-- Бан користувача ("Перевірка доброчесності") — див. коментар у schema.sql.
+alter table botdev_users add column if not exists banned     boolean     not null default false;
+alter table botdev_users add column if not exists ban_reason text;
+alter table botdev_users add column if not exists banned_at  timestamptz;
+alter table botdev_users add column if not exists banned_by  text;
 
 create table if not exists botdev_integrity_reviews (
   case_id          text        not null,

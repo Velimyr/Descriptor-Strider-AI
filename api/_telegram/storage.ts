@@ -82,6 +82,8 @@ export interface BotUser {
   facebookUrl: string;
   photoFileId: string;    // TG file_id найбільшої фото
   photoMessageId: string; // id повідомлення у приватному каналі профілів
+  // Бан (перевірка доброчесності). true → користувач не може виконати жодну дію.
+  banned: boolean;
 }
 
 export interface BotCase {
@@ -145,6 +147,7 @@ function mapUser(r: any): BotUser {
     facebookUrl: r.facebook_url || '',
     photoFileId: r.photo_file_id || '',
     photoMessageId: r.photo_message_id || '',
+    banned: r.banned === true,
   };
 }
 
@@ -470,6 +473,26 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.photoMessageId !== undefined) dbPatch.photo_message_id = patch.photoMessageId || null;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
+  if (error) throw error;
+}
+
+// Бан/розбан користувача (перевірка доброчесності). Окремо від patchUser, бо
+// ban_reason/banned_at/banned_by не входять у BotUser.
+export async function setUserBanned(
+  tgId: string,
+  banned: boolean,
+  reason = '',
+  by = ''
+): Promise<void> {
+  const { error } = await db()
+    .from(T.users)
+    .update({
+      banned,
+      ban_reason: banned ? reason || null : null,
+      banned_at: banned ? new Date().toISOString() : null,
+      banned_by: banned ? by || null : null,
+    })
+    .eq('tg_id', tgId);
   if (error) throw error;
 }
 

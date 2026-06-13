@@ -7,6 +7,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { Partner, getPartnerByApiKey, isOriginAllowed } from '../_core/partners.js';
 import { BotUser, getUser } from '../_telegram/storage.js';
 import { SessionPayload, verifySessionToken } from '../_core/sessionToken.js';
+import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
 declare global {
   namespace Express {
@@ -76,6 +77,11 @@ export async function requireSession(req: Request, res: Response, next: NextFunc
   }
   const user = await getUser(payload.tgId);
   if (!user) return res.status(401).json({ error: 'user no longer exists' });
+  // Бан (перевірка доброчесності): заблокований не може виконати жодну дію.
+  // Покриває і віджет, і сайт перевірки — обидва ходять через requireSession.
+  if (user.banned) {
+    return res.status(403).json({ error: 'banned', message: telegramBotConfig.texts.bannedNotice });
+  }
   req.sessionPayload = payload;
   req.sessionUser = user;
   next();

@@ -24,6 +24,13 @@ alter table bot_users add column if not exists intro_shown_at timestamptz;
 -- Новим користувачам бот ставить це поле одразу при /start, тож їхні справжні
 -- досягнення сповіщаються нормально.
 alter table bot_users add column if not exists badges_seeded_at timestamptz;
+-- Бан користувача ("Перевірка доброчесності"). Заблокований не може виконати жодну
+-- дію — бот і веб повертають йому texts.bannedNotice замість обробки. Бан за tg_id;
+-- для web-юзерів tg_id="web:<uuid>" з унікальним display_name, тож рядок банить і нік.
+alter table bot_users add column if not exists banned     boolean     not null default false;
+alter table bot_users add column if not exists ban_reason text;
+alter table bot_users add column if not exists banned_at  timestamptz;
+alter table bot_users add column if not exists banned_by  text;
 
 -- Журнал рішень адміна по парах різночитань ("Перевірка доброчесності").
 -- Пара ідентифікується справою + двома tg_id у відсортованому порядку (щоб

@@ -43,7 +43,8 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
   if (!res.ok) {
-    const err = new Error(data?.error || `HTTP ${res.status}`);
+    // Для бану (403) бекенд кладе дружній текст у message — показуємо саме його.
+    const err = new Error(data?.message || data?.error || `HTTP ${res.status}`);
     (err as any).code = data?.error;
     (err as any).status = res.status;
     throw err;

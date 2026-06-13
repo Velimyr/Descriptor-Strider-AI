@@ -457,6 +457,12 @@ async function handleMessage(msg: any) {
   // Читаємо user і session паралельно — все одно потрібні для більшості шляхів.
   const [user, session] = await Promise.all([getUser(tgId), getSession(tgId)]);
 
+  // Бан (перевірка доброчесності): заблокований не може виконати жодну дію.
+  if (user?.banned) {
+    await sendMessage(chatId, T.bannedNotice);
+    return;
+  }
+
   // Лагідно фіксуємо @username — буде корисний адміну, щоб написати юзеру в особисті.
   // Передаємо поточне значення з user, щоб уникнути зайвого UPDATE коли нічого не змінилось.
   // Fire-and-forget.
@@ -509,6 +515,7 @@ async function handleMessage(msg: any) {
         facebookUrl: '',
         photoFileId: '',
         photoMessageId: '',
+        banned: false,
       };
       await upsertUser(newUser);
       currentUser = { ...newUser, rowIndex: 0 } as BotUser;
@@ -773,12 +780,22 @@ async function handleCallback(cb: any) {
   const messageId = cb.message?.message_id;
   const data: string = cb.data || '';
 
+  // Один getUser тут обслуговує і бан-чек, і онбординг нижче — без зайвого читання
+  // (egress: не додаємо нового запиту понад той, що й так робився для intro).
+  const cbUser = await getUser(tgId);
+
+  // Бан (перевірка доброчесності): заблокований не може виконати жодну дію.
+  if (cbUser?.banned) {
+    await answerCallbackQuery(cb.id);
+    await sendMessage(chatId, T.bannedNotice);
+    return;
+  }
+
   // Якщо існуючий користувач уже зареєстрований і ще не бачив онбординг —
   // показуємо зараз. Не блокуємо обробку основного callback-у (fire-and-forget).
   // Виняток — сам callback 'intro:ack', щоб не зациклити.
-  if (data !== 'intro:ack') {
-    getUser(tgId)
-      .then(u => (u ? maybeShowIntro(chatId, u) : null))
+  if (data !== 'intro:ack' && cbUser) {
+    Promise.resolve(maybeShowIntro(chatId, cbUser))
       .catch(e => console.error('maybeShowIntro (callback) failed', e));
   }
 
@@ -1602,6 +1619,7 @@ export async function dispatchCaseToUser(
   ]);
   console.log('[dispatch]', { tgId, userStatus: user?.status, ignorePaused, hasNext: !!next, nextCaseId: next?.caseId, questions: questions.length });
   if (!user) return false;
+  if (user.banned) return false; // забаненим (перевірка доброчесності) не розсилаємо
   if (!ignorePaused && user.status !== 'active') return false;
   if (!next) {
     await sendMessage(tgId, T.noCasesLeft);

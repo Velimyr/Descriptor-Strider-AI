@@ -103,8 +103,10 @@ export class ApiClient {
     if (!res.ok) {
       let body: any = null;
       try { body = await res.json(); } catch {}
-      const err = new Error(body?.error || `HTTP ${res.status}`);
+      // Для бану (403) бекенд кладе дружній текст у message — показуємо саме його.
+      const err = new Error(body?.message || body?.error || `HTTP ${res.status}`);
       (err as any).status = res.status;
+      (err as any).code = body?.error;
       (err as any).body = body;
       throw err;
     }
