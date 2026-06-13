@@ -944,8 +944,10 @@ router.get('/admin/integrity', async (req, res) => {
   // (~30 МБ egress за перерахунок). Тому кеш двошаровий, валідований watermark-ом
   // (count + max(timestamp) трьох таблиць): in-memory + durable у bot_meta —
   // останній переживає холодні старти serverless. nocache=1 — примусовий перерахунок.
-  const cacheKey = `integrity-${threshold}-${includeResolved ? 1 : 0}`;
-  const metaKey = `integrity_cache:${threshold}:${includeResolved ? 1 : 0}`;
+  // Версія логіки порівняння (бамп → стара кеш-відповідь не віддається). v2: виключили
+  // поле «коментар розпізнавача» з порівняння.
+  const cacheKey = `integrity-v2-${threshold}-${includeResolved ? 1 : 0}`;
+  const metaKey = `integrity_cache_v2:${threshold}:${includeResolved ? 1 : 0}`;
   try {
     const {
       getAllSubmissionsOrdered,
@@ -996,6 +998,17 @@ router.get('/admin/integrity', async (req, res) => {
     } catch {
       questions = [];
     }
+
+    // Поля, які НЕ беремо до уваги в перевірці доброчесності: вільний коментар
+    // розпізнавача — це довільний текст, тож розбіжність у ньому не є ознакою
+    // недоброчесності. Матч за нормалізованою назвою поля (регістр/пробіли).
+    const normLabel = (s: string) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const INTEGRITY_EXCLUDED_LABELS = ['коментар розпізнавача'];
+    const excludedFieldIdx = new Set<number>();
+    questions.forEach((q, idx) => {
+      const label = normLabel(q?.label);
+      if (INTEGRITY_EXCLUDED_LABELS.some(ex => label.includes(ex))) excludedFieldIdx.add(idx);
+    });
 
     // Уніфікований формат "запису": case_id, tgId, displayName, submittedAt, answers, метадані.
     type Entry = {
@@ -1072,6 +1085,7 @@ router.get('/admin/integrity', async (req, res) => {
           const fieldDiffs: any[] = [];
           const max = Math.max(aa.length, bb.length, questions.length);
           for (let k = 0; k < max; k++) {
+            if (excludedFieldIdx.has(k)) continue; // напр. «коментар розпізнавача»
             const va = String(aa[k] ?? '');
             const vb = String(bb[k] ?? '');
             if (va === vb) continue;
