@@ -353,13 +353,39 @@ async function maybeShowIntro(chatId: number | string, user: BotUser): Promise<v
   }
 }
 
+// Повне посилання на PDF архівного опису: база (config.verif.opysBaseUrl) + назва файлу
+// + #page=N (скрол до сторінки у вбудованих PDF-переглядачах). Назва файлу — завжди
+// source_pdf справи. '' якщо source_pdf порожній (тоді кнопку не показуємо).
+function buildOpysUrl(cse: BotCase): string {
+  const fileName = String(cse.sourcePdf || '').trim();
+  if (!fileName) return '';
+  const base = telegramBotConfig.verif.opysBaseUrl || 'https://cdiak.archives.gov.ua/files/';
+  const url = /^https?:\/\//i.test(fileName) ? fileName : `${base}${encodeURIComponent(fileName)}`;
+  const p = parseInt(String(cse.page || '').match(/\d+/)?.[0] || '', 10);
+  return Number.isFinite(p) && p > 0 ? `${url}#page=${p}` : url;
+}
+
+// Надсилає фото справи з кнопкою «Показати опис» (відкриває PDF опису в браузері)
+// і дисклеймером у підписі. Якщо посилання не будується — звичайне фото без кнопки.
+async function sendCasePhotoWithOpys(chatId: number | string, cse: BotCase): Promise<void> {
+  if (!cse.tgFileId) return;
+  const opysUrl = buildOpysUrl(cse);
+  if (opysUrl) {
+    await sendPhotoByFileId(chatId, cse.tgFileId, T.opysDisclaimer, {
+      reply_markup: { inline_keyboard: [[{ text: T.opysButton, url: opysUrl }]] },
+    });
+  } else {
+    await sendPhotoByFileId(chatId, cse.tgFileId);
+  }
+}
+
 // Перед показом блоку підтвердження надсилаємо ту ж картинку ще раз —
 // щоб користувачу не довелось скролити вгору, щоб її побачити.
 async function resendCasePhoto(chatId: number | string, caseId: string): Promise<void> {
   if (!caseId) return;
   try {
     const cse = await getCase(caseId);
-    if (cse?.tgFileId) await sendPhotoByFileId(chatId, cse.tgFileId);
+    if (cse?.tgFileId) await sendCasePhotoWithOpys(chatId, cse);
   } catch (e) {
     console.error('resendCasePhoto failed', e);
   }
@@ -1628,7 +1654,8 @@ export async function dispatchCaseToUser(
   if (questions.length === 0) return false;
 
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
-  await sendPhotoByFileId(tgId, next.tgFileId);
+  // Під фото — кнопка «Показати опис» (PDF архівного опису) + дисклеймер.
+  await sendCasePhotoWithOpys(tgId, next);
 
   console.log('[dispatch.next]', {
     caseId: next.caseId,
