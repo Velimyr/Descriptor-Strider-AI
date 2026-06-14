@@ -4593,6 +4593,21 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
           display = v;
         }
       }
+      // Літера в номері справи значуща («12» і «12б» — різні справи). Якщо хтось у групі
+      // вписав номер із літерою-суфіксом — віддаємо перевагу найчастішому СЕРЕД таких
+      // (з тією ж базою), щоб мажоритарне «голе» число не з'їдало літеру при експорті.
+      const baseOfDisplay = parseNumberCell(display).base;
+      let suffixBest = -1;
+      for (const v of variantsOrder) {
+        const vi = parseNumberCell(v);
+        if (vi.suffix === '') continue;
+        if (baseOfDisplay != null && vi.base !== baseOfDisplay) continue;
+        const c = counts.get(v)!;
+        if (c > suffixBest) {
+          suffixBest = c;
+          display = v;
+        }
+      }
       const info = parseNumberCell(display);
 
       // Підпис кожного запису — нормалізована конкатенація ВСІХ полів.
@@ -4838,16 +4853,20 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       return;
     }
     setMsg('');
-    const selected = groups.map(g => g.records[g.selectedIndex!]);
     // Архівні реквізити беремо з descKey (вони однакові для всього опису).
     const [descArchive = '', descFund = '', descOpys = ''] = (descKey || '').split('|');
-    const rows: Step2Row[] = selected.map((s, idx) => {
+    const rows: Step2Row[] = groups.map((g, idx) => {
+      const s = g.records[g.selectedIndex!];
       const ans = Array.isArray(s.answers) ? [...s.answers] : [];
       while (ans.length < questions.length) ans.push('');
+      const answers = ans.map(a => String(a ?? ''));
+      // Номер беремо як представника групи (g.numberDisplay — із літерою, якщо хтось її
+      // вписав), а не з обраного LLM-запису: інакше при «12»/«12б» літера могла губитись.
+      if (numberColIdx >= 0 && g.numberDisplay) answers[numberColIdx] = g.numberDisplay;
       return {
         id: `r${idx}`,
         isEmpty: false,
-        answers: ans.map(a => String(a ?? '')),
+        answers,
         archive: String(s.archive ?? descArchive),
         fund: String(s.fund ?? descFund),
         opys: String(s.opys ?? descOpys),
@@ -5373,14 +5392,22 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
             <table className="w-full text-xs border-collapse">
               <thead className="bg-slate-100 sticky top-0">
                 <tr>
-                  {questions.map((q: any, i: number) => (
-                    <th key={i} className="text-left p-2 border-b whitespace-nowrap">
-                      {q.label || `Q${i + 1}`}
-                      {i === numberColIdx ? ' №' : ''}
-                    </th>
-                  ))}
+                  {questions.map((q: any, i: number) => {
+                    const isTitle = q?.role === 'title' || /назв/i.test(String(q?.label || ''));
+                    const isNumber = i === numberColIdx;
+                    const w = isTitle ? 'min-w-[320px]' : isNumber ? 'w-16' : 'w-28';
+                    return (
+                      <th
+                        key={i}
+                        className={`${isNumber ? 'text-center' : 'text-left'} p-2 border-b whitespace-nowrap ${w}`}
+                      >
+                        {q.label || `Q${i + 1}`}
+                        {isNumber ? ' №' : ''}
+                      </th>
+                    );
+                  })}
                   {META_COLS.map(c => (
-                    <th key={c.key} className="text-left p-2 border-b whitespace-nowrap text-slate-600">
+                    <th key={c.key} className="text-left p-2 border-b whitespace-nowrap text-slate-600 w-24">
                       {c.label}
                     </th>
                   ))}
@@ -5396,20 +5423,27 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                     : '';
                   return (
                   <tr key={r.id} className={`${rowBg} border-b`}>
-                    {questions.map((_: any, qi: number) => (
-                      <td key={qi} className="p-1 align-top">
-                        <textarea
-                          value={r.answers[qi] ?? ''}
-                          onChange={e => updateCell(ri, qi, e.target.value)}
-                          rows={1}
-                          className={`w-full border rounded px-1.5 py-1 text-xs resize-y ${
-                            qi === numberColIdx && isDup
-                              ? 'bg-rose-50 border-rose-400'
-                              : 'bg-white'
-                          }`}
-                        />
-                      </td>
-                    ))}
+                    {questions.map((q: any, qi: number) => {
+                      const isTitle = q?.role === 'title' || /назв/i.test(String(q?.label || ''));
+                      const isNumber = qi === numberColIdx;
+                      const w = isTitle ? 'min-w-[320px]' : isNumber ? 'w-16' : 'w-28';
+                      return (
+                        <td key={qi} className={`p-1 align-top ${w}`}>
+                          <textarea
+                            value={r.answers[qi] ?? ''}
+                            onChange={e => updateCell(ri, qi, e.target.value)}
+                            rows={1}
+                            className={`w-full border rounded px-1.5 py-1 text-xs resize-y ${
+                              isNumber ? 'text-center' : ''
+                            } ${
+                              isNumber && isDup
+                                ? 'bg-rose-50 border-rose-400'
+                                : 'bg-white'
+                            }`}
+                          />
+                        </td>
+                      );
+                    })}
                     {META_COLS.map(c => (
                       <td key={c.key} className="p-1 align-top">
                         <textarea

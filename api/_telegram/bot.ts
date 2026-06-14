@@ -365,20 +365,19 @@ function buildOpysUrl(cse: BotCase): string {
   return Number.isFinite(p) && p > 0 ? `${url}#page=${p}` : url;
 }
 
-// Надсилає фото справи з кнопкою «Показати опис» (відкриває PDF опису в браузері)
-// і дисклеймером у підписі. Якщо посилання не будується — звичайне фото без кнопки.
+// Надсилає дисклеймер + кнопку «Переглянути опис» (відкриває PDF опису в браузері)
+// ПЕРЕД фото, а потім саме фото. Якщо посилання не будується — лише фото.
 async function sendCasePhotoWithOpys(chatId: number | string, cse: BotCase): Promise<void> {
   if (!cse.tgFileId) return;
   const opysUrl = buildOpysUrl(cse);
   if (opysUrl) {
     const page = String(cse.page || '').match(/\d+/)?.[0] || '';
     const caption = page ? fmt(T.opysDisclaimer, { page }) : T.opysDisclaimerNoPage;
-    await sendPhotoByFileId(chatId, cse.tgFileId, caption, {
+    await sendMessage(chatId, caption, {
       reply_markup: { inline_keyboard: [[{ text: T.opysButton, url: opysUrl }]] },
     });
-  } else {
-    await sendPhotoByFileId(chatId, cse.tgFileId);
   }
+  await sendPhotoByFileId(chatId, cse.tgFileId);
 }
 
 // Перед показом блоку підтвердження надсилаємо ту ж картинку ще раз —
