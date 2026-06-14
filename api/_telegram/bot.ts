@@ -371,7 +371,9 @@ async function sendCasePhotoWithOpys(chatId: number | string, cse: BotCase): Pro
   if (!cse.tgFileId) return;
   const opysUrl = buildOpysUrl(cse);
   if (opysUrl) {
-    await sendPhotoByFileId(chatId, cse.tgFileId, T.opysDisclaimer, {
+    const page = String(cse.page || '').match(/\d+/)?.[0] || '';
+    const caption = page ? fmt(T.opysDisclaimer, { page }) : T.opysDisclaimerNoPage;
+    await sendPhotoByFileId(chatId, cse.tgFileId, caption, {
       reply_markup: { inline_keyboard: [[{ text: T.opysButton, url: opysUrl }]] },
     });
   } else {
