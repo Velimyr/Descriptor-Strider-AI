@@ -352,9 +352,10 @@ router.get('/hof/photo/:tgId', async (req, res) => {
 // ----------- Cron: групові оголошення (10:00 / 21:00 Київ) -----------
 // Зовнішній планувальник (GH Actions, `15 * * * *`) смикає ОДИН ендпоінт щогодини.
 // Сервер сам перевіряє київську годину і вирішує, чи це час морнінгу/вечора.
-// Вікно — 2 години (10–11 і 21–22), щоб витримати випадки коли GH Actions
-// «гасить» окремі слоти. Дедуплікація — через bot_meta claim, тож зайвих
-// повідомлень не буде.
+// Вікно — кілька годин (10–12 і 21–23), щоб витримати випадки коли GH Actions
+// «гасить» окремі слоти. Дедуплікація — поканальний bot_meta claim, тож зайвих
+// повідомлень не буде; а якщо доставка в групу впала — клейм звільняється і
+// наступний тік у вікні повторить саме цю групу.
 router.get('/cron/group-tick', async (req, res) => {
   const expected = process.env[telegramBotConfig.cronSecretEnv];
   if (expected && req.query.secret !== expected) return res.status(403).send('forbidden');
@@ -364,10 +365,10 @@ router.get('/cron/group-tick', async (req, res) => {
   const actions: any[] = [];
   try {
     const { announceMorningTop, announceEveningPuzzle } = await import('./groupAnnounce.js');
-    if (kyivHour === 10 || kyivHour === 11) {
+    if (kyivHour >= 10 && kyivHour <= 12) {
       actions.push({ kind: 'morning', ...(await announceMorningTop()) });
     }
-    if (kyivHour === 21 || kyivHour === 22) {
+    if (kyivHour >= 21 && kyivHour <= 23) {
       actions.push({ kind: 'evening', ...(await announceEveningPuzzle()) });
     }
     res.json({ ok: true, kyivHour, actions });

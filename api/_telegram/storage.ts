@@ -1834,6 +1834,15 @@ export async function tryClaimAnnouncement(key: string): Promise<boolean> {
   throw error;
 }
 
+// Звільняє клейм оголошення (видаляє рядок), щоб наступна спроба могла повторно
+// «заклеймити» й надіслати. Викликаємо, коли надсилання впало — інакше клейм
+// назавжди заблокував би повтор.
+export async function releaseAnnouncement(key: string): Promise<void> {
+  const { error } = await db().from(T.meta).delete().eq('key', key);
+  invalidateMetaCache(key);
+  if (error) throw error;
+}
+
 // Кількість унікальних справ, які користувач "торкнувся" у дату (Київ).
 // Об'єднує TG-сабміти (parallel) + collab-події (create/edit/confirm) + веб-перевірки.
 // Дія = пара (tg_id, case_id) — кілька подій по одній справі від одного юзера = 1.

@@ -8,6 +8,8 @@ import {
   getPuzzleWinners,
   getDisplayNamesMap,
   tryClaimAnnouncement,
+  releaseAnnouncement,
+  getMeta,
   isDescriptionFullyDone,
 } from './storage.js';
 import { sendMessage } from './tg-api.js';
@@ -50,10 +52,36 @@ function yesterdayKyivDateString(): string {
 export interface BroadcastResult {
   chatId: string;
   ok: boolean;
+  skipped?: boolean; // already delivered раніше (поканальний клейм)
   error?: string;
 }
 
-async function broadcast(text: string): Promise<BroadcastResult[]> {
+const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+// Надсилання з ретраями на транзиентні помилки (429/5xx/таймаут). Telegram
+// здебільшого віддає тимчасові збої, тож кілька спроб із бекофом різко піднімають
+// надійність доставки.
+async function sendWithRetry(chatId: string, text: string, attempts = 3): Promise<void> {
+  let lastErr: any;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await sendMessage(chatId, text, { disable_web_page_preview: true });
+      return;
+    } catch (e: any) {
+      lastErr = e;
+      if (i < attempts - 1) await sleep(800 * (i + 1));
+    }
+  }
+  throw lastErr;
+}
+
+// Розсилка тексту в усі групи.
+// claimBaseKey задано → ПОКАНАЛЬНИЙ клейм: для кожної групи окремий ключ
+// `${claimBaseKey}:${chatId}`. Клеймимо ПЕРЕД надсиланням (захист від паралельних
+// тіків), а якщо надсилання впало — звільняємо клейм, щоб наступний тік повторив
+// саме цю групу. Успіх лишає клейм назавжди (дедуплікація). Без claimBaseKey
+// (тест) — просто шлемо всім без клейму.
+async function broadcast(text: string, claimBaseKey?: string): Promise<BroadcastResult[]> {
   const chatIds = cfg.groupChats?.announceChatIds || [];
   if (chatIds.length === 0) {
     console.warn('groupAnnounce: announceChatIds is empty — nothing to send');
@@ -61,16 +89,38 @@ async function broadcast(text: string): Promise<BroadcastResult[]> {
   }
   const results: BroadcastResult[] = [];
   for (const chatId of chatIds) {
+    const chatKey = claimBaseKey ? `${claimBaseKey}:${chatId}` : null;
+    // Поканальна дедуплікація: якщо вже заклеймлено (доставлено) — пропускаємо.
+    if (chatKey) {
+      const claimed = await tryClaimAnnouncement(chatKey);
+      if (!claimed) {
+        results.push({ chatId, ok: true, skipped: true });
+        continue;
+      }
+    }
     try {
-      await sendMessage(chatId, text, { disable_web_page_preview: true });
+      await sendWithRetry(chatId, text);
       results.push({ chatId, ok: true });
     } catch (e: any) {
       const msg = e?.message || String(e);
       console.error('groupAnnounce sendMessage failed', chatId, msg);
+      // Звільняємо клейм — щоб наступний тік повторив доставку саме цій групі.
+      if (chatKey) await releaseAnnouncement(chatKey).catch(() => {});
       results.push({ chatId, ok: false, error: msg });
     }
   }
   return results;
+}
+
+// Чи всі групи вже отримали це оголошення (всі поканальні клейми існують) —
+// для дешевого short-circuit, щоб не перераховувати контент щотіку у вікні.
+async function allChatsDelivered(claimBaseKey: string): Promise<boolean> {
+  const chatIds = cfg.groupChats?.announceChatIds || [];
+  if (chatIds.length === 0) return true;
+  for (const chatId of chatIds) {
+    if (!(await getMeta(`${claimBaseKey}:${chatId}`))) return false;
+  }
+  return true;
 }
 
 // === 10:00 — ранкове вітання топ-3 за вчора ===
@@ -80,8 +130,9 @@ export async function announceMorningTop(opts?: { skipClaim?: boolean }): Promis
   broadcast?: BroadcastResult[];
 }> {
   const yesterday = yesterdayKyivDateString();
-  const claimKey = `announce:morning:${yesterday}`;
-  if (!opts?.skipClaim && !(await tryClaimAnnouncement(claimKey))) {
+  const claimBaseKey = `announce:morning:${yesterday}`;
+  // Short-circuit: якщо всі групи вже отримали — не перераховуємо лідерів щотіку.
+  if (!opts?.skipClaim && (await allChatsDelivered(claimBaseKey))) {
     return { sent: false, reason: 'already-sent' };
   }
 
@@ -100,7 +151,7 @@ export async function announceMorningTop(opts?: { skipClaim?: boolean }): Promis
     );
     text = fmt(pickRandom(cfg.groupAnnounce.morningHeader), { leaders: lines.join('\n') });
   }
-  const results = await broadcast(text);
+  const results = await broadcast(text, opts?.skipClaim ? undefined : claimBaseKey);
   return { sent: true, broadcast: results };
 }
 
@@ -111,14 +162,15 @@ export async function announceEveningPuzzle(opts?: { skipClaim?: boolean }): Pro
   broadcast?: BroadcastResult[];
 }> {
   const today = kyivDateString();
-  const claimKey = `announce:evening:${today}`;
+  const claimBaseKey = `announce:evening:${today}`;
+  // Short-circuit: усі групи вже отримали — не лізем у БД за пазлом/переможцями.
+  if (!opts?.skipClaim && (await allChatsDelivered(claimBaseKey))) {
+    return { sent: false, reason: 'already-sent' };
+  }
 
   const puzzle = await getPuzzle(today);
   if (!puzzle || !puzzle.sentence.trim()) {
     return { sent: false, reason: 'no-phrase' };
-  }
-  if (!opts?.skipClaim && !(await tryClaimAnnouncement(claimKey))) {
-    return { sent: false, reason: 'already-sent' };
   }
 
   const winners = await getPuzzleWinners(today);
@@ -153,7 +205,7 @@ export async function announceEveningPuzzle(opts?: { skipClaim?: boolean }): Pro
       });
     }
   }
-  const results = await broadcast(text);
+  const results = await broadcast(text, opts?.skipClaim ? undefined : claimBaseKey);
   return { sent: true, broadcast: results };
 }
 
@@ -168,8 +220,9 @@ export async function maybeAnnounceDescriptionDone(
     if (!archive || !fund || !opys) return;
     const { done, totalCases, doneCases } = await isDescriptionFullyDone(archive, fund, opys);
     if (!done) return;
-    const key = `announce:desc:${descriptionKey({ archive, fund, opys })}`;
-    if (!(await tryClaimAnnouncement(key))) return;
+    const claimBaseKey = `announce:desc:${descriptionKey({ archive, fund, opys })}`;
+    // Дешевий short-circuit — якщо всі групи вже отримали, нічого не робимо.
+    if (await allChatsDelivered(claimBaseKey)) return;
     const text = fmt(pickRandom(cfg.groupAnnounce.descriptionDone), {
       descName: esc(descriptionName({ archive, fund, opys })),
       archive: esc(archive),
@@ -179,7 +232,9 @@ export async function maybeAnnounceDescriptionDone(
       totalDone: doneCases,
       donePct: 100,
     });
-    await broadcast(text);
+    // Поканальний клейм: успіх лишає клейм, невдача звільняє (повтор при наступному
+    // закритті справи з цього опису, якщо таке станеться).
+    await broadcast(text, claimBaseKey);
   } catch (e) {
     console.error('maybeAnnounceDescriptionDone failed', e);
   }
