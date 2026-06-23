@@ -415,7 +415,9 @@ function keyboardForCollabPreview(): any {
 async function getMinConfirmations(): Promise<number> {
   const raw = await getMeta('min_confirmations');
   const n = parseInt(raw || '', 10);
-  return Number.isFinite(n) && n > 0 ? n : 3;
+  // Fallback — config (а не хардкод), щоб поріг закриття бота збігався з порогом
+  // прогресу/вибору справ (усі RPC беруть cases.targetSubmissions).
+  return Number.isFinite(n) && n > 0 ? n : telegramBotConfig.cases.targetSubmissions;
 }
 async function getCollabLockMinutes(): Promise<number> {
   const raw = await getMeta('collab_lock_minutes');

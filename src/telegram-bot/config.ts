@@ -200,7 +200,10 @@ export const telegramBotConfig: TelegramBotConfig = {
   },
 
   cases: {
-    targetSubmissions: 3,
+    // Мін. кількість підтверджень/сабмітів, щоб справа = "done".
+    // Колаборація: розпізнавання (count=1) + (targetSubmissions-1) перевірок.
+    // Веб-вкладка «Перевірка» (verif_*) має ОКРЕМИЙ поріг VERIF_THRESHOLD у коді.
+    targetSubmissions: 2,
     allowExtraAfterTarget: true,
     dailyGoal: 1000,
   },
