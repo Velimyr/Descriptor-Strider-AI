@@ -367,6 +367,9 @@ export const telegramBotConfig: TelegramBotConfig = {
     nopointsItem:
       'Справа <code>{caseId}</code> — втрачено <b>{points}</b> б.\n{diffs}',
     nopointsField: '• <b>{label}</b>\n   ваше: <i>{theirs}</i>\n   фінал: <i>{final}</i>',
+    helpBadgesIntro:
+      '🏅 <b>Досягнення</b>\n\n' +
+      'Бейджі видаються автоматично, коли ви досягаєте умови. Ось повний список:',
     // Рядок про марафон у розділі «Мої бали» (показується, поки марафон триває).
     // {name} — назва марафону; {actionWord} — «розпізнану»/«перевірену»/«розпізнану чи перевірену»;
     // {coef} — коефіцієнт; {endDate} — момент завершення марафону (ДД.ММ.РРРР ГГ:ХХ, київський час).
@@ -483,8 +486,8 @@ export const telegramBotConfig: TelegramBotConfig = {
     nothingToCancel: 'Немає активної справи.',
     statsLine:
       '👤 {name}\n' +
-      '🏆 Балів цього місяця: {monthPoints}\n' +
-      '📅 Сьогодні: {todayCount} справ ({todayPoints} балів, множник ×{multiplier})\n' +
+      '🏆 Підтверджені бали (місяць): {monthPoints}\n' +
+      '📅 Сьогодні оброблено: {todayCount} справ (множник ×{multiplier})\n' +
       '📊 Місце цього місяця: {rank} з {totalUsers}',
     progressTotalDescriptions: 'Всього розпізнано описів: {count}',
     progressDescriptionLine:

@@ -180,10 +180,44 @@ function helpMenuKeyboard(): any {
       [{ text: '📑 З чого складається опис', callback_data: 'help:descstruct' }],
       [{ text: '📝 Як відповідати на справу', callback_data: 'help:howto' }],
       [{ text: '🏆 Бали і рейтинг', callback_data: 'help:points' }],
+      [{ text: '🏅 Досягнення', callback_data: 'help:badges' }],
       [{ text: '🔔 Розклад і сповіщення', callback_data: 'help:schedule' }],
       [{ text: '💡 Поширені питання', callback_data: 'help:faq' }],
     ],
   };
+}
+
+// Динамічний список усіх досягнень з умовами — будується з каталогу config.badges,
+// щоб не розходитися з реальними критеріями. Групуємо за типом критерію.
+function badgeCriteriaText(c: { type: string; threshold: number }): string {
+  switch (c.type) {
+    case 'cases_total': return `опрацювати ${c.threshold} справ загалом`;
+    case 'day_count': return `опрацювати ${c.threshold} справ за один день`;
+    case 'total_points': return `накопичити ${c.threshold} балів`;
+    case 'verifications_total': return `перевірити ${c.threshold} справ`;
+    case 'corrected_words_total': return `виправити ${c.threshold} слів під час перевірки`;
+    default: return '';
+  }
+}
+
+function buildBadgesHelpText(): string {
+  const groups: Array<{ type: string; header: string }> = [
+    { type: 'cases_total', header: '📚 За кількістю опрацьованих справ' },
+    { type: 'day_count', header: '⚡ За активністю за один день' },
+    { type: 'total_points', header: '🏆 За накопиченими балами' },
+    { type: 'verifications_total', header: '🔍 За перевіреними справами' },
+    { type: 'corrected_words_total', header: '✏️ За виправленими словами' },
+  ];
+  const parts: string[] = [T.helpBadgesIntro];
+  for (const g of groups) {
+    const items = telegramBotConfig.badges.filter(b => b.criteria.type === g.type);
+    if (items.length === 0) continue;
+    const lines = items.map(
+      b => `🏅 <b>${escapeHtml(b.title)}</b> — ${badgeCriteriaText(b.criteria as any)}`
+    );
+    parts.push(`<b>${g.header}</b>\n${lines.join('\n')}`);
+  }
+  return parts.join('\n\n');
 }
 
 function settingsMenuKeyboard(): any {
@@ -955,6 +989,7 @@ async function handleCallback(cb: any) {
       about: T.helpAbout,
       howto: T.helpHowToAnswer,
       points: T.helpPoints,
+      badges: buildBadgesHelpText(),
       schedule: T.helpSchedule,
       faq: T.helpFaq,
     };
@@ -1442,8 +1477,8 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
   });
   const badges = await countEarnedInCatalog(tgId);
   const points = computePointsForToday(Math.max(todayCount, 1));
-  const todayPoints = todayCount * points.multiplier * telegramBotConfig.points.base;
-  // Місце й бали — за поточний місяць.
+  // Місце й (підтверджені) бали — за поточний місяць. Денних «балів» не показуємо:
+  // частина сьогоднішніх дій — непідтверджені, тож одне число вводило б в оману.
   const myIdx = monthly.findIndex(u => u.tgId === tgId);
   const monthPoints = myIdx >= 0 ? pts2(monthly[myIdx].points) : 0;
   const rank = myIdx >= 0 ? myIdx + 1 : monthly.length + 1;
@@ -1451,7 +1486,6 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
     name: user.displayName,
     monthPoints,
     todayCount,
-    todayPoints: Math.round(todayPoints * 100) / 100,
     multiplier: points.multiplier,
     rank,
     totalUsers: monthly.length,
