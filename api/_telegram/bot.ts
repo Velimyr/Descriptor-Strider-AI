@@ -53,6 +53,12 @@ import {
 } from './ocr.js';
 import { secretBoxReady } from './secretBox.js';
 import {
+  recordPendingPoints,
+  settleCaseAtClose,
+  getUnconfirmedTotal,
+  getRecentForfeited,
+} from '../_core/pendingPoints.js';
+import {
   computeFundEtaFromStats,
   computePointsForToday,
   getTodayProcessedCases,
@@ -1162,6 +1168,13 @@ async function handleCallback(cb: any) {
     return;
   }
 
+  // Справи за 24 год без нарахованих балів.
+  if (data === 'nopoints') {
+    await answerCallbackQuery(cb.id);
+    await sendNoPointsList(chatId, tgId);
+    return;
+  }
+
   // Досягнення — не залежать від сесії.
   if (data === 'badges') {
     await answerCallbackQuery(cb.id);
@@ -1460,8 +1473,35 @@ async function cmdStats(chatId: number, tgId: string, user: BotUser) {
     body += '\n' + fmt(T.badgesStatsLine, { earned: badges.earned, total: badges.total });
     rows.push([{ text: T.menuBadges, callback_data: 'badges' }]);
   }
+  // Непідтверджені бали + вхід до списку справ без балів.
+  const unconfirmed = await getUnconfirmedTotal(tgId).catch(() => 0);
+  if (unconfirmed > 0) {
+    body += '\n' + fmt(T.unconfirmedLine, { points: Math.round(unconfirmed * 100) / 100 });
+  }
+  rows.push([{ text: T.nopointsButton, callback_data: 'nopoints' }]);
   rows.push([{ text: T.puzzleResultsButton, callback_data: 'puzzle:me' }]);
   await sendMessage(chatId, body, { reply_markup: { inline_keyboard: rows } });
+}
+
+// Список справ за 24 год, за які бали не нараховано, з деталізацією відмінностей.
+async function sendNoPointsList(chatId: number | string, tgId: string) {
+  const items = await getRecentForfeited(tgId, 24);
+  if (items.length === 0) {
+    await sendMessage(chatId, `${T.nopointsTitle}\n\n${T.nopointsEmpty}`);
+    return;
+  }
+  await sendMessage(chatId, T.nopointsTitle);
+  for (const it of items) {
+    const diffs = it.fields.length
+      ? it.fields
+          .map(f => fmt(T.nopointsField, { label: escapeHtml(f.label), theirs: escapeHtml(f.theirs || '—'), final: escapeHtml(f.final || '—') }))
+          .join('\n')
+      : '—';
+    await sendMessage(
+      chatId,
+      fmt(T.nopointsItem, { caseId: escapeHtml(it.caseId), points: Math.round(it.points * 100) / 100, diffs })
+    );
+  }
 }
 
 async function cmdProgress(chatId: number, user: BotUser) {
@@ -2282,7 +2322,8 @@ async function collabSubmit(
   // Розпізнавання (create) — 3 бали база; редагування — 1 (це перевірка з правкою).
   const actionBase = alreadyEdit ? 1 : 3;
   const action: MarathonAction = alreadyEdit ? 'verification' : 'recognition';
-  await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase, action);
+  // Розпізнавання/редагування — бали тримаємо як «непідтверджені» до закриття справи.
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase, action, /*held*/ true, cse.caseId);
   await deleteSession(tgId);
 }
 
@@ -2304,8 +2345,16 @@ async function collabConfirm(
   // Снапшот того, що користувач підтвердив — поточні current_answers справи.
   await recordCaseEvent(caseId, tgId, 'confirm', cse.currentAnswers || []);
   const { closed } = await confirmCase(caseId, min);
-  // Перевірка — 1 бал база.
+  // Перевірка — 1 бал база (нараховується одразу, не «непідтверджені»).
   await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1, 'verification');
+  // Справу закрито — розраховуємо непідтверджені бали її розпізнавача/редакторів.
+  if (closed) {
+    try {
+      await settleCaseAtClose(caseId, cse.currentAnswers || []);
+    } catch (e) {
+      console.error('settleCaseAtClose (tg) failed', e);
+    }
+  }
   await deleteSession(tgId);
   // Описовий пазл: зараховуємо слова (для розпізнавача). Чи на кожне підтвердження,
   // чи лише на повне закриття — вирішує config.puzzle.confirmMode.
@@ -2328,7 +2377,11 @@ async function deliverCollabPoints(
   ackMessageId: number | undefined,
   closed: boolean,
   actionBase: number,
-  action: MarathonAction
+  action: MarathonAction,
+  // held=true (розпізнавання/редагування): бали тримаємо як «непідтверджені» до
+  // закриття справи — потрібен caseId, на рядок якого їх запишемо.
+  held = false,
+  caseId?: string
 ) {
   const today = kyivDateString();
   const [todayCount, todayDone] = await Promise.all([
@@ -2340,6 +2393,22 @@ async function deliverCollabPoints(
   // Марафон: коефіцієнт поверх денного множника, якщо ця дія бере участь.
   const bonus = applyMarathonBonus(pts.pointsEarned, action);
   const earned = bonus.points;
+
+  // ----- Непідтверджені бали: записуємо й виходимо (не чіпаємо total/місячний/бейджі) -----
+  if (held && caseId) {
+    await Promise.all([
+      recordPendingPoints(caseId, tgId, earned),
+      patchUser(tgId, { consecutiveMisses: 0 }),
+    ]);
+    const pendingText =
+      fmt(T.pointsPending, { points: earned, todayCount, todayDone, goal: telegramBotConfig.cases.dailyGoal }) +
+      (bonus.marathon ? '\n' + fmt(T.marathonConfirmLine, { name: bonus.marathon.name, coef: bonus.marathon.coefficient }) : '');
+    await (ackMessageId
+      ? editMessageText(chatId, ackMessageId, pendingText).catch(() => sendMessage(chatId, pendingText, { reply_markup: mainMenuKeyboard(user) }))
+      : sendMessage(chatId, pendingText, { reply_markup: mainMenuKeyboard(user) }));
+    return;
+  }
+
   const newTotal = Math.round((user.totalPoints + earned) * 100) / 100;
 
   const cfgPts = telegramBotConfig.points;

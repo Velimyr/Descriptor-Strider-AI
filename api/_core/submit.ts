@@ -24,6 +24,7 @@ import {
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import { getMeta } from '../_telegram/storage.js';
 import { applyMarathonBonus, type MarathonAction } from '../_telegram/marathon.js';
+import { recordPendingPoints, settleCaseAtClose } from './pendingPoints.js';
 
 export type SubmitAction = 'submit' | 'confirm';
 
@@ -33,6 +34,7 @@ export interface SubmitResult {
   todayCount: number;
   total: number;
   closed: boolean;            // тільки collab: справу зведено цим підтвердженням
+  held?: boolean;             // true → бали «непідтверджені» (create/edit), ще не нараховані
   actionTaken: 'parallel-create' | 'collab-create' | 'collab-edit' | 'collab-confirm';
   // Якщо діє марафон і ця дія в ньому бере участь — інфо для повідомлення; інакше null.
   marathon: { name: string; coefficient: number } | null;
@@ -158,7 +160,7 @@ async function submitCollabCreate(user: BotUser, cse: BotCase, answers: string[]
     setCaseCreated(cse.caseId, user.tgId, answers),
     recordCaseEvent(cse.caseId, user.tgId, 'create', answers, user.partnerId),
   ]);
-  return deliverCollabPoints(user, false, 3, 'collab-create', 'recognition');
+  return deliverCollabPoints(user, false, 3, 'collab-create', 'recognition', true, cse.caseId);
 }
 
 // ---- Collab: edit ----
@@ -167,7 +169,7 @@ async function submitCollabEdit(user: BotUser, cse: BotCase, answers: string[]):
     setCaseEdited(cse.caseId, user.tgId, answers),
     recordCaseEvent(cse.caseId, user.tgId, 'edit', answers, user.partnerId),
   ]);
-  return deliverCollabPoints(user, false, 1, 'collab-edit', 'verification');
+  return deliverCollabPoints(user, false, 1, 'collab-edit', 'verification', true, cse.caseId);
 }
 
 // ---- Collab: confirm ----
@@ -175,6 +177,14 @@ async function submitCollabConfirm(user: BotUser, cse: BotCase): Promise<SubmitR
   const min = await getMinConfirmations();
   await recordCaseEvent(cse.caseId, user.tgId, 'confirm', cse.currentAnswers || [], user.partnerId);
   const { closed } = await confirmCase(cse.caseId, min);
+  // Справу закрито — розраховуємо непідтверджені бали її розпізнавача/редакторів.
+  if (closed) {
+    try {
+      await settleCaseAtClose(cse.caseId, cse.currentAnswers || []);
+    } catch (e) {
+      console.error('settleCaseAtClose (web) failed', e);
+    }
+  }
   // Описовий пазл: підтвердження (можливо, web-користувачем) зараховує слова,
   // що їх зібрав TG-розпізнавач. Режим (перше підтвердження / повне закриття) —
   // у config.puzzle.confirmMode.
@@ -198,12 +208,31 @@ async function deliverCollabPoints(
   closed: boolean,
   actionBase: number,
   actionTaken: SubmitResult['actionTaken'],
-  action: MarathonAction
+  action: MarathonAction,
+  // held=true (create/edit): бали тримаємо як «непідтверджені» до закриття справи.
+  held = false,
+  caseId?: string
 ): Promise<SubmitResult> {
   const today = kyivDateString();
   const todayCount = await incDailyCount(user.tgId, today);
   const pts = computePointsForToday(todayCount, actionBase);
   const bonus = applyMarathonBonus(pts.pointsEarned, action);
+  const marathon = bonus.marathon ? { name: bonus.marathon.name, coefficient: bonus.marathon.coefficient } : null;
+
+  if (held && caseId) {
+    await recordPendingPoints(caseId, user.tgId, bonus.points);
+    return {
+      pointsEarned: bonus.points,
+      multiplier: pts.multiplier,
+      todayCount,
+      total: user.totalPoints, // ще не нараховано
+      closed,
+      held: true,
+      actionTaken,
+      marathon,
+    };
+  }
+
   const newTotal = await applyUserPoints(user, bonus.points);
   return {
     pointsEarned: bonus.points,
@@ -211,8 +240,9 @@ async function deliverCollabPoints(
     todayCount,
     total: newTotal,
     closed,
+    held: false,
     actionTaken,
-    marathon: bonus.marathon ? { name: bonus.marathon.name, coefficient: bonus.marathon.coefficient } : null,
+    marathon,
   };
 }
 

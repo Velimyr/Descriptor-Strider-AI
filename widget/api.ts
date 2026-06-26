@@ -34,6 +34,9 @@ export interface SubmitResult {
   todayCount: number;
   total: number;
   closed: boolean;
+  // true → бали «непідтверджені» (розпізнавання/редагування): нарахуються лише після
+  // перевірки справи іншими, якщо фінальна версія близька до поданої.
+  held?: boolean;
   actionTaken: string;
   marathon?: { name: string; coefficient: number } | null;
 }

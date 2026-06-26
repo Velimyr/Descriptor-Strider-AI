@@ -99,6 +99,13 @@ create index if not exists idx_botdev_confirms_user_at on botdev_case_confirmati
 -- відповіді губляться, бо botdev_cases.current_answers перезаписується при edit.
 alter table botdev_case_confirmations add column if not exists answers jsonb not null default '[]'::jsonb;
 
+-- Непідтверджені бали (крок 3) — див. коментар у schema.sql.
+alter table botdev_case_confirmations add column if not exists points        numeric;
+alter table botdev_case_confirmations add column if not exists points_status text;
+alter table botdev_case_confirmations add column if not exists settled_at    timestamptz;
+alter table botdev_case_confirmations add column if not exists final_answers jsonb;
+create index if not exists idx_botdev_confirms_pending on botdev_case_confirmations(tg_id, points_status, settled_at desc);
+
 create table if not exists botdev_sessions (
   tg_id         text primary key references botdev_users(tg_id) on delete cascade,
   case_id       text        not null,

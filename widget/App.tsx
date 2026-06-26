@@ -428,9 +428,20 @@ const Submitted: React.FC<{
 }> = ({ result, stats, onNext, onClose, onLink }) => (
   <>
     <div className="blkch-success">
-      ✅ Дякую! Ви отримали +{result.pointsEarned} балів.
-      {result.marathon && ` 🔥 Марафон «${result.marathon.name}»: ×${result.marathon.coefficient}!`}
-      {result.closed && ' Справу зведено!'}
+      {result.held ? (
+        <>
+          ✅ Дякую! +{result.pointsEarned} <b>непідтверджених</b> балів.
+          {result.marathon && ` 🔥 Марафон «${result.marathon.name}»: ×${result.marathon.coefficient}!`}
+          {' '}Вони стануть вашими, коли справу перевірять інші учасники — якщо фінальна версія
+          {' '}не надто відрізнятиметься від вашої.
+        </>
+      ) : (
+        <>
+          ✅ Дякую! Ви отримали +{result.pointsEarned} балів.
+          {result.marathon && ` 🔥 Марафон «${result.marathon.name}»: ×${result.marathon.coefficient}!`}
+          {result.closed && ' Справу зведено!'}
+        </>
+      )}
     </div>
     {stats && (
       <p className="blkch-stats">
