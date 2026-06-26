@@ -57,6 +57,7 @@ import {
   settleCaseAtClose,
   getUnconfirmedTotal,
   getRecentForfeited,
+  isCommentField,
 } from '../_core/pendingPoints.js';
 import {
   computeFundEtaFromStats,
@@ -1974,7 +1975,7 @@ export async function dispatchCaseToUser(
 // Поле «Коментар розпізнавача» (роль 'notes') не просимо — виключаємо з інструкції.
 // includedIdx — індекси питань, що увійшли до промту (для мапінгу відповіді назад).
 function buildRecognitionPrompt(questions: TableColumn[]): { prompt: string; includedIdx: number[] } {
-  const includedIdx = questions.map((_, i) => i).filter(i => questions[i].role !== 'notes');
+  const includedIdx = questions.map((_, i) => i).filter(i => !isCommentField(questions[i]));
   const list = includedIdx.map((qi, k) => `${k + 1}. ${questions[qi].label}`).join('\n');
   const prompt =
     'На зображенні — один запис із аркуша архівного опису (одна справа). ' +

@@ -40,7 +40,16 @@ export interface FieldDiff {
 }
 
 // Сумарна символьна різниця між версією учасника і фінальною, поле-в-поле,
-// крім полів із роллю 'notes' (Коментар розпізнавача). Повертає суму + деталі змінених полів.
+// крім поля «Коментар розпізнавача». Повертає суму + деталі змінених полів.
+//
+// Поле коментаря визначаємо ХАРДКОДОМ — за точною назвою «Коментар розпізнавача»
+// (НЕ за роллю). Та сама перевірка вживається і в AI-промті (bot.ts).
+export const RECOGNIZER_COMMENT_LABEL = 'Коментар розпізнавача';
+
+export function isCommentField(q?: { label?: string }): boolean {
+  return (q?.label || '').trim().toLowerCase() === RECOGNIZER_COMMENT_LABEL.toLowerCase();
+}
+
 export function compareVersions(
   theirs: string[],
   final: string[],
@@ -50,7 +59,7 @@ export function compareVersions(
   let sum = 0;
   const fields: FieldDiff[] = [];
   for (let i = 0; i < len; i++) {
-    if (questions[i]?.role === 'notes') continue; // коментар не враховуємо
+    if (isCommentField(questions[i])) continue; // коментар розпізнавача не враховуємо
     const a = normalize(theirs[i]);
     const b = normalize(final[i]);
     const d = levenshtein(a, b);
