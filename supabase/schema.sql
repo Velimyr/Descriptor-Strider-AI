@@ -32,6 +32,10 @@ alter table bot_users add column if not exists ban_reason text;
 alter table bot_users add column if not exists banned_at  timestamptz;
 alter table bot_users add column if not exists banned_by  text;
 
+-- BYOK: зашифрований JSON-масив Gemini API ключів користувача (AES-256-GCM, base64).
+-- Бот розпізнає справи ключами користувача з ротацією. NULL = ключів немає.
+alter table bot_users add column if not exists gemini_keys_enc text;
+
 -- Журнал рішень адміна по парах різночитань ("Перевірка доброчесності").
 -- Пара ідентифікується справою + двома tg_id у відсортованому порядку (щоб
 -- (A,B) і (B,A) трактувались як одна пара). action: penalized — комусь зняли бали;

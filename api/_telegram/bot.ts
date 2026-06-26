@@ -33,13 +33,24 @@ import {
   setCaseEdited,
   confirmCase,
   captureTgUsername,
+  getUserGeminiKeys,
+  setUserGeminiKeys,
 } from './storage.js';
 import {
   answerCallbackQuery,
   editMessageText,
   sendMessage,
   sendPhotoByFileId,
+  deleteMessage,
+  downloadTelegramFileBase64,
 } from './tg-api.js';
+import {
+  validateGeminiKey,
+  recognizeWithRotation,
+  AllKeysExhaustedError,
+  NoValidKeyError,
+} from './ocr.js';
+import { secretBoxReady } from './secretBox.js';
 import {
   computeFundEtaFromStats,
   computePointsForToday,
@@ -193,9 +204,60 @@ function profileMenuKeyboard(): any {
       [{ text: T.profileEditPhotoButton, callback_data: 'profile:edit_photo' }],
       [{ text: T.profileEditFacebookButton, callback_data: 'profile:edit_facebook' }],
       [{ text: T.profileEditContactButton, callback_data: 'profile:edit_contact' }],
+      [{ text: T.profileKeysButton, callback_data: 'profile:keys' }],
       [{ text: T.profileBackButton, callback_data: 'settings:back' }],
     ],
   };
+}
+
+// Екран керування Gemini-ключами: список наявних (за last4) + додати/видалити.
+function geminiKeysKeyboard(keys: string[]): any {
+  const rows: any[] = [];
+  keys.forEach((_, i) => {
+    rows.push([{ text: fmt(T.profileKeysDeleteButton, { n: i + 1 }), callback_data: `profile:delkey:${i}` }]);
+  });
+  rows.push([{ text: T.profileKeysAddButton, callback_data: 'profile:addkey' }]);
+  rows.push([{ text: T.profileBackButton, callback_data: 'settings:profile' }]);
+  return { inline_keyboard: rows };
+}
+
+async function sendGeminiKeysScreen(chatId: number | string, tgId: string) {
+  const keys = await getUserGeminiKeys(tgId);
+  const list = keys.length
+    ? keys.map((k, i) => fmt(T.profileKeysItem, { n: i + 1, hint: k.slice(-4) })).join('\n')
+    : T.profileKeysEmpty;
+  await sendMessage(chatId, `${T.profileKeysTitle}\n\n${list}`, {
+    reply_markup: geminiKeysKeyboard(keys),
+  });
+}
+
+// Обробка введеного ключа: валідація → збереження → видалення повідомлення з ключем.
+async function processGeminiKeyInput(
+  chatId: number | string,
+  tgId: string,
+  rawKey: string,
+  userMessageId: number
+) {
+  // Прибираємо повідомлення з ключем одразу — щоб не висіло у переписці.
+  await deleteMessage(chatId, userMessageId);
+  await patchUser(tgId, { pendingAction: '' });
+
+  const key = rawKey.trim();
+  const checking = await sendMessage(chatId, T.profileKeysChecking);
+  const ok = await validateGeminiKey(key);
+  const checkingId = checking?.message_id;
+  if (checkingId) await deleteMessage(chatId, checkingId);
+
+  if (!ok) {
+    await sendMessage(chatId, T.profileKeysInvalid);
+    await sendGeminiKeysScreen(chatId, tgId);
+    return;
+  }
+  const existing = await getUserGeminiKeys(tgId);
+  if (!existing.includes(key)) existing.push(key);
+  await setUserGeminiKeys(tgId, existing);
+  await sendMessage(chatId, fmt(T.profileKeysSaved, { count: existing.length }));
+  await sendGeminiKeysScreen(chatId, tgId);
 }
 
 // Клавіатура під edit-промптом: «Скасувати» + «Видалити» (якщо значення є).
@@ -367,17 +429,24 @@ function buildOpysUrl(cse: BotCase): string {
 
 // Надсилає фото справи з кнопкою «Показати опис» (відкриває PDF опису в браузері)
 // і дисклеймером у підписі. Якщо посилання не будується — звичайне фото без кнопки.
-async function sendCasePhotoWithOpys(chatId: number | string, cse: BotCase): Promise<void> {
+async function sendCasePhotoWithOpys(
+  chatId: number | string,
+  cse: BotCase,
+  // Якщо передано — під фото додаємо кнопку «AI розпізнавання» (лише у flow створення).
+  aiCaseId?: string
+): Promise<void> {
   if (!cse.tgFileId) return;
   const opysUrl = buildOpysUrl(cse);
+  const rows: any[] = [];
+  if (opysUrl) rows.push([{ text: T.opysButton, url: opysUrl }]);
+  if (aiCaseId) rows.push([{ text: T.aiButton, callback_data: `aiocr:${aiCaseId}` }]);
+  const extra = rows.length ? { reply_markup: { inline_keyboard: rows } } : {};
   if (opysUrl) {
     const page = String(cse.page || '').match(/\d+/)?.[0] || '';
     const caption = page ? fmt(T.opysDisclaimer, { page }) : T.opysDisclaimerNoPage;
-    await sendPhotoByFileId(chatId, cse.tgFileId, caption, {
-      reply_markup: { inline_keyboard: [[{ text: T.opysButton, url: opysUrl }]] },
-    });
+    await sendPhotoByFileId(chatId, cse.tgFileId, caption, extra);
   } else {
-    await sendPhotoByFileId(chatId, cse.tgFileId);
+    await sendPhotoByFileId(chatId, cse.tgFileId, undefined, extra);
   }
 }
 
@@ -544,6 +613,7 @@ async function handleMessage(msg: any) {
         photoFileId: '',
         photoMessageId: '',
         banned: false,
+        hasGeminiKeys: false,
       };
       await upsertUser(newUser);
       currentUser = { ...newUser, rowIndex: 0 } as BotUser;
@@ -757,6 +827,17 @@ async function handleMessage(msg: any) {
     return;
   }
 
+  // BYOK: користувач надсилає Gemini-ключ. Будь-який звичайний текст — це ключ.
+  // Якщо тицьнув кнопку меню (команда) — мовчки скидаємо режим.
+  if (user.pendingAction === 'add_gemini_key') {
+    if (!text.startsWith('/')) {
+      await processGeminiKeyInput(chatId, tgId, rawText, msg.message_id);
+      return;
+    }
+    await patchUser(tgId, { pendingAction: '' });
+    user.pendingAction = '';
+  }
+
   // Профіль: текстові поля (місто/Facebook). Скидаємо режим якщо юзер тицьнув кнопку меню.
   if (user.pendingAction === 'edit_city' || user.pendingAction === 'edit_facebook') {
     if (!text.startsWith('/')) {
@@ -922,6 +1003,37 @@ async function handleCallback(cb: any) {
       await sendMessage(chatId, 'Надішліть /start');
       return;
     }
+    // --- BYOK: Gemini-ключі ---
+    if (action === 'keys') {
+      if (!secretBoxReady()) {
+        await sendMessage(chatId, T.profileKeysNotConfigured);
+        return;
+      }
+      await sendGeminiKeysScreen(chatId, tgId);
+      return;
+    }
+    if (action === 'addkey') {
+      if (!secretBoxReady()) {
+        await sendMessage(chatId, T.profileKeysNotConfigured);
+        return;
+      }
+      await Promise.all([
+        patchUser(tgId, { pendingAction: 'add_gemini_key' }),
+        sendMessage(chatId, T.profileKeysPrompt, { reply_markup: profileEditCancelKeyboard() }),
+      ]);
+      return;
+    }
+    if (action.startsWith('delkey:')) {
+      const idx = Number(action.slice('delkey:'.length));
+      const keys = await getUserGeminiKeys(tgId);
+      if (Number.isInteger(idx) && idx >= 0 && idx < keys.length) {
+        keys.splice(idx, 1);
+        await setUserGeminiKeys(tgId, keys);
+        await sendMessage(chatId, fmt(T.profileKeysDeleted, { count: keys.length }));
+      }
+      await sendGeminiKeysScreen(chatId, tgId);
+      return;
+    }
     if (action === 'edit_name') {
       // Імʼя — обовʼязкове, кнопки «Видалити» немає.
       await Promise.all([
@@ -986,6 +1098,14 @@ async function handleCallback(cb: any) {
       await processProfileClear(chatId, user, field);
       return;
     }
+    return;
+  }
+
+  // AI-розпізнавання справи (BYOK) — ключами користувача.
+  if (data.startsWith('aiocr:')) {
+    await answerCallbackQuery(cb.id);
+    const caseId = data.slice('aiocr:'.length);
+    await handleAiRecognition(chatId, tgId, caseId);
     return;
   }
 
@@ -1657,7 +1777,9 @@ export async function dispatchCaseToUser(
 
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
   // Під фото — кнопка «Показати опис» (PDF архівного опису) + дисклеймер.
-  await sendCasePhotoWithOpys(tgId, next);
+  // AI-кнопку даємо лише у flow створення опису (не у collab-перегляді чужого варіанту).
+  const isRecognition = !(next.mode === 'collaborative' && next.confirmationsCount > 0);
+  await sendCasePhotoWithOpys(tgId, next, isRecognition ? next.caseId : undefined);
 
   console.log('[dispatch.next]', {
     caseId: next.caseId,
@@ -1712,6 +1834,119 @@ export async function dispatchCaseToUser(
     askQuestion(tgId, questions, 0),
   ]);
   return true;
+}
+
+// Промт для Gemini: витягни значення полів у фіксованому порядку → JSON-масив.
+function buildRecognitionPrompt(questions: TableColumn[]): string {
+  const list = questions.map((q, i) => `${i + 1}. ${q.label}`).join('\n');
+  return (
+    'На зображенні — один запис із аркуша архівного опису (одна справа). ' +
+    'Витягни значення для таких полів, у цьому порядку:\n' +
+    list +
+    `\n\nПоверни ЛИШЕ JSON-масив рядків — рівно ${questions.length} елемент(и), ` +
+    'по одному значенню на поле у вказаному порядку. ' +
+    'Якщо значення не видно або його немає — порожній рядок "". Без жодних пояснень.'
+  );
+}
+
+// Парсить відповідь Gemini у масив відповідей довжини count. null — якщо не JSON-масив.
+function parseAiAnswers(raw: string, count: number): string[] | null {
+  try {
+    const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+    const data = JSON.parse(cleaned);
+    const arr: any[] | null = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.fields)
+        ? data.fields
+        : null;
+    if (!arr) return null;
+    const out: string[] = [];
+    for (let i = 0; i < count; i++) out.push(String(arr[i] ?? '').trim());
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+// AI-розпізнавання справи ключами користувача. Результат → стандартна картка
+// підтвердження (state 'confirming'): далі користувач підтверджує / виправляє / пропускає.
+async function handleAiRecognition(chatId: number, tgId: string, caseId: string) {
+  const [keys, session, questions, cse] = await Promise.all([
+    getUserGeminiKeys(tgId),
+    getSession(tgId),
+    getQuestions(),
+    getCase(caseId),
+  ]);
+
+  if (keys.length === 0) {
+    await sendMessage(chatId, T.aiNoKeys);
+    return;
+  }
+  // Розпізнаємо лише в межах активної сесії саме цієї справи (інакше — застаріла кнопка).
+  if (!session || session.caseId !== caseId) {
+    await sendMessage(chatId, T.sessionExpired);
+    return;
+  }
+  if (!cse || !cse.tgFileId) {
+    await sendMessage(chatId, T.aiImageGone);
+    return;
+  }
+  if (questions.length === 0) return;
+
+  await sendMessage(chatId, T.aiRecognizing);
+
+  let img: { base64: string; mime: string } | null;
+  try {
+    img = await downloadTelegramFileBase64(cse.tgFileId);
+  } catch (e) {
+    console.error('[aiocr] download failed', e);
+    img = null;
+  }
+  if (!img) {
+    await sendMessage(chatId, T.aiImageGone);
+    return;
+  }
+
+  const prompt = buildRecognitionPrompt(questions);
+  const model = telegramBotConfig.slicing.geminiModel || telegramBotConfig.slicing.autoModel;
+
+  let raw: string;
+  try {
+    const res = await recognizeWithRotation(keys, img.base64, img.mime, prompt, model);
+    raw = res.text;
+  } catch (e) {
+    if (e instanceof AllKeysExhaustedError) {
+      await sendMessage(chatId, T.aiExhausted);
+    } else if (e instanceof NoValidKeyError) {
+      await sendMessage(chatId, T.aiFailed);
+    } else {
+      console.error('[aiocr] recognize failed', e);
+      await sendMessage(chatId, T.aiFailed);
+    }
+    return;
+  }
+
+  const answers = parseAiAnswers(raw, questions.length);
+  if (!answers) {
+    await sendMessage(chatId, T.aiBadResponse);
+    return;
+  }
+
+  // Переходимо до підтвердження. У стані 'confirming' ручний ввід уже блокується
+  // (processAnswer віддає підказку натиснути кнопку) — як і вимагалось.
+  const next: BotSession = {
+    ...session,
+    answersJson: JSON.stringify(answers),
+    currentQ: questions.length - 1,
+    state: 'confirming',
+    updatedAt: nowIsoUtc(),
+  };
+  await setSession(next, session.rowIndex);
+  await resendCasePhoto(chatId, caseId);
+  await sendMessage(chatId, buildSummary(questions, answers), {
+    reply_markup: keyboardForConfirm(),
+  });
+  await sendMessage(chatId, T.aiReviewHint);
 }
 
 function pickRandom<T>(arr: T[]): T | undefined {

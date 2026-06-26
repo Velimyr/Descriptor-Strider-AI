@@ -127,6 +127,34 @@ export async function answerCallbackQuery(callbackQueryId: string, text?: string
   return tg('answerCallbackQuery', { callback_query_id: callbackQueryId, text });
 }
 
+// Завантажує файл Telegram за file_id і повертає base64 + mime (для передачі в Gemini).
+// null, якщо файл недоступний (застарів тощо).
+export async function downloadTelegramFileBase64(
+  fileId: string
+): Promise<{ base64: string; mime: string } | null> {
+  const info = await tg('getFile', { file_id: fileId });
+  const filePath = info?.file_path;
+  if (!filePath) return null;
+  const botToken = process.env[telegramBotConfig.tg.botTokenEnv];
+  if (!botToken) throw new Error('bot token missing');
+  const upstream = await axios.get(
+    `https://api.telegram.org/file/bot${botToken}/${filePath}`,
+    { responseType: 'arraybuffer', timeout: 15000 }
+  );
+  const mime = upstream.headers['content-type'] || 'image/jpeg';
+  return { base64: Buffer.from(upstream.data).toString('base64'), mime };
+}
+
+// Видалення повідомлення (напр. одразу прибрати повідомлення користувача з API-ключем).
+// Не кидаємо помилку — видалення може бути недоступне (старе повідомлення тощо).
+export async function deleteMessage(chatId: number | string, messageId: number): Promise<void> {
+  try {
+    await tg('deleteMessage', { chat_id: chatId, message_id: messageId });
+  } catch (e) {
+    console.warn('deleteMessage failed', e);
+  }
+}
+
 export async function editMessageText(
   chatId: number | string,
   messageId: number,
