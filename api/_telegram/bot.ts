@@ -1971,16 +1971,22 @@ export async function dispatchCaseToUser(
 }
 
 // Промт для Gemini: витягни значення полів у фіксованому порядку → JSON-масив.
-function buildRecognitionPrompt(questions: TableColumn[]): string {
-  const list = questions.map((q, i) => `${i + 1}. ${q.label}`).join('\n');
-  return (
+// Поле «Коментар розпізнавача» (роль 'notes') не просимо — виключаємо з інструкції.
+// includedIdx — індекси питань, що увійшли до промту (для мапінгу відповіді назад).
+function buildRecognitionPrompt(questions: TableColumn[]): { prompt: string; includedIdx: number[] } {
+  const includedIdx = questions.map((_, i) => i).filter(i => questions[i].role !== 'notes');
+  const list = includedIdx.map((qi, k) => `${k + 1}. ${questions[qi].label}`).join('\n');
+  const prompt =
     'На зображенні — один запис із аркуша архівного опису (одна справа). ' +
     'Витягни значення для таких полів, у цьому порядку:\n' +
     list +
-    `\n\nПоверни ЛИШЕ JSON-масив рядків — рівно ${questions.length} елемент(и), ` +
+    '\n\nПравила запису чисел:\n' +
+    '• Усі числа записуй арабськими цифрами (1, 2, 3…).\n' +
+    '• ВИНЯТОК — номер століття: його лишай як на зображенні — римськими (напр. XIX) або арабськими цифрами.\n' +
+    `\nПоверни ЛИШЕ JSON-масив рядків — рівно ${includedIdx.length} елемент(и), ` +
     'по одному значенню на поле у вказаному порядку. ' +
-    'Якщо значення не видно або його немає — порожній рядок "". Без жодних пояснень.'
-  );
+    'Якщо значення не видно або його немає — порожній рядок "". Без жодних пояснень.';
+  return { prompt, includedIdx };
 }
 
 // Парсить відповідь Gemini у масив відповідей довжини count. null — якщо не JSON-масив.
@@ -2041,7 +2047,7 @@ async function handleAiRecognition(chatId: number, tgId: string, caseId: string)
     return;
   }
 
-  const prompt = buildRecognitionPrompt(questions);
+  const { prompt, includedIdx } = buildRecognitionPrompt(questions);
   const model = telegramBotConfig.slicing.geminiModel || telegramBotConfig.slicing.autoModel;
 
   let raw: string;
@@ -2062,11 +2068,14 @@ async function handleAiRecognition(chatId: number, tgId: string, caseId: string)
     return;
   }
 
-  const answers = parseAiAnswers(raw, questions.length);
-  if (!answers) {
+  const aiArr = parseAiAnswers(raw, includedIdx.length);
+  if (!aiArr) {
     await sendMessage(chatId, T.aiBadResponse);
     return;
   }
+  // Мапимо відповідь назад на повні позиції питань; поле «Коментар» лишаємо порожнім.
+  const answers: string[] = new Array(questions.length).fill('');
+  includedIdx.forEach((qi, k) => { answers[qi] = aiArr[k] ?? ''; });
 
   // Переходимо до підтвердження. У стані 'confirming' ручний ввід уже блокується
   // (processAnswer віддає підказку натиснути кнопку) — як і вимагалось.
