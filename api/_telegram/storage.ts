@@ -64,7 +64,7 @@ export interface BotUser {
   lastDispatchedAt: string;
   consecutiveMisses: number;
   status: 'active' | 'paused';
-  pendingAction: '' | 'rename' | 'edit_city' | 'edit_facebook' | 'edit_photo' | 'edit_contact';
+  pendingAction: '' | 'rename' | 'edit_city' | 'edit_facebook' | 'edit_photo' | 'edit_contact' | 'add_gemini_key';
   createdAt: string;
   introShownAt: string; // ISO або '' якщо ще не показували
   // Час "засіву" бейджів. '' (NULL у БД) = ще не засівали: на першій перевірці
@@ -84,7 +84,15 @@ export interface BotUser {
   photoMessageId: string; // id повідомлення у приватному каналі профілів
   // Бан (перевірка доброчесності). true → користувач не може виконати жодну дію.
   banned: boolean;
+  // BYOK: чи має користувач збережені Gemini-ключі. Самі ключі (зашифровані) не
+  // тягнемо в модель — лише прапорець наявності. Читання/запис — окремими функціями.
+  hasGeminiKeys: boolean;
+  // Які справи надсилати користувачу: всі / тільки розпізнавання / тільки перевірка.
+  // Діє і на «Нова справа», і на розсилку за розкладом (через selectNextCaseForUser).
+  caseFilter: CaseFilter;
 }
+
+export type CaseFilter = 'all' | 'recognition' | 'verification';
 
 export interface BotCase {
   rowIndex: number;
@@ -148,7 +156,53 @@ function mapUser(r: any): BotUser {
     photoFileId: r.photo_file_id || '',
     photoMessageId: r.photo_message_id || '',
     banned: r.banned === true,
+    hasGeminiKeys: !!r.gemini_keys_enc,
+    caseFilter: (r.case_filter || 'all') as CaseFilter,
   };
+}
+
+// Легке читання фільтра справ (одна колонка). Викликається при виборі наступної справи.
+export async function getUserCaseFilter(tgId: string): Promise<CaseFilter> {
+  const { data, error } = await db()
+    .from(T.users)
+    .select('case_filter')
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  return ((data as any)?.case_filter || 'all') as CaseFilter;
+}
+
+// ===== BYOK: Gemini-ключі користувача =====
+// У БД — одна текстова колонка gemini_keys_enc із зашифрованим JSON-масивом ключів.
+
+export async function getUserGeminiKeys(tgId: string): Promise<string[]> {
+  const { data, error } = await db()
+    .from(T.users)
+    .select('gemini_keys_enc')
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  const enc = data?.gemini_keys_enc;
+  if (!enc) return [];
+  try {
+    const { decryptSecret } = await import('./secretBox.js');
+    const arr = JSON.parse(decryptSecret(enc));
+    return Array.isArray(arr) ? arr.filter((k: any) => typeof k === 'string' && k.length > 0) : [];
+  } catch (e) {
+    console.error('getUserGeminiKeys decrypt failed', e);
+    return [];
+  }
+}
+
+export async function setUserGeminiKeys(tgId: string, keys: string[]): Promise<void> {
+  const clean = keys.map(k => k.trim()).filter(k => k.length > 0);
+  let value: string | null = null;
+  if (clean.length > 0) {
+    const { encryptSecret } = await import('./secretBox.js');
+    value = encryptSecret(JSON.stringify(clean));
+  }
+  const { error } = await db().from(T.users).update({ gemini_keys_enc: value }).eq('tg_id', tgId);
+  if (error) throw error;
 }
 
 function mapCase(r: any): BotCase {
@@ -471,6 +525,7 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.facebookUrl !== undefined) dbPatch.facebook_url = patch.facebookUrl || null;
   if (patch.photoFileId !== undefined) dbPatch.photo_file_id = patch.photoFileId || null;
   if (patch.photoMessageId !== undefined) dbPatch.photo_message_id = patch.photoMessageId || null;
+  if (patch.caseFilter !== undefined) dbPatch.case_filter = patch.caseFilter;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;

@@ -32,6 +32,13 @@ alter table bot_users add column if not exists ban_reason text;
 alter table bot_users add column if not exists banned_at  timestamptz;
 alter table bot_users add column if not exists banned_by  text;
 
+-- BYOK: зашифрований JSON-масив Gemini API ключів користувача (AES-256-GCM, base64).
+-- Бот розпізнає справи ключами користувача з ротацією. NULL = ключів немає.
+alter table bot_users add column if not exists gemini_keys_enc text;
+
+-- Які справи надсилати: all | recognition | verification. Діє на «Нова справа» і розсилку.
+alter table bot_users add column if not exists case_filter text not null default 'all';
+
 -- Журнал рішень адміна по парах різночитань ("Перевірка доброчесності").
 -- Пара ідентифікується справою + двома tg_id у відсортованому порядку (щоб
 -- (A,B) і (B,A) трактувались як одна пара). action: penalized — комусь зняли бали;
@@ -107,6 +114,18 @@ create index if not exists idx_confirms_user_at on bot_case_confirmations(tg_id,
 -- Потрібен для перевірки доброчесності у collab-режимі: без нього старі
 -- відповіді губляться, бо bot_cases.current_answers перезаписується при edit.
 alter table bot_case_confirmations add column if not exists answers jsonb not null default '[]'::jsonb;
+
+-- Непідтверджені бали (крок 3). Для create/edit бали не нараховуються одразу, а
+-- тримаються як 'unconfirmed' до закриття справи; тоді версію учасника звіряють із
+-- фінальною (поле-в-поле, крім ролі 'notes', поріг 5 символів) → 'confirmed' або
+-- 'forfeited'. points — нарахована/потенційна сума; final_answers — снапшот фінальної
+-- версії на момент розрахунку (щоб екран «де помилився» не бив у bot_cases). Для
+-- 'confirm' points_status лишається NULL (бали нараховано одразу, як раніше).
+alter table bot_case_confirmations add column if not exists points        numeric;
+alter table bot_case_confirmations add column if not exists points_status text;
+alter table bot_case_confirmations add column if not exists settled_at    timestamptz;
+alter table bot_case_confirmations add column if not exists final_answers jsonb;
+create index if not exists idx_confirms_pending on bot_case_confirmations(tg_id, points_status, settled_at desc);
 
 create table if not exists bot_sessions (
   tg_id         text primary key references bot_users(tg_id) on delete cascade,

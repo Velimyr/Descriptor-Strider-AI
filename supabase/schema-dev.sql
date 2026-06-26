@@ -24,6 +24,12 @@ alter table botdev_users add column if not exists ban_reason text;
 alter table botdev_users add column if not exists banned_at  timestamptz;
 alter table botdev_users add column if not exists banned_by  text;
 
+-- BYOK: зашифрований JSON-масив Gemini API ключів користувача — див. коментар у schema.sql.
+alter table botdev_users add column if not exists gemini_keys_enc text;
+
+-- Які справи надсилати: all | recognition | verification — див. коментар у schema.sql.
+alter table botdev_users add column if not exists case_filter text not null default 'all';
+
 create table if not exists botdev_integrity_reviews (
   case_id          text        not null,
   first_tg_id      text        not null,
@@ -92,6 +98,13 @@ create index if not exists idx_botdev_confirms_user_at on botdev_case_confirmati
 -- Потрібен для перевірки доброчесності у collab-режимі: без нього старі
 -- відповіді губляться, бо botdev_cases.current_answers перезаписується при edit.
 alter table botdev_case_confirmations add column if not exists answers jsonb not null default '[]'::jsonb;
+
+-- Непідтверджені бали (крок 3) — див. коментар у schema.sql.
+alter table botdev_case_confirmations add column if not exists points        numeric;
+alter table botdev_case_confirmations add column if not exists points_status text;
+alter table botdev_case_confirmations add column if not exists settled_at    timestamptz;
+alter table botdev_case_confirmations add column if not exists final_answers jsonb;
+create index if not exists idx_botdev_confirms_pending on botdev_case_confirmations(tg_id, points_status, settled_at desc);
 
 create table if not exists botdev_sessions (
   tg_id         text primary key references botdev_users(tg_id) on delete cascade,

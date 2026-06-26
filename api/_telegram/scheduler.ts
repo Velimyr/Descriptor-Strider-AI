@@ -8,6 +8,7 @@ import {
   getCandidateCasesSlimForUser,
   getCase,
   getLastUserCaseKind,
+  getUserCaseFilter,
   getMeta,
   getPuzzle,
   getTodayActivity,
@@ -151,10 +152,20 @@ export async function selectNextCaseForUser(
       return getCandidateCasesForUser(tgId);
     }
   };
-  const [candidates, lastKind] = await Promise.all([
+  const [allCandidates, lastKind, caseFilter] = await Promise.all([
     fetchCandidates(),
     getLastUserCaseKind(tgId),
+    getUserCaseFilter(tgId),
   ]);
+  // Фільтр «Які справи надсилати». Перевірка = collab із вже наявною версією
+  // (confirmationsCount>0); решта (parallel або collab без версії) = розпізнавання.
+  const isVerification = (c: CandidateCase) => c.mode === 'collaborative' && c.confirmationsCount > 0;
+  const candidates =
+    caseFilter === 'recognition'
+      ? allCandidates.filter(c => !isVerification(c))
+      : caseFilter === 'verification'
+        ? allCandidates.filter(c => isVerification(c))
+        : allCandidates;
   if (candidates.length === 0) return null;
 
   // Слім-кандидат → повний рядок справи (одна точкова вибірка замість того,

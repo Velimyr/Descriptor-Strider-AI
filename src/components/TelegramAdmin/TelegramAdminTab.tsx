@@ -3867,6 +3867,21 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
   const [p, setP] = useState<Awaited<ReturnType<typeof tgApi.userProfile>> | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(true);
+  // Нарахування бонусних балів
+  const [bonusPoints, setBonusPoints] = useState('');
+  const [bonusReason, setBonusReason] = useState('');
+  const [bonusBusy, setBonusBusy] = useState(false);
+  const [bonusMsg, setBonusMsg] = useState('');
+
+  const reload = () => {
+    setBusy(true);
+    setErr('');
+    return tgApi
+      .userProfile(tgId)
+      .then(r => setP(r))
+      .catch(e => setErr(e.message))
+      .finally(() => setBusy(false));
+  };
   useEffect(() => {
     let cancelled = false;
     setBusy(true);
@@ -3878,6 +3893,31 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
   }, [tgId]);
+
+  const grantBonus = async () => {
+    const pts = Math.round(Number(bonusPoints) * 100) / 100;
+    if (!Number.isFinite(pts) || pts <= 0) {
+      setBonusMsg('⚠ Вкажіть додатну кількість балів');
+      return;
+    }
+    if (!bonusReason.trim()) {
+      setBonusMsg('⚠ Вкажіть причину нарахування');
+      return;
+    }
+    setBonusBusy(true);
+    setBonusMsg('');
+    try {
+      const r = await tgApi.grantBonus({ tgId, points: pts, reason: bonusReason.trim() });
+      setBonusMsg(r.warning ? `✅ Нараховано (${r.newTotal}). ${r.warning}` : `✅ Нараховано! Новий баланс: ${r.newTotal}`);
+      setBonusPoints('');
+      setBonusReason('');
+      await reload();
+    } catch (e: any) {
+      setBonusMsg(`⚠ ${e.message}`);
+    } finally {
+      setBonusBusy(false);
+    }
+  };
 
   return (
     <div
@@ -3939,6 +3979,40 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
                 />
               </div>
               <div className="text-xs text-slate-400 pt-2 border-t">Створено: {p.createdAt ? new Date(p.createdAt).toLocaleString('uk-UA') : '—'}</div>
+
+              {/* Нарахування бонусних балів за особливі заслуги */}
+              <div className="pt-3 border-t">
+                <div className="text-xs font-semibold uppercase text-slate-400 mb-2">🎉 Бонусні бали</div>
+                <div className="space-y-2">
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={bonusPoints}
+                    onChange={e => setBonusPoints(e.target.value)}
+                    placeholder="Кількість балів"
+                    className="w-full border rounded px-2 py-1.5 text-sm"
+                  />
+                  <textarea
+                    value={bonusReason}
+                    onChange={e => setBonusReason(e.target.value)}
+                    placeholder="За що саме (це побачить користувач у Telegram)"
+                    rows={2}
+                    className="w-full border rounded px-2 py-1.5 text-sm resize-y"
+                  />
+                  <button
+                    onClick={grantBonus}
+                    disabled={bonusBusy}
+                    className="px-3 py-1.5 bg-emerald-600 text-white text-sm rounded disabled:opacity-50"
+                  >
+                    {bonusBusy ? 'Нараховую…' : 'Нарахувати бонус'}
+                  </button>
+                  {p.source === 'web' && (
+                    <div className="text-xs text-amber-600">web-юзер: бали нарахуються, але повідомлення в Telegram не надійде.</div>
+                  )}
+                  {bonusMsg && <div className="text-xs text-slate-700">{bonusMsg}</div>}
+                </div>
+              </div>
             </>
           )}
         </div>

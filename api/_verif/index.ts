@@ -87,6 +87,8 @@ async function ensureTelegramUser(tgId: string, name: string): Promise<void> {
     photoFileId: '',
     photoMessageId: '',
     banned: false,
+    hasGeminiKeys: false,
+    caseFilter: 'all',
   });
 }
 
