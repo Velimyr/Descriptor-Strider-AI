@@ -5,7 +5,7 @@
 // (досягнуто потрібної к-сті підтверджень), версію учасника звіряють із фінальною
 // (поле-в-поле, крім ролі 'notes'); якщо різниця >5 символів — бали 'forfeited'
 // (не нараховуються), інакше 'confirmed' (нараховуються в total + місячний рейтинг).
-import { db, T, incTotalPoints, incMonthlyPoints, getMeta } from '../_telegram/storage.js';
+import { db, T, incTotalPoints, incMonthlyPoints, getMeta, getCase } from '../_telegram/storage.js';
 import { kyivMonthString } from '../_telegram/scheduler.js';
 import type { TableColumn } from '../../src/types.js';
 
@@ -137,6 +137,8 @@ export async function settleCaseAtClose(caseId: string, finalAnswers: string[]):
 
 export interface ForfeitedCase {
   caseId: string;
+  opysLabel: string;  // «{archive} {fund}-{opys}» з картки справи
+  spravaNo: string;   // номер справи, який ВНІС розпізнавач (роль case_no); '—' якщо порожньо
   points: number;
   settledAt: string;
   fields: FieldDiff[];
@@ -158,15 +160,31 @@ export async function getRecentForfeited(tgId: string, hours = 24): Promise<Forf
   if (rows.length === 0) return [];
 
   const questions = await getQuestions();
-  return rows.map(r => {
-    const theirs: string[] = Array.isArray(r.answers) ? r.answers : [];
-    const final: string[] = Array.isArray(r.final_answers) ? r.final_answers : [];
-    const { fields } = compareVersions(theirs, final, questions);
-    return {
-      caseId: String(r.case_id),
-      points: Number(r.points || 0),
-      settledAt: String(r.settled_at || ''),
-      fields,
-    };
-  });
+  // Індекс поля «Номер справи» (роль case_no) — звідти беремо те, що ввів розпізнавач.
+  const caseNoIdx = questions.findIndex(q => q.role === 'case_no');
+
+  return Promise.all(
+    rows.map(async r => {
+      const theirs: string[] = Array.isArray(r.answers) ? r.answers : [];
+      const final: string[] = Array.isArray(r.final_answers) ? r.final_answers : [];
+      const { fields } = compareVersions(theirs, final, questions);
+
+      // Опис — повний підпис «{archive} {fund}-{opys}» з картки справи.
+      const cse = await getCase(String(r.case_id)).catch(() => null);
+      const opysLabel = cse
+        ? `${cse.archive} ${cse.fund}-${cse.opys}`.trim()
+        : '—';
+      // Номер справи — те, що ввів розпізнавач; порожньо → прочерк.
+      const spravaNo = caseNoIdx >= 0 ? normalize(theirs[caseNoIdx]) || '—' : '—';
+
+      return {
+        caseId: String(r.case_id),
+        opysLabel,
+        spravaNo,
+        points: Number(r.points || 0),
+        settledAt: String(r.settled_at || ''),
+        fields,
+      };
+    })
+  );
 }

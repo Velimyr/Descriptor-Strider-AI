@@ -1540,7 +1540,7 @@ async function sendNoPointsList(chatId: number | string, tgId: string) {
       : '—';
     await sendMessage(
       chatId,
-      fmt(T.nopointsItem, { caseId: escapeHtml(it.caseId), points: Math.round(it.points * 100) / 100, diffs })
+      fmt(T.nopointsItem, { opys: escapeHtml(it.opysLabel), sprava: escapeHtml(it.spravaNo), diffs })
     );
   }
 }

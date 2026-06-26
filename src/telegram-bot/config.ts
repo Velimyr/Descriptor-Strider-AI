@@ -368,8 +368,10 @@ export const telegramBotConfig: TelegramBotConfig = {
     nopointsTitle: '📋 <b>Справи за 24 год, за які бали не нараховано</b>',
     nopointsEmpty: '✅ За останні 24 години таких справ немає.',
     nopointsItem:
-      'Справа <code>{caseId}</code> — втрачено <b>{points}</b> б.\n{diffs}',
-    nopointsField: '• <b>{label}</b>\n   ваше: <i>{theirs}</i>\n   фінал: <i>{final}</i>',
+      '📋 Опис <b>{opys}</b> · Справа <b>{sprava}</b> — розпізнана вами зі значними помилками, ' +
+      'тож бали за цю справу вам не нараховані.\n{diffs}\n\n' +
+      'Будь ласка, розпізнавайте справи уважніше, аби не втрачати балів 😌',
+    nopointsField: '• <b>{label}</b>\n   Ваша версія: <i>{theirs}</i>\n   Фінальна версія: <i>{final}</i>',
     helpBadgesIntro:
       '🏅 <b>Досягнення</b>\n\n' +
       'Бейджі видаються автоматично, коли ви досягаєте умови. Ось повний список:',
