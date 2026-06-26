@@ -141,8 +141,26 @@ export async function downloadTelegramFileBase64(
     `https://api.telegram.org/file/bot${botToken}/${filePath}`,
     { responseType: 'arraybuffer', timeout: 15000 }
   );
-  const mime = upstream.headers['content-type'] || 'image/jpeg';
+  // MIME визначаємо за розширенням file_path — Telegram часто віддає
+  // application/octet-stream, який Gemini не приймає.
+  const mime = mimeFromPath(filePath, upstream.headers['content-type']);
   return { base64: Buffer.from(upstream.data).toString('base64'), mime };
+}
+
+function mimeFromPath(filePath: string, headerMime?: string): string {
+  const ext = (filePath.split('.').pop() || '').toLowerCase();
+  const byExt: Record<string, string> = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    webp: 'image/webp',
+    heic: 'image/heic',
+    heif: 'image/heif',
+  };
+  if (byExt[ext]) return byExt[ext];
+  // Заголовок беремо лише якщо він — конкретний image/*, інакше дефолт JPEG.
+  if (headerMime && headerMime.startsWith('image/')) return headerMime;
+  return 'image/jpeg';
 }
 
 // Видалення повідомлення (напр. одразу прибрати повідомлення користувача з API-ключем).
