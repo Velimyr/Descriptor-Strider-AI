@@ -184,6 +184,7 @@ function settingsMenuKeyboard(): any {
   return {
     inline_keyboard: [
       [{ text: T.settingsProfileButton, callback_data: 'settings:profile' }],
+      [{ text: T.profileKeysButton, callback_data: 'settings:keys' }],
     ],
   };
 }
@@ -204,7 +205,6 @@ function profileMenuKeyboard(): any {
       [{ text: T.profileEditPhotoButton, callback_data: 'profile:edit_photo' }],
       [{ text: T.profileEditFacebookButton, callback_data: 'profile:edit_facebook' }],
       [{ text: T.profileEditContactButton, callback_data: 'profile:edit_contact' }],
-      [{ text: T.profileKeysButton, callback_data: 'profile:keys' }],
       [{ text: T.profileBackButton, callback_data: 'settings:back' }],
     ],
   };
@@ -217,7 +217,7 @@ function geminiKeysKeyboard(keys: string[]): any {
     rows.push([{ text: fmt(T.profileKeysDeleteButton, { n: i + 1 }), callback_data: `profile:delkey:${i}` }]);
   });
   rows.push([{ text: T.profileKeysAddButton, callback_data: 'profile:addkey' }]);
-  rows.push([{ text: T.profileBackButton, callback_data: 'settings:profile' }]);
+  rows.push([{ text: T.profileBackButton, callback_data: 'settings:back' }]);
   return { inline_keyboard: rows };
 }
 
@@ -985,6 +985,15 @@ async function handleCallback(cb: any) {
     }
     if (action === 'profile') {
       await sendProfileMenu(chatId, user);
+      return;
+    }
+    // --- BYOK: Gemini-ключі (вхід із меню Налаштування) ---
+    if (action === 'keys') {
+      if (!secretBoxReady()) {
+        await sendMessage(chatId, T.profileKeysNotConfigured);
+        return;
+      }
+      await sendGeminiKeysScreen(chatId, tgId);
       return;
     }
     if (action === 'back') {
