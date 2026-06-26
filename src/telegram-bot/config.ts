@@ -586,7 +586,7 @@ export const telegramBotConfig: TelegramBotConfig = {
     // --- BYOK: Gemini-ключі для AI-розпізнавання ---
     profileKeysButton: '🤖 Ключі Gemini (AI)',
     profileKeysTitle:
-      '🤖 <b>Ваші ключі Gemini</b>\n\nЗ ними бот розпізнаватиме справи вашим коштом. ' +
+      '🤖 <b>Ваші ключі Gemini</b>\n\n' +
       'Можна додати кілька — якщо в одного скінчиться денний ліміт, бот автоматично перейде до наступного.',
     profileKeysEmpty: '<i>Поки що немає жодного ключа.</i>',
     profileKeysAddButton: '➕ Додати ключ',
