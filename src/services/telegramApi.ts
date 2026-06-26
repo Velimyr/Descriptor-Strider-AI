@@ -166,6 +166,12 @@ export const tgApi = {
   }) => call('/admin/integrity/ban', { method: 'POST', body: JSON.stringify(payload) }),
   integrityUnban: (tgId: string) =>
     call('/admin/integrity/unban', { method: 'POST', body: JSON.stringify({ tgId }) }),
+  grantBonus: (payload: { tgId: string; points: number; reason: string }) =>
+    call('/admin/grant-bonus', { method: 'POST', body: JSON.stringify(payload) }) as Promise<{
+      ok: boolean;
+      newTotal: number;
+      warning?: string;
+    }>,
   bannedUsers: () =>
     call('/admin/banned-users') as Promise<{
       ok: boolean;

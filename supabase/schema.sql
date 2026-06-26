@@ -36,6 +36,9 @@ alter table bot_users add column if not exists banned_by  text;
 -- Бот розпізнає справи ключами користувача з ротацією. NULL = ключів немає.
 alter table bot_users add column if not exists gemini_keys_enc text;
 
+-- Які справи надсилати: all | recognition | verification. Діє на «Нова справа» і розсилку.
+alter table bot_users add column if not exists case_filter text not null default 'all';
+
 -- Журнал рішень адміна по парах різночитань ("Перевірка доброчесності").
 -- Пара ідентифікується справою + двома tg_id у відсортованому порядку (щоб
 -- (A,B) і (B,A) трактувались як одна пара). action: penalized — комусь зняли бали;

@@ -35,6 +35,7 @@ import {
   captureTgUsername,
   getUserGeminiKeys,
   setUserGeminiKeys,
+  CaseFilter,
 } from './storage.js';
 import {
   answerCallbackQuery,
@@ -185,6 +186,31 @@ function settingsMenuKeyboard(): any {
     inline_keyboard: [
       [{ text: T.settingsProfileButton, callback_data: 'settings:profile' }],
       [{ text: T.profileKeysButton, callback_data: 'settings:keys' }],
+      [{ text: T.caseFilterButton, callback_data: 'settings:casefilter' }],
+    ],
+  };
+}
+
+// Назва поточного фільтра справ — для показу в підменю/підтвердженні.
+function caseFilterLabel(f: CaseFilter): string {
+  return f === 'recognition'
+    ? T.caseFilterRecognition
+    : f === 'verification'
+      ? T.caseFilterVerification
+      : T.caseFilterAll;
+}
+
+// Підменю вибору фільтра справ. Поточний варіант позначаємо ✅.
+function caseFilterKeyboard(current: CaseFilter): any {
+  const opt = (value: CaseFilter, label: string) => [
+    { text: (current === value ? '✅ ' : '') + label, callback_data: `settings:cf:${value}` },
+  ];
+  return {
+    inline_keyboard: [
+      opt('all', T.caseFilterAll),
+      opt('recognition', T.caseFilterRecognition),
+      opt('verification', T.caseFilterVerification),
+      [{ text: T.profileBackButton, callback_data: 'settings:back' }],
     ],
   };
 }
@@ -614,6 +640,7 @@ async function handleMessage(msg: any) {
         photoMessageId: '',
         banned: false,
         hasGeminiKeys: false,
+        caseFilter: 'all',
       };
       await upsertUser(newUser);
       currentUser = { ...newUser, rowIndex: 0 } as BotUser;
@@ -994,6 +1021,23 @@ async function handleCallback(cb: any) {
         return;
       }
       await sendGeminiKeysScreen(chatId, tgId);
+      return;
+    }
+    // --- Фільтр «Які справи надсилати» ---
+    if (action === 'casefilter') {
+      await sendMessage(chatId, fmt(T.caseFilterTitle, { current: caseFilterLabel(user.caseFilter) }), {
+        reply_markup: caseFilterKeyboard(user.caseFilter),
+      });
+      return;
+    }
+    if (action.startsWith('cf:')) {
+      const value = action.slice('cf:'.length) as CaseFilter;
+      if (value === 'all' || value === 'recognition' || value === 'verification') {
+        await patchUser(tgId, { caseFilter: value });
+        await sendMessage(chatId, fmt(T.caseFilterSaved, { current: caseFilterLabel(value) }), {
+          reply_markup: caseFilterKeyboard(value),
+        });
+      }
       return;
     }
     if (action === 'back') {
@@ -1927,7 +1971,7 @@ async function handleAiRecognition(chatId: number, tgId: string, caseId: string)
     if (e instanceof AllKeysExhaustedError) {
       await sendMessage(chatId, T.aiExhausted);
     } else if (e instanceof NoValidKeyError) {
-      // Тимчасово показуємо технічну деталь — щоб швидко діагностувати на дев.
+      // Показуємо технічну деталь помилки Gemini — для діагностики.
       const detail = e.detail ? `\n\n<code>${escapeHtml(e.detail)}</code>` : '';
       await sendMessage(chatId, T.aiFailed + detail);
     } else {

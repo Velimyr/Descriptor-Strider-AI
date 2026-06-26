@@ -87,7 +87,12 @@ export interface BotUser {
   // BYOK: чи має користувач збережені Gemini-ключі. Самі ключі (зашифровані) не
   // тягнемо в модель — лише прапорець наявності. Читання/запис — окремими функціями.
   hasGeminiKeys: boolean;
+  // Які справи надсилати користувачу: всі / тільки розпізнавання / тільки перевірка.
+  // Діє і на «Нова справа», і на розсилку за розкладом (через selectNextCaseForUser).
+  caseFilter: CaseFilter;
 }
+
+export type CaseFilter = 'all' | 'recognition' | 'verification';
 
 export interface BotCase {
   rowIndex: number;
@@ -152,7 +157,19 @@ function mapUser(r: any): BotUser {
     photoMessageId: r.photo_message_id || '',
     banned: r.banned === true,
     hasGeminiKeys: !!r.gemini_keys_enc,
+    caseFilter: (r.case_filter || 'all') as CaseFilter,
   };
+}
+
+// Легке читання фільтра справ (одна колонка). Викликається при виборі наступної справи.
+export async function getUserCaseFilter(tgId: string): Promise<CaseFilter> {
+  const { data, error } = await db()
+    .from(T.users)
+    .select('case_filter')
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  return ((data as any)?.case_filter || 'all') as CaseFilter;
 }
 
 // ===== BYOK: Gemini-ключі користувача =====
@@ -508,6 +525,7 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.facebookUrl !== undefined) dbPatch.facebook_url = patch.facebookUrl || null;
   if (patch.photoFileId !== undefined) dbPatch.photo_file_id = patch.photoFileId || null;
   if (patch.photoMessageId !== undefined) dbPatch.photo_message_id = patch.photoMessageId || null;
+  if (patch.caseFilter !== undefined) dbPatch.case_filter = patch.caseFilter;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;

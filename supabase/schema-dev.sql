@@ -27,6 +27,9 @@ alter table botdev_users add column if not exists banned_by  text;
 -- BYOK: зашифрований JSON-масив Gemini API ключів користувача — див. коментар у schema.sql.
 alter table botdev_users add column if not exists gemini_keys_enc text;
 
+-- Які справи надсилати: all | recognition | verification — див. коментар у schema.sql.
+alter table botdev_users add column if not exists case_filter text not null default 'all';
+
 create table if not exists botdev_integrity_reviews (
   case_id          text        not null,
   first_tg_id      text        not null,

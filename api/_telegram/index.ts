@@ -1288,6 +1288,51 @@ router.post('/admin/integrity/unban', async (req, res) => {
   }
 });
 
+// ----- Нарахування бонусних балів за особливі заслуги -----
+// Адмін зазначає кількість і причину; користувач отримує повідомлення в Telegram.
+// Бали йдуть і в lifetime-total, і в місячний рейтинг (як звичайні), атомарними RPC.
+router.post('/admin/grant-bonus', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { tgId, points, reason } = req.body || {};
+  const pts = Math.round(Number(points) * 100) / 100;
+  if (!tgId || !Number.isFinite(pts) || pts <= 0) {
+    return res.status(400).json({ error: 'tgId і додатній points обовʼязкові' });
+  }
+  if (!reason || !String(reason).trim()) {
+    return res.status(400).json({ error: 'Вкажіть причину нарахування' });
+  }
+  try {
+    const { getUser, incTotalPoints, incMonthlyPoints } = await import('./storage.js');
+    const { kyivMonthString } = await import('./scheduler.js');
+    const { isWebUserId } = await import('../_core/webUsers.js');
+    const user = await getUser(String(tgId));
+    if (!user) return res.status(404).json({ error: 'Користувача не знайдено' });
+
+    const [newTotal] = await Promise.all([
+      incTotalPoints(user.tgId, pts),
+      incMonthlyPoints(kyivMonthString(), user.tgId, pts, user.displayName),
+    ]);
+
+    // Повідомляємо лише TG-юзерів (web:… не мають приватного чату з ботом).
+    if (!isWebUserId(String(tgId))) {
+      const esc = (s: string) => s.replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
+      const text = telegramBotConfig.texts.bonusGranted
+        .replace('{points}', String(pts))
+        .replace('{reason}', esc(String(reason).trim()))
+        .replace('{total}', String(newTotal));
+      try {
+        const { sendMessage } = await import('./tg-api.js');
+        await sendMessage(user.tgId, text);
+      } catch (e: any) {
+        return res.json({ ok: true, newTotal, warning: `Бали нараховано, але повідомлення не доставлено: ${e?.message || e}` });
+      }
+    }
+    res.json({ ok: true, newTotal });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ----- Профіль юзера: повна інформація (вкл. приватні поля), для адмін-UI -----
 router.get('/admin/user-profile/:tgId', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
