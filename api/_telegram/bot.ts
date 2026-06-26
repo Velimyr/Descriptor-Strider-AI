@@ -2019,7 +2019,9 @@ async function handleAiRecognition(chatId: number, tgId: string, caseId: string)
   ]);
 
   if (keys.length === 0) {
-    await sendMessage(chatId, T.aiNoKeys);
+    await sendMessage(chatId, T.aiNoKeys, {
+      reply_markup: { inline_keyboard: [[{ text: T.aiAddKeyButton, callback_data: 'settings:keys' }]] },
+    });
     return;
   }
   // Розпізнаємо лише в межах активної сесії саме цієї справи (інакше — застаріла кнопка).
