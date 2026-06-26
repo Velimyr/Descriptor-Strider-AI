@@ -1927,7 +1927,9 @@ async function handleAiRecognition(chatId: number, tgId: string, caseId: string)
     if (e instanceof AllKeysExhaustedError) {
       await sendMessage(chatId, T.aiExhausted);
     } else if (e instanceof NoValidKeyError) {
-      await sendMessage(chatId, T.aiFailed);
+      // Тимчасово показуємо технічну деталь — щоб швидко діагностувати на дев.
+      const detail = e.detail ? `\n\n<code>${escapeHtml(e.detail)}</code>` : '';
+      await sendMessage(chatId, T.aiFailed + detail);
     } else {
       console.error('[aiocr] recognize failed', e);
       await sendMessage(chatId, T.aiFailed);

@@ -16,9 +16,12 @@ export class AllKeysExhaustedError extends Error {
 }
 
 export class NoValidKeyError extends Error {
-  constructor() {
+  // detail — текст останньої помилки Gemini (для діагностики).
+  detail: string;
+  constructor(detail = '') {
     super('Жоден ключ не спрацював');
     this.name = 'NoValidKeyError';
+    this.detail = detail;
   }
 }
 
@@ -64,6 +67,7 @@ export async function recognizeWithRotation(
   model: string
 ): Promise<GeminiCallResult> {
   let sawQuota = false;
+  let lastDetail = '';
   for (let i = 0; i < keys.length; i++) {
     try {
       const text = await callOnce(keys[i], imageBase64, mime, prompt, model);
@@ -71,6 +75,8 @@ export async function recognizeWithRotation(
     } catch (e: any) {
       const status = e?.response?.status;
       const data = e?.response?.data;
+      lastDetail = `status=${status ?? '?'} ${data?.error?.message || e?.message || ''}`.slice(0, 300);
+      console.error(`[ocr] key#${i + 1} (model=${model}) failed:`, lastDetail);
       if (isQuotaError(status, data)) {
         sawQuota = true;
         continue; // наступний ключ
@@ -83,7 +89,7 @@ export async function recognizeWithRotation(
     }
   }
   if (sawQuota) throw new AllKeysExhaustedError();
-  throw new NoValidKeyError();
+  throw new NoValidKeyError(lastDetail);
 }
 
 // Перевірка валідності ключа без витрати квоти генерації: список моделей.
