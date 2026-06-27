@@ -12,8 +12,15 @@ import type { TableColumn } from '../../src/types.js';
 // Поріг різниці у символах: понад нього — бали не нараховуються.
 export const DIFF_THRESHOLD = 5;
 
+// Для ВІДОБРАЖЕННЯ користувачу — читабельний текст (обрізаємо краї, стискаємо пробіли).
 function normalize(s: unknown): string {
   return String(s ?? '').trim().replace(/\s+/g, ' ');
+}
+
+// Для ПОРІВНЯННЯ (рішення про бали) — лишаємо лише значущі символи: літери й цифри.
+// Пробіли і спецсимволи ігноруємо, тож різниця рахується тільки по «справжніх» символах.
+function stripForCompare(s: unknown): string {
+  return String(s ?? '').replace(/[^\p{L}\p{N}]/gu, '');
 }
 
 function levenshtein(a: string, b: string): number {
@@ -60,11 +67,18 @@ export function compareVersions(
   const fields: FieldDiff[] = [];
   for (let i = 0; i < len; i++) {
     if (isCommentField(questions[i])) continue; // коментар розпізнавача не враховуємо
-    const a = normalize(theirs[i]);
-    const b = normalize(final[i]);
-    const d = levenshtein(a, b);
+    // Дистанцію рахуємо по значущих символах (без пробілів/спецсимволів),
+    // а показуємо користувачу читабельні значення.
+    const d = levenshtein(stripForCompare(theirs[i]), stripForCompare(final[i]));
     sum += d;
-    if (d > 0) fields.push({ label: questions[i]?.label || `Поле ${i + 1}`, theirs: a, final: b, dist: d });
+    if (d > 0) {
+      fields.push({
+        label: questions[i]?.label || `Поле ${i + 1}`,
+        theirs: normalize(theirs[i]),
+        final: normalize(final[i]),
+        dist: d,
+      });
+    }
   }
   return { sum, fields };
 }
