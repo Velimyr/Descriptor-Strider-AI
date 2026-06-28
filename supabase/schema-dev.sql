@@ -30,6 +30,9 @@ alter table botdev_users add column if not exists gemini_keys_enc text;
 -- Які справи надсилати: all | recognition | verification — див. коментар у schema.sql.
 alter table botdev_users add column if not exists case_filter text not null default 'all';
 
+-- Модель Gemini для AI-розпізнавання: 'flash-lite' (дефолт) | 'flash' — див. schema.sql.
+alter table botdev_users add column if not exists gemini_model text not null default 'flash-lite';
+
 create table if not exists botdev_integrity_reviews (
   case_id          text        not null,
   first_tg_id      text        not null,

@@ -90,9 +90,17 @@ export interface BotUser {
   // Які справи надсилати користувачу: всі / тільки розпізнавання / тільки перевірка.
   // Діє і на «Нова справа», і на розсилку за розкладом (через selectNextCaseForUser).
   caseFilter: CaseFilter;
+  // Модель Gemini для AI-розпізнавання: 'flash-lite' (дефолт) або 'flash'.
+  geminiModel: GeminiModelChoice;
 }
 
 export type CaseFilter = 'all' | 'recognition' | 'verification';
+export type GeminiModelChoice = 'flash-lite' | 'flash';
+
+// Маппінг вибору моделі → ідентифікатор моделі Gemini (стабільні -latest аліаси).
+export function resolveGeminiModelId(choice: GeminiModelChoice): string {
+  return choice === 'flash' ? 'gemini-flash-latest' : 'gemini-flash-lite-latest';
+}
 
 export interface BotCase {
   rowIndex: number;
@@ -158,6 +166,7 @@ function mapUser(r: any): BotUser {
     banned: r.banned === true,
     hasGeminiKeys: !!r.gemini_keys_enc,
     caseFilter: (r.case_filter || 'all') as CaseFilter,
+    geminiModel: (r.gemini_model || 'flash-lite') as GeminiModelChoice,
   };
 }
 
@@ -170,6 +179,17 @@ export async function getUserCaseFilter(tgId: string): Promise<CaseFilter> {
     .maybeSingle();
   if (error) throw error;
   return ((data as any)?.case_filter || 'all') as CaseFilter;
+}
+
+// Легке читання вибраної моделі (одна колонка). Дефолт — Flash Lite.
+export async function getUserGeminiModel(tgId: string): Promise<GeminiModelChoice> {
+  const { data, error } = await db()
+    .from(T.users)
+    .select('gemini_model')
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  return ((data as any)?.gemini_model || 'flash-lite') as GeminiModelChoice;
 }
 
 // ===== BYOK: Gemini-ключі користувача =====
@@ -526,6 +546,7 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.photoFileId !== undefined) dbPatch.photo_file_id = patch.photoFileId || null;
   if (patch.photoMessageId !== undefined) dbPatch.photo_message_id = patch.photoMessageId || null;
   if (patch.caseFilter !== undefined) dbPatch.case_filter = patch.caseFilter;
+  if (patch.geminiModel !== undefined) dbPatch.gemini_model = patch.geminiModel;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;

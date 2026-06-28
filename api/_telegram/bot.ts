@@ -35,7 +35,10 @@ import {
   captureTgUsername,
   getUserGeminiKeys,
   setUserGeminiKeys,
+  getUserGeminiModel,
+  resolveGeminiModelId,
   CaseFilter,
+  GeminiModelChoice,
 } from './storage.js';
 import {
   answerCallbackQuery,
@@ -227,7 +230,27 @@ function settingsMenuKeyboard(): any {
     inline_keyboard: [
       [{ text: T.settingsProfileButton, callback_data: 'settings:profile' }],
       [{ text: T.profileKeysButton, callback_data: 'settings:keys' }],
+      [{ text: T.aiModelButton, callback_data: 'settings:aimodel' }],
       [{ text: T.caseFilterButton, callback_data: 'settings:casefilter' }],
+    ],
+  };
+}
+
+// Назва поточної моделі — для підменю/підтвердження.
+function aiModelLabel(m: GeminiModelChoice): string {
+  return m === 'flash' ? T.aiModelFlash : T.aiModelFlashLite;
+}
+
+// Підменю вибору моделі AI. Поточний варіант позначаємо ✅.
+function aiModelKeyboard(current: GeminiModelChoice): any {
+  const opt = (value: GeminiModelChoice, label: string) => [
+    { text: (current === value ? '✅ ' : '') + label, callback_data: `settings:am:${value}` },
+  ];
+  return {
+    inline_keyboard: [
+      opt('flash-lite', T.aiModelFlashLite),
+      opt('flash', T.aiModelFlash),
+      [{ text: T.profileBackButton, callback_data: 'settings:back' }],
     ],
   };
 }
@@ -689,6 +712,7 @@ async function handleMessage(msg: any) {
         banned: false,
         hasGeminiKeys: false,
         caseFilter: 'all',
+        geminiModel: 'flash-lite',
       };
       await upsertUser(newUser);
       currentUser = { ...newUser, rowIndex: 0 } as BotUser;
@@ -1085,6 +1109,23 @@ async function handleCallback(cb: any) {
         await patchUser(tgId, { caseFilter: value });
         await sendMessage(chatId, fmt(T.caseFilterSaved, { current: caseFilterLabel(value) }), {
           reply_markup: caseFilterKeyboard(value),
+        });
+      }
+      return;
+    }
+    // --- Модель AI (Flash / Flash Lite) ---
+    if (action === 'aimodel') {
+      await sendMessage(chatId, fmt(T.aiModelTitle, { current: aiModelLabel(user.geminiModel) }), {
+        reply_markup: aiModelKeyboard(user.geminiModel),
+      });
+      return;
+    }
+    if (action.startsWith('am:')) {
+      const value = action.slice('am:'.length) as GeminiModelChoice;
+      if (value === 'flash' || value === 'flash-lite') {
+        await patchUser(tgId, { geminiModel: value });
+        await sendMessage(chatId, fmt(T.aiModelSaved, { current: aiModelLabel(value) }), {
+          reply_markup: aiModelKeyboard(value),
         });
       }
       return;
@@ -2012,11 +2053,12 @@ function parseAiAnswers(raw: string, count: number): string[] | null {
 // AI-розпізнавання справи ключами користувача. Результат → стандартна картка
 // підтвердження (state 'confirming'): далі користувач підтверджує / виправляє / пропускає.
 async function handleAiRecognition(chatId: number, tgId: string, caseId: string) {
-  const [keys, session, questions, cse] = await Promise.all([
+  const [keys, session, questions, cse, modelChoice] = await Promise.all([
     getUserGeminiKeys(tgId),
     getSession(tgId),
     getQuestions(),
     getCase(caseId),
+    getUserGeminiModel(tgId),
   ]);
 
   if (keys.length === 0) {
@@ -2051,7 +2093,7 @@ async function handleAiRecognition(chatId: number, tgId: string, caseId: string)
   }
 
   const { prompt, includedIdx } = buildRecognitionPrompt(questions);
-  const model = telegramBotConfig.slicing.geminiModel || telegramBotConfig.slicing.autoModel;
+  const model = resolveGeminiModelId(modelChoice);
 
   let raw: string;
   try {

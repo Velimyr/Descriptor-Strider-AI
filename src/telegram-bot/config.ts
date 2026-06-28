@@ -627,6 +627,17 @@ export const telegramBotConfig: TelegramBotConfig = {
     caseFilterVerification: 'Тільки на перевірку',
     caseFilterSaved: '✅ Збережено: <b>{current}</b>',
 
+    // --- Вибір моделі AI ---
+    aiModelButton: '🧠 Модель AI',
+    aiModelTitle:
+      '🧠 <b>Модель для AI-розпізнавання</b>\n\n' +
+      '<b>Flash Lite</b> — швидша й економніша (рекомендовано).\n' +
+      '<b>Flash</b> — потужніша, але повільніша й дорожча за вашими ключами.\n\n' +
+      'Зараз обрано: <b>{current}</b>',
+    aiModelFlashLite: 'Flash Lite',
+    aiModelFlash: 'Flash',
+    aiModelSaved: '✅ Модель збережено: <b>{current}</b>',
+
     // --- Бонусні бали від адміністратора ---
     bonusGranted:
       '🎉 <b>Вам нараховано {points} бонусних балів!</b>\n\n' +
