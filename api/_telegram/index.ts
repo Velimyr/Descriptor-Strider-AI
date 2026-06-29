@@ -377,6 +377,43 @@ router.get('/cron/group-tick', async (req, res) => {
   }
 });
 
+// ----------- Cron: нічна синхронізація балів у систему «Карма» (uagenealogy.com) -----------
+// Зовнішній планувальник (GH Actions) смикає раз на добу. Збираємо ПОТОЧНІ сумарні
+// бали всіх користувачів і відправляємо в /api/karma/ingest пачками (~500). Karma
+// лише зростає: менший total нічого не змінює. "unknown" — ще не привʼязані login-и
+// (не помилка). Мережеві помилки окремих пачок не валять задачу.
+router.get('/cron/karma-ingest', async (req, res) => {
+  const expected = process.env[telegramBotConfig.cronSecretEnv];
+  if (expected && req.query.secret !== expected) return res.status(403).send('forbidden');
+  try {
+    const { getAllUserTotals } = await import('./storage.js');
+    const { ingestAccounts } = await import('./karma.js');
+    const users = await getAllUserTotals();
+    // Відправляємо лише тих, у кого є бали (>0): нульовий total нічого не змінює.
+    const accounts = users
+      .filter(u => u.tgId && u.totalPoints > 0)
+      .map(u => ({ login: u.tgId, total: Math.round(u.totalPoints) }));
+    const result = await ingestAccounts(accounts);
+    console.log(
+      `[karma-ingest] accounts=${result.accounts} synced=${result.synced} ` +
+        `awarded=${result.awarded} unknown=${result.unknown.length} ` +
+        `batches=${result.batches} errors=${result.errors}`
+    );
+    res.json({
+      ok: true,
+      accounts: result.accounts,
+      synced: result.synced,
+      awarded: result.awarded,
+      unknownCount: result.unknown.length,
+      batches: result.batches,
+      errors: result.errors,
+    });
+  } catch (e: any) {
+    console.error('[karma-ingest] failed', e?.message || e);
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
 // ----------- Admin endpoints (захищені тим же CRON_SECRET; для веб-UI) -----------
 
 function requireAdminSecret(req: express.Request, res: express.Response): boolean {

@@ -408,6 +408,33 @@ export async function getActiveUserTgIds(): Promise<string[]> {
   return out;
 }
 
+// Слім-список усіх юзерів (tg_id + сумарний бал) для нічної синхронізації карми.
+// Лише 2 колонки → мінімальний egress. Пагінація на випадок >1000 юзерів.
+export async function getAllUserTotals(): Promise<Array<{ tgId: string; totalPoints: number }>> {
+  const pageSize = 1000;
+  let from = 0;
+  const out: Array<{ tgId: string; totalPoints: number }> = [];
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await db()
+      .from(T.users)
+      .select('tg_id, total_points')
+      .order('tg_id', { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    const rows = data || [];
+    out.push(
+      ...rows.map((r: any) => ({
+        tgId: String(r.tg_id),
+        totalPoints: Number(r.total_points || 0),
+      }))
+    );
+    if (rows.length < pageSize) break;
+    from += pageSize;
+  }
+  return out;
+}
+
 // Один рядок: загалом, активних, паузнутих. Замінює повний скан bot_users
 // лише задля статистики у cron/tick.
 export async function getUserStatusCounts(): Promise<{

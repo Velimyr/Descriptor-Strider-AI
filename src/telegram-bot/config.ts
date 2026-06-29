@@ -42,6 +42,13 @@ export interface TelegramBotConfig {
   adminLoginEnv: string;        // логін адміна
   adminPasswordEnv: string;     // пароль адміна
 
+  // Інтеграція з системою «Карма» Генеалогічного навігатора (uagenealogy.com):
+  // привʼязка акаунта командою /linknavigator + нічна синхронізація сумарних балів.
+  karma: {
+    baseUrl: string;   // базовий URL API (без слешу в кінці)
+    tokenEnv: string;  // назва env-змінної з Bearer-токеном (НЕ хардкодимо токен)
+  };
+
   dispatch: {
     startHourKyiv: number;      // 0..23
     endHourKyiv: number;        // 0..23 (включно)
@@ -188,6 +195,11 @@ export const telegramBotConfig: TelegramBotConfig = {
   cronSecretEnv: 'TELEGRAM_CRON_SECRET',
   adminLoginEnv: 'TELEGRAM_ADMIN_LOGIN',
   adminPasswordEnv: 'TELEGRAM_ADMIN_PASSWORD',
+
+  karma: {
+    baseUrl: 'https://www.uagenealogy.com',
+    tokenEnv: 'KARMA_TOKEN',
+  },
 
   dispatch: {
     startHourKyiv: 10,

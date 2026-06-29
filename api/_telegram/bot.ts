@@ -786,6 +786,53 @@ async function handleMessage(msg: any) {
     return;
   }
 
+  // /linknavigator <КОД> — привʼязка акаунта до системи «Карма» Генеалогічного
+  // навігатора (uagenealogy.com). ВАЖЛИВО: перевіряємо ДО /link, бо рядок
+  // '/linknavigator' теж проходить '/link'.startsWith.
+  if (text.startsWith('/linknavigator')) {
+    const code = rawText.replace(/^\/linknavigator(@\S+)?\s*/i, '').trim();
+    if (!code) {
+      await sendMessage(
+        chatId,
+        'Використання: <code>/linknavigator КОД</code>\n' +
+          'Код покаже сайт Генеалогічного навігатора, коли ви натиснете «Привʼязати Telegram».',
+        { reply_markup: mainMenuKeyboard(user) }
+      );
+      return;
+    }
+    try {
+      const { linkRedeem } = await import('./karma.js');
+      // login = числовий telegram_id; total — поточний сумарний бал (лише якщо є).
+      const total = user.totalPoints > 0 ? Math.round(user.totalPoints) : undefined;
+      const r = await linkRedeem(code, tgId, total);
+      if (r.status === 200 && r.ok) {
+        const lines = ['✅ Акаунт привʼязано до Генеалогічного навігатора'];
+        if (r.awarded > 0) lines.push(`Нараховано ${r.awarded} балів карми.`);
+        await sendMessage(chatId, lines.join('\n'), { reply_markup: mainMenuKeyboard(user) });
+      } else if (r.status === 404 && r.error === 'invalid_or_expired') {
+        await sendMessage(
+          chatId,
+          '❌ Код недійсний або прострочений (діє 15 хв). Отримайте новий на сайті Навігатора.',
+          { reply_markup: mainMenuKeyboard(user) }
+        );
+      } else if (r.status === 409 && r.error === 'already_linked') {
+        await sendMessage(chatId, '⚠️ Цей акаунт уже привʼязаний іншим користувачем.', {
+          reply_markup: mainMenuKeyboard(user),
+        });
+      } else {
+        await sendMessage(chatId, 'Сталася помилка, спробуйте пізніше.', {
+          reply_markup: mainMenuKeyboard(user),
+        });
+      }
+    } catch (e: any) {
+      console.error('/linknavigator failed', e?.message || e);
+      await sendMessage(chatId, 'Сталася помилка, спробуйте пізніше.', {
+        reply_markup: mainMenuKeyboard(user),
+      });
+    }
+    return;
+  }
+
   // /link <CODE> — fallback для випадку, коли Telegram втратив payload при
   // переході з deep-link (часто буває для юзерів, у яких чат з ботом уже існує).
   if (text.startsWith('/link')) {
