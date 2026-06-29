@@ -1,0 +1,37 @@
+name: Karma ingest
+
+# Нічна синхронізація сумарних балів користувачів у систему «Карма»
+# Генеалогічного навігатора (uagenealogy.com). Окремий workflow (а не у складі
+# telegram-tick), щоб кнопка «Run workflow» запускала ЛИШЕ синхронізацію Карми
+# і не зачіпала розсилку справ / cleanup / group-tick.
+#
+# Запуск:
+#   • за розкладом — раз на добу (0 1 UTC ≈ 03:00 зима / 04:00 літо за Києвом);
+#   • вручну — вкладка Actions → «Karma ingest» → Run workflow.
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  karma-ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger karma ingest
+        env:
+          BASE_URL_RAW: ${{ secrets.TELEGRAM_BASE_URL }}
+          SECRET_RAW: ${{ secrets.TELEGRAM_CRON_SECRET }}
+        run: |
+          # Чистимо CR/LF/пробіли — частий випадок коли в GitHub Secret потрапив \n при копіюванні.
+          BASE_URL=$(printf '%s' "$BASE_URL_RAW" | tr -d '\r\n\t ' )
+          SECRET=$(printf '%s' "$SECRET_RAW" | tr -d '\r\n\t ' )
+          [ -n "$BASE_URL" ] || { echo "::error::TELEGRAM_BASE_URL missing"; exit 1; }
+          [ -n "$SECRET" ]   || { echo "::error::TELEGRAM_CRON_SECRET missing"; exit 1; }
+          case "$BASE_URL" in
+            https://*) ;;
+            *) echo "::error::TELEGRAM_BASE_URL must start with https://"; exit 1 ;;
+          esac
+          URL="${BASE_URL%/}/api/telegram/cron/karma-ingest?secret=$SECRET"
+          # -i — показуємо статус/тіло відповіді в логах (synced/awarded/unknownCount).
+          curl -fsS -i --max-time 120 "$URL"

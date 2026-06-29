@@ -16,9 +16,6 @@ on:
     # через bot_meta claim — повторні виклики просто повертають 'already-sent'.
     # Кожен виклик у НЕ-цільову годину одразу повертає 'skip' (CPU ~0).
     - cron: '5,20,35,50 * * * *'
-    # Karma-ingest (uagenealogy.com) — нічна синхронізація сумарних балів, раз на добу.
-    # 0 1 UTC ≈ 03:00 (зима) / 04:00 (літо) за Києвом — поза піком розсилок.
-    - cron: '0 1 * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -88,21 +85,3 @@ jobs:
           [ -n "$SECRET" ]   || { echo "::error::TELEGRAM_CRON_SECRET missing"; exit 1; }
           URL="${BASE_URL%/}/api/telegram/cron/group-tick?secret=$SECRET"
           curl -fsS --max-time 60 "$URL"
-
-  karma-ingest:
-    # Нічна синхронізація сумарних балів у систему «Карма» Генеалогічного навігатора.
-    # Раз на добу. Збирає поточні бали всіх користувачів і шле їх у /api/karma/ingest.
-    if: github.event.schedule == '0 1 * * *' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger karma ingest
-        env:
-          BASE_URL_RAW: ${{ secrets.TELEGRAM_BASE_URL }}
-          SECRET_RAW: ${{ secrets.TELEGRAM_CRON_SECRET }}
-        run: |
-          BASE_URL=$(printf '%s' "$BASE_URL_RAW" | tr -d '\r\n\t ' )
-          SECRET=$(printf '%s' "$SECRET_RAW" | tr -d '\r\n\t ' )
-          [ -n "$BASE_URL" ] || { echo "::error::TELEGRAM_BASE_URL missing"; exit 1; }
-          [ -n "$SECRET" ]   || { echo "::error::TELEGRAM_CRON_SECRET missing"; exit 1; }
-          URL="${BASE_URL%/}/api/telegram/cron/karma-ingest?secret=$SECRET"
-          curl -fsS --max-time 120 "$URL"
