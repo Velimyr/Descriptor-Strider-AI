@@ -783,6 +783,10 @@ create table if not exists bot_broadcast_recipients (
 );
 create index if not exists idx_broadcast_recip_pending on bot_broadcast_recipients(broadcast_id, status);
 
+-- RLS без політик: anon/authenticated не мають доступу, бот ходить service_role.
+alter table bot_broadcasts           enable row level security;
+alter table bot_broadcast_recipients enable row level security;
+
 -- Вибірка отримувачів: усі НЕ-банені TG-юзери (web:* виключені — у них немає
 -- приватного чату з ботом), що за період [p_from, p_to) розпізнали МЕНШЕ ніж p_max
 -- справ. "Розпізнав" = submission (parallel) + collab-подія (create/edit/confirm),

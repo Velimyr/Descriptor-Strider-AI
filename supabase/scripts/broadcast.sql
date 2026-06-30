@@ -36,6 +36,10 @@ create table if not exists bot_broadcast_recipients (
 );
 create index if not exists idx_broadcast_recip_pending on bot_broadcast_recipients(broadcast_id, status);
 
+-- RLS без політик: anon/authenticated не мають доступу, бот ходить service_role.
+alter table bot_broadcasts           enable row level security;
+alter table bot_broadcast_recipients enable row level security;
+
 create or replace function bot_broadcast_recipients_select(
   p_from timestamptz, p_to timestamptz, p_max int
 )

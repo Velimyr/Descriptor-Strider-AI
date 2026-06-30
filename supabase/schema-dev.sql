@@ -592,3 +592,189 @@ create table if not exists botdev_verif_login_codes (
 );
 create index if not exists idx_dev_verif_login_codes_exp on botdev_verif_login_codes(expires_at);
 alter table botdev_verif_login_codes enable row level security;
+
+-- =====================================================================
+-- LEADERBOARD RPC — STAGING (префікс botdev_). Дзеркало секції зі schema.sql.
+-- =====================================================================
+create index if not exists idx_botdev_users_total_points_desc
+  on botdev_users (total_points desc, tg_id);
+
+create or replace function botdev_leaderboard_top(p_limit int)
+returns table (tg_id text, display_name text, total_points numeric)
+language sql security definer as $$
+  select tg_id, display_name, total_points
+  from botdev_users
+  order by total_points desc, tg_id
+  limit greatest(p_limit, 0);
+$$;
+revoke all on function botdev_leaderboard_top(int) from public, anon, authenticated;
+
+create or replace function botdev_user_rank(p_tg_id text)
+returns table (rank int, total_users int, total_points numeric)
+language sql security definer as $$
+  with ranked as (
+    select tg_id, total_points,
+           rank() over (order by total_points desc, tg_id) as r
+    from botdev_users
+  ),
+  agg as (
+    select count(*)::int as cnt from botdev_users
+  )
+  select
+    coalesce((select r::int from ranked where tg_id = p_tg_id),
+             (select cnt from agg)) as rank,
+    (select cnt from agg) as total_users,
+    coalesce((select total_points from ranked where tg_id = p_tg_id), 0) as total_points;
+$$;
+revoke all on function botdev_user_rank(text) from public, anon, authenticated;
+
+create or replace function botdev_user_status_counts()
+returns table (total int, active int, paused int) language sql security definer as $$
+  select
+    count(*)::int as total,
+    count(*) filter (where status = 'active')::int as active,
+    count(*) filter (where status <> 'active')::int as paused
+  from botdev_users;
+$$;
+revoke all on function botdev_user_status_counts() from public, anon, authenticated;
+
+-- ============================================================================
+-- Адмін-розсилки (broadcast) — STAGING (префікс botdev_). Дзеркало секції зі
+-- schema.sql. Деталі — у коментарях прод-версії.
+-- ============================================================================
+
+create table if not exists botdev_broadcasts (
+  id            bigserial primary key,
+  title         text        not null default '',
+  body          text        not null,
+  buttons       jsonb       not null default '[]'::jsonb,
+  crit_from     timestamptz,
+  crit_to       timestamptz,
+  crit_max      int,
+  status        text        not null default 'queued' check (status in ('queued','sending','done','canceled')),
+  total_count   int         not null default 0,
+  sent_count    int         not null default 0,
+  failed_count  int         not null default 0,
+  clicked_count int         not null default 0,
+  created_by    text        not null default '',
+  created_at    timestamptz not null default now(),
+  started_at    timestamptz,
+  finished_at   timestamptz
+);
+create index if not exists idx_botdev_broadcasts_status on botdev_broadcasts(status);
+
+create table if not exists botdev_broadcast_recipients (
+  broadcast_id   bigint      not null references botdev_broadcasts(id) on delete cascade,
+  tg_id          text        not null,
+  display_name   text        not null default '',
+  status         text        not null default 'pending' check (status in ('pending','sending','sent','failed')),
+  error          text,
+  claimed_at     timestamptz,
+  sent_at        timestamptz,
+  clicked_action text,
+  clicked_at     timestamptz,
+  primary key (broadcast_id, tg_id)
+);
+create index if not exists idx_botdev_broadcast_recip_pending on botdev_broadcast_recipients(broadcast_id, status);
+
+-- RLS без політик: anon/authenticated не мають доступу, бот ходить service_role.
+alter table botdev_broadcasts           enable row level security;
+alter table botdev_broadcast_recipients enable row level security;
+
+create or replace function botdev_broadcast_recipients_select(
+  p_from timestamptz, p_to timestamptz, p_max int
+)
+returns table (tg_id text, display_name text)
+language sql security definer as $$
+  with subs as (
+    select tg_id, count(*) as c
+    from botdev_submissions
+    where submitted_at >= p_from and submitted_at < p_to
+    group by tg_id
+  ),
+  confs as (
+    select tg_id, count(*) as c
+    from botdev_case_confirmations
+    where at >= p_from and at < p_to
+    group by tg_id
+  ),
+  totals as (
+    select u.tg_id, u.display_name,
+           coalesce(s.c, 0) + coalesce(cf.c, 0) as recognized
+    from botdev_users u
+    left join subs  s  on s.tg_id  = u.tg_id
+    left join confs cf on cf.tg_id = u.tg_id
+    where coalesce(u.banned, false) = false
+      and u.tg_id not like 'web:%'
+  )
+  select tg_id, display_name from totals where recognized < p_max;
+$$;
+revoke all on function botdev_broadcast_recipients_select(timestamptz, timestamptz, int) from public, anon, authenticated;
+
+create or replace function botdev_broadcast_preview(
+  p_from timestamptz, p_to timestamptz, p_max int
+)
+returns int language sql security definer as $$
+  select count(*)::int from botdev_broadcast_recipients_select(p_from, p_to, p_max);
+$$;
+revoke all on function botdev_broadcast_preview(timestamptz, timestamptz, int) from public, anon, authenticated;
+
+create or replace function botdev_broadcast_claim_batch(p_id bigint, p_limit int)
+returns table (tg_id text, display_name text)
+language plpgsql as $$
+begin
+  return query
+  update botdev_broadcast_recipients r
+  set status = 'sending', claimed_at = now()
+  where (r.broadcast_id, r.tg_id) in (
+    select br.broadcast_id, br.tg_id
+    from botdev_broadcast_recipients br
+    where br.broadcast_id = p_id and br.status = 'pending'
+    order by br.tg_id
+    limit greatest(p_limit, 0)
+    for update skip locked
+  )
+  returning r.tg_id, r.display_name;
+end;
+$$;
+revoke all on function botdev_broadcast_claim_batch(bigint, int) from public, anon, authenticated;
+
+create or replace function botdev_broadcast_reap(p_id bigint, p_older_seconds int)
+returns int language plpgsql as $$
+declare n int;
+begin
+  update botdev_broadcast_recipients
+  set status = 'pending', claimed_at = null
+  where broadcast_id = p_id and status = 'sending'
+    and claimed_at < now() - make_interval(secs => p_older_seconds);
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+revoke all on function botdev_broadcast_reap(bigint, int) from public, anon, authenticated;
+
+create or replace function botdev_broadcast_inc(p_id bigint, p_sent int, p_failed int)
+returns void language sql as $$
+  update botdev_broadcasts
+  set sent_count = sent_count + p_sent,
+      failed_count = failed_count + p_failed
+  where id = p_id;
+$$;
+revoke all on function botdev_broadcast_inc(bigint, int, int) from public, anon, authenticated;
+
+create or replace function botdev_broadcast_click(p_id bigint, p_tg_id text, p_action text)
+returns boolean language plpgsql as $$
+declare n int;
+begin
+  update botdev_broadcast_recipients
+  set clicked_action = p_action, clicked_at = now()
+  where broadcast_id = p_id and tg_id = p_tg_id and clicked_at is null;
+  get diagnostics n = row_count;
+  if n > 0 then
+    update botdev_broadcasts set clicked_count = clicked_count + 1 where id = p_id;
+    return true;
+  end if;
+  return false;
+end;
+$$;
+revoke all on function botdev_broadcast_click(bigint, text, text) from public, anon, authenticated;
