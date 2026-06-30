@@ -371,6 +371,14 @@ router.get('/cron/group-tick', async (req, res) => {
     if (kyivHour >= 21 && kyivHour <= 23) {
       actions.push({ kind: 'evening', ...(await announceEveningPuzzle()) });
     }
+    // Домелюємо активну адмін-розсилку (хвіст великих кампаній між тіками).
+    try {
+      const { drainActiveBroadcasts } = await import('./broadcast.js');
+      const bc = await drainActiveBroadcasts(40_000);
+      if (bc.drained) actions.push({ kind: 'broadcast', ...bc });
+    } catch (e: any) {
+      actions.push({ kind: 'broadcast', error: e?.message || 'drain failed' });
+    }
     res.json({ ok: true, kyivHour, actions });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'internal', kyivHour, actions });
@@ -1380,6 +1388,144 @@ router.post('/admin/grant-bonus', async (req, res) => {
       }
     }
     res.json({ ok: true, newTotal });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ===================== АДМІН-РОЗСИЛКИ (broadcast) =====================
+
+// Нормалізує вхідну межу періоду. date-only (YYYY-MM-DD) трактуємо як UTC-північ;
+// `to` лишаємо як є (фронт надсилає вже-ексклюзивну межу = наступна доба).
+function normBound(v: any): string | null {
+  const s = String(v || '').trim();
+  if (!s) return null;
+  const iso = s.length <= 10 ? `${s}T00:00:00.000Z` : s;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
+
+// Список доступних кнопок (для UI). Береться зі спільного каталогу.
+router.get('/admin/broadcast/buttons', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { BROADCAST_BUTTONS } = await import('../../src/telegram-bot/config.js');
+  res.json({ buttons: BROADCAST_BUTTONS.map(b => ({ action: b.action, label: b.label })) });
+});
+
+// Прев'ю кількості отримувачів за критеріями (RPC, egress = одне число).
+router.post('/admin/broadcast/preview', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { from, to, maxCases } = req.body || {};
+  const fromIso = normBound(from);
+  const toIso = normBound(to);
+  const max = parseInt(String(maxCases), 10);
+  if (!fromIso || !toIso) return res.status(400).json({ error: 'Невірний період (from/to)' });
+  if (!Number.isFinite(max) || max < 1) return res.status(400).json({ error: 'maxCases має бути ≥ 1' });
+  if (Date.parse(toIso) <= Date.parse(fromIso)) return res.status(400).json({ error: '"to" має бути пізніше "from"' });
+  try {
+    const { broadcastPreviewCount } = await import('./storage.js');
+    const count = await broadcastPreviewCount(fromIso, toIso, max);
+    res.json({ count, from: fromIso, to: toIso, maxCases: max });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Створення кампанії: формуємо вибірку (RPC), наповнюємо recipients і одразу
+// домелюємо перший шматок у межах HTTP-бюджету (решту добʼє cron-tick).
+router.post('/admin/broadcast', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { title, body, buttons, from, to, maxCases } = req.body || {};
+  const fromIso = normBound(from);
+  const toIso = normBound(to);
+  const max = parseInt(String(maxCases), 10);
+  const text = String(body || '').trim();
+  if (!text) return res.status(400).json({ error: 'Текст повідомлення обовʼязковий' });
+  if (!fromIso || !toIso) return res.status(400).json({ error: 'Невірний період (from/to)' });
+  if (!Number.isFinite(max) || max < 1) return res.status(400).json({ error: 'maxCases має бути ≥ 1' });
+  try {
+    const { BROADCAST_BUTTONS } = await import('../../src/telegram-bot/config.js');
+    const allowed = new Set(BROADCAST_BUTTONS.map(b => b.action));
+    const btns: string[] = Array.isArray(buttons) ? buttons.filter((b: any) => allowed.has(b)) : [];
+
+    const { broadcastSelectRecipients, createBroadcast } = await import('./storage.js');
+    const recipients = await broadcastSelectRecipients(fromIso, toIso, max);
+    if (recipients.length === 0) return res.status(400).json({ error: 'Вибірка порожня — нікому надсилати' });
+
+    const broadcast = await createBroadcast({
+      title: String(title || '').trim(),
+      body: text,
+      buttons: btns,
+      critFrom: fromIso,
+      critTo: toIso,
+      critMax: max,
+      createdBy: 'admin',
+      recipients,
+    });
+
+    // Стартуємо доставку одразу, але з коротким бюджетом, щоб HTTP не висів.
+    const { drainBroadcast } = await import('./broadcast.js');
+    const result = await drainBroadcast(broadcast.id, 20_000).catch(e => {
+      console.error('initial drainBroadcast failed', e);
+      return null;
+    });
+    const fresh = await (await import('./storage.js')).getBroadcast(broadcast.id);
+    res.json({ broadcast: fresh || broadcast, drain: result });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/admin/broadcasts', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { listBroadcasts } = await import('./storage.js');
+    res.json({ broadcasts: await listBroadcasts(50) });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/admin/broadcast/:id', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+  try {
+    const { getBroadcast } = await import('./storage.js');
+    const broadcast = await getBroadcast(id);
+    if (!broadcast) return res.status(404).json({ error: 'not found' });
+    res.json({ broadcast });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Ручне «продовжити надсилання» — щоб не чекати cron-tick на хвості великої розсилки.
+router.post('/admin/broadcast/:id/drain', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+  try {
+    const { drainBroadcast } = await import('./broadcast.js');
+    const result = await drainBroadcast(id, 45_000);
+    const broadcast = await (await import('./storage.js')).getBroadcast(id);
+    res.json({ result, broadcast });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/admin/broadcast/:id/cancel', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+  try {
+    const { getBroadcast, setBroadcastStatus } = await import('./storage.js');
+    const bc = await getBroadcast(id);
+    if (!bc) return res.status(404).json({ error: 'not found' });
+    if (bc.status === 'done') return res.status(400).json({ error: 'Кампанію вже завершено' });
+    await setBroadcastStatus(id, 'canceled', { finishedAt: true });
+    res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

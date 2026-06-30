@@ -296,4 +296,57 @@ export const tgApi = {
       dryRun: boolean;
       assignments: Array<{ date: string; sentence: string }>;
     }>,
+
+  // ----- Адмін-розсилки -----
+  broadcastButtons: () =>
+    call('/admin/broadcast/buttons') as Promise<{ buttons: Array<{ action: string; label: string }> }>,
+  broadcastPreview: (payload: { from: string; to: string; maxCases: number }) =>
+    call('/admin/broadcast/preview', { method: 'POST', body: JSON.stringify(payload) }) as Promise<{
+      count: number;
+      from: string;
+      to: string;
+      maxCases: number;
+    }>,
+  createBroadcast: (payload: {
+    title: string;
+    body: string;
+    buttons: string[];
+    from: string;
+    to: string;
+    maxCases: number;
+  }) =>
+    call('/admin/broadcast', { method: 'POST', body: JSON.stringify(payload) }) as Promise<{
+      broadcast: BroadcastRow;
+      drain: any;
+    }>,
+  listBroadcasts: () =>
+    call('/admin/broadcasts') as Promise<{ broadcasts: BroadcastRow[] }>,
+  getBroadcast: (id: number) =>
+    call(`/admin/broadcast/${id}`) as Promise<{ broadcast: BroadcastRow }>,
+  drainBroadcast: (id: number) =>
+    call(`/admin/broadcast/${id}/drain`, { method: 'POST', body: '{}' }) as Promise<{
+      result: any;
+      broadcast: BroadcastRow;
+    }>,
+  cancelBroadcast: (id: number) =>
+    call(`/admin/broadcast/${id}/cancel`, { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
 };
+
+export interface BroadcastRow {
+  id: number;
+  title: string;
+  body: string;
+  buttons: string[];
+  critFrom: string | null;
+  critTo: string | null;
+  critMax: number | null;
+  status: 'queued' | 'sending' | 'done' | 'canceled';
+  totalCount: number;
+  sentCount: number;
+  failedCount: number;
+  clickedCount: number;
+  createdBy: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}

@@ -24,6 +24,8 @@ export const T = {
   puzzleProgress:    `${PREFIX}puzzle_progress`,
   puzzleWinners:     `${PREFIX}puzzle_winners`,
   monthlyPoints:     `${PREFIX}monthly_points`,
+  broadcasts:        `${PREFIX}broadcasts`,
+  broadcastRecipients: `${PREFIX}broadcast_recipients`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
@@ -37,6 +39,12 @@ const RPC_LEADERBOARD_TOP = `${PREFIX}leaderboard_top`;
 const RPC_USER_RANK = `${PREFIX}user_rank`;
 const RPC_USER_STATUS_COUNTS = `${PREFIX}user_status_counts`;
 const RPC_FUND_ETA_STATS = `${PREFIX}fund_eta_stats`;
+const RPC_BROADCAST_PREVIEW = `${PREFIX}broadcast_preview`;
+const RPC_BROADCAST_RECIPIENTS_SELECT = `${PREFIX}broadcast_recipients_select`;
+const RPC_BROADCAST_CLAIM_BATCH = `${PREFIX}broadcast_claim_batch`;
+const RPC_BROADCAST_REAP = `${PREFIX}broadcast_reap`;
+const RPC_BROADCAST_INC = `${PREFIX}broadcast_inc`;
+const RPC_BROADCAST_CLICK = `${PREFIX}broadcast_click`;
 
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
@@ -2062,5 +2070,227 @@ export async function clearExpiredLocks(): Promise<number> {
     .select('case_id');
   if (error) throw error;
   return (data || []).length;
+}
+
+// ---------- АДМІН-РОЗСИЛКИ (broadcast) ----------
+export interface BroadcastRow {
+  id: number;
+  title: string;
+  body: string;
+  buttons: string[];
+  critFrom: string | null;
+  critTo: string | null;
+  critMax: number | null;
+  status: 'queued' | 'sending' | 'done' | 'canceled';
+  totalCount: number;
+  sentCount: number;
+  failedCount: number;
+  clickedCount: number;
+  createdBy: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+function mapBroadcast(r: any): BroadcastRow {
+  return {
+    id: Number(r.id),
+    title: r.title || '',
+    body: r.body || '',
+    buttons: Array.isArray(r.buttons) ? r.buttons : [],
+    critFrom: r.crit_from || null,
+    critTo: r.crit_to || null,
+    critMax: r.crit_max == null ? null : Number(r.crit_max),
+    status: r.status,
+    totalCount: r.total_count || 0,
+    sentCount: r.sent_count || 0,
+    failedCount: r.failed_count || 0,
+    clickedCount: r.clicked_count || 0,
+    createdBy: r.created_by || '',
+    createdAt: r.created_at || '',
+    startedAt: r.started_at || null,
+    finishedAt: r.finished_at || null,
+  };
+}
+
+// Прев'ю: лише КІЛЬКІСТЬ отримувачів вибірки (RPC, egress = одне число).
+export async function broadcastPreviewCount(
+  fromIso: string,
+  toIso: string,
+  maxCases: number
+): Promise<number> {
+  const { data, error } = await db().rpc(RPC_BROADCAST_PREVIEW, {
+    p_from: fromIso,
+    p_to: toIso,
+    p_max: maxCases,
+  });
+  if (error) throw error;
+  return Number(Array.isArray(data) ? data[0] : data) || 0;
+}
+
+// Повний список отримувачів вибірки (tg_id + display_name) — читаємо РАЗ при створенні.
+export async function broadcastSelectRecipients(
+  fromIso: string,
+  toIso: string,
+  maxCases: number
+): Promise<Array<{ tgId: string; displayName: string }>> {
+  const { data, error } = await db().rpc(RPC_BROADCAST_RECIPIENTS_SELECT, {
+    p_from: fromIso,
+    p_to: toIso,
+    p_max: maxCases,
+  });
+  if (error) throw error;
+  return (data || []).map((r: any) => ({ tgId: r.tg_id, displayName: r.display_name || '' }));
+}
+
+// Створює кампанію (status='queued') і наповнює recipients батчами. display_name
+// денормалізуємо одразу — щоб воркер не робив getUser під час розсилки.
+export async function createBroadcast(input: {
+  title: string;
+  body: string;
+  buttons: string[];
+  critFrom: string;
+  critTo: string;
+  critMax: number;
+  createdBy: string;
+  recipients: Array<{ tgId: string; displayName: string }>;
+}): Promise<BroadcastRow> {
+  const { data, error } = await db()
+    .from(T.broadcasts)
+    .insert({
+      title: input.title,
+      body: input.body,
+      buttons: input.buttons,
+      crit_from: input.critFrom,
+      crit_to: input.critTo,
+      crit_max: input.critMax,
+      status: 'queued',
+      total_count: input.recipients.length,
+      created_by: input.createdBy,
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  const broadcast = mapBroadcast(data);
+
+  const pageSize = 500;
+  for (let i = 0; i < input.recipients.length; i += pageSize) {
+    const chunk = input.recipients.slice(i, i + pageSize).map(r => ({
+      broadcast_id: broadcast.id,
+      tg_id: r.tgId,
+      display_name: r.displayName,
+    }));
+    const { error: insErr } = await db().from(T.broadcastRecipients).insert(chunk);
+    if (insErr) throw insErr;
+  }
+  return broadcast;
+}
+
+export async function getBroadcast(id: number): Promise<BroadcastRow | null> {
+  const { data, error } = await db().from(T.broadcasts).select('*').eq('id', id).maybeSingle();
+  if (error) throw error;
+  return data ? mapBroadcast(data) : null;
+}
+
+export async function listBroadcasts(limit = 50): Promise<BroadcastRow[]> {
+  const { data, error } = await db()
+    .from(T.broadcasts)
+    .select('*')
+    .order('id', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map(mapBroadcast);
+}
+
+export async function setBroadcastStatus(
+  id: number,
+  status: BroadcastRow['status'],
+  patch: { startedAt?: boolean; finishedAt?: boolean } = {}
+): Promise<void> {
+  const dbPatch: any = { status };
+  if (patch.startedAt) dbPatch.started_at = new Date().toISOString();
+  if (patch.finishedAt) dbPatch.finished_at = new Date().toISOString();
+  const { error } = await db().from(T.broadcasts).update(dbPatch).eq('id', id);
+  if (error) throw error;
+}
+
+// Найстаріша кампанія, що потребує доставки (для cron-воркера). Дешевий select.
+export async function getActiveBroadcastId(): Promise<number | null> {
+  const { data, error } = await db()
+    .from(T.broadcasts)
+    .select('id')
+    .in('status', ['queued', 'sending'])
+    .order('id', { ascending: true })
+    .limit(1);
+  if (error) throw error;
+  return data && data.length ? Number(data[0].id) : null;
+}
+
+// Атомарний claim батчу pending-отримувачів (for update skip locked у RPC).
+export async function claimBroadcastBatch(
+  id: number,
+  limit: number
+): Promise<Array<{ tgId: string; displayName: string }>> {
+  const { data, error } = await db().rpc(RPC_BROADCAST_CLAIM_BATCH, { p_id: id, p_limit: limit });
+  if (error) throw error;
+  return (data || []).map((r: any) => ({ tgId: r.tg_id, displayName: r.display_name || '' }));
+}
+
+// Повертає завислі 'sending' (>olderSeconds) назад у 'pending'. Кількість повернутих.
+export async function reapBroadcastClaims(id: number, olderSeconds: number): Promise<number> {
+  const { data, error } = await db().rpc(RPC_BROADCAST_REAP, {
+    p_id: id,
+    p_older_seconds: olderSeconds,
+  });
+  if (error) throw error;
+  return Number(data) || 0;
+}
+
+export async function markBroadcastRecipient(
+  id: number,
+  tgId: string,
+  status: 'sent' | 'failed',
+  error?: string
+): Promise<void> {
+  const patch: any = { status };
+  if (status === 'sent') patch.sent_at = new Date().toISOString();
+  if (error !== undefined) patch.error = error.slice(0, 500);
+  const { error: upErr } = await db()
+    .from(T.broadcastRecipients)
+    .update(patch)
+    .eq('broadcast_id', id)
+    .eq('tg_id', tgId);
+  if (upErr) throw upErr;
+}
+
+export async function incBroadcastCounters(id: number, sent: number, failed: number): Promise<void> {
+  const { error } = await db().rpc(RPC_BROADCAST_INC, { p_id: id, p_sent: sent, p_failed: failed });
+  if (error) throw error;
+}
+
+// К-сть pending-отримувачів кампанії (head-запит, без витягання рядків).
+export async function countPendingRecipients(id: number): Promise<number> {
+  const { count, error } = await db()
+    .from(T.broadcastRecipients)
+    .select('tg_id', { count: 'exact', head: true })
+    .eq('broadcast_id', id)
+    .in('status', ['pending', 'sending']);
+  if (error) throw error;
+  return count || 0;
+}
+
+// Реєстрація кліку юзера по кнопці розсилки. true = це був ПЕРШИЙ клік (для статистики).
+export async function recordBroadcastClick(
+  id: number,
+  tgId: string,
+  action: string
+): Promise<boolean> {
+  const { data, error } = await db().rpc(RPC_BROADCAST_CLICK, {
+    p_id: id,
+    p_tg_id: tgId,
+    p_action: action,
+  });
+  if (error) throw error;
+  return data === true;
 }
 

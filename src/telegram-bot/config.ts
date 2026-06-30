@@ -943,3 +943,22 @@ export const telegramBotConfig: TelegramBotConfig = {
       '⏳ <b>Важливо:</b> і зібрати, і підтвердити всі слова треба впродовж одного дня. Опівночі фраза змінюється, а незавершений прогрес обнуляється.',
   },
 };
+
+// --- Кнопки для адмін-розсилок ---
+// Каталог inline-кнопок, які адмін може додати до повідомлення розсилки. Усі дії —
+// вже наявні в боті (нічого нового). action кодується в callback_data як `bc:<id>:<action>`,
+// бот логує клік і делегує відповідній команді. Спільне джерело правди для бота й адмінки.
+export interface BroadcastButtonDef {
+  action: string; // ключ у callback_data
+  label: string;  // підпис кнопки (= підпис у меню бота)
+  command: string; // наявна команда, яку виконати після кліку
+}
+export const BROADCAST_BUTTONS: BroadcastButtonDef[] = [
+  { action: 'next',        label: telegramBotConfig.texts.menuNext,        command: '/next' },
+  { action: 'stats',       label: telegramBotConfig.texts.menuStats,       command: '/stats' },
+  { action: 'progress',    label: telegramBotConfig.texts.menuProgress,    command: '/progress' },
+  { action: 'leaderboard', label: telegramBotConfig.texts.menuLeaderboard, command: '/leaderboard' },
+  { action: 'halloffame',  label: telegramBotConfig.texts.menuHallOfFame,  command: '/halloffame' },
+  { action: 'help',        label: telegramBotConfig.texts.menuHelp,        command: '/help' },
+  { action: 'settings',    label: telegramBotConfig.texts.menuSettings,    command: '/settings' },
+];

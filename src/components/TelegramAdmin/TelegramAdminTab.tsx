@@ -6,6 +6,7 @@ import { tgApi, getAdminSecret, clearAdminSecret, adminLogin } from '../../servi
 import { createDefaultColumns, createColumn, COLUMN_ROLE_LABELS, COLUMN_ROLE_OPTIONS, inferColumnRole } from '../../lib/tableColumns';
 import { detectViaGemini } from '../../lib/sliceDetection';
 import { VerifUploadView } from '../CasesPreparation/VerifUploadView';
+import { BroadcastView } from './BroadcastView';
 
 interface Props {
   onClose: () => void;
@@ -13,7 +14,7 @@ interface Props {
   initialQuestions?: TableColumn[]; // зазвичай tableStructure активного проєкту
 }
 
-type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity' | 'chart' | 'partners' | 'puzzle';
+type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity' | 'chart' | 'partners' | 'puzzle' | 'broadcast';
 
 export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => {
   const [tab, setTab] = useState<TabKey>('setup');
@@ -56,6 +57,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
           ['integrity', 'Перевірка доброчесності'],
           ['partners', 'Партнери'],
           ['puzzle', 'Пазл'],
+          ['broadcast', 'Розсилки'],
         ] as [TabKey, string][]).map(([k, label]) => (
           <button
             key={k}
@@ -80,6 +82,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         {tab === 'integrity' && <IntegrityView />}
         {tab === 'partners' && <PartnersView />}
         {tab === 'puzzle' && <PuzzleView />}
+        {tab === 'broadcast' && <BroadcastView />}
       </div>
     </div>
   );
