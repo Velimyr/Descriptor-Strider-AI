@@ -737,3 +737,156 @@ returns table (total int, active int, paused int) language sql security definer 
   from bot_users;
 $$;
 revoke all on function bot_user_status_counts() from public, anon, authenticated;
+
+-- ============================================================================
+-- Адмін-розсилки (broadcast). Адмін задає вибірку (період + поріг розпізнаних),
+-- текст і набір наявних кнопок бота. Доставка — чергою з тротлінгом на cron-tick.
+-- Дубльовано в supabase/scripts/broadcast.sql для зручного разового запуску.
+-- ============================================================================
+
+-- Кампанія розсилки. Лічильники денормалізовані (sent/failed/clicked) — щоб звіт
+-- в адмінці читав ОДИН рядок, а не сканував recipients (egress).
+create table if not exists bot_broadcasts (
+  id            bigserial primary key,
+  title         text        not null default '',
+  body          text        not null,
+  buttons       jsonb       not null default '[]'::jsonb,  -- масив action-ключів: ['next','leaderboard',...]
+  crit_from     timestamptz,                                -- межі періоду критерію (UTC)
+  crit_to       timestamptz,
+  crit_max      int,                                        -- поріг "розпізнав МЕНШЕ ніж"
+  status        text        not null default 'queued' check (status in ('queued','sending','done','canceled')),
+  total_count   int         not null default 0,
+  sent_count    int         not null default 0,
+  failed_count  int         not null default 0,
+  clicked_count int         not null default 0,
+  created_by    text        not null default '',
+  created_at    timestamptz not null default now(),
+  started_at    timestamptz,
+  finished_at   timestamptz
+);
+create index if not exists idx_broadcasts_status on bot_broadcasts(status);
+
+-- Один рядок на отримувача. display_name денормалізовано при створенні, щоб воркер
+-- НЕ робив getUser на кожного (нуль додаткових читань під час розсилки).
+-- claimed_at — для атомарного claim батчу й reap завислих 'sending'.
+create table if not exists bot_broadcast_recipients (
+  broadcast_id   bigint      not null references bot_broadcasts(id) on delete cascade,
+  tg_id          text        not null,
+  display_name   text        not null default '',
+  status         text        not null default 'pending' check (status in ('pending','sending','sent','failed')),
+  error          text,
+  claimed_at     timestamptz,
+  sent_at        timestamptz,
+  clicked_action text,
+  clicked_at     timestamptz,
+  primary key (broadcast_id, tg_id)
+);
+create index if not exists idx_broadcast_recip_pending on bot_broadcast_recipients(broadcast_id, status);
+
+-- Вибірка отримувачів: усі НЕ-банені TG-юзери (web:* виключені — у них немає
+-- приватного чату з ботом), що за період [p_from, p_to) розпізнали МЕНШЕ ніж p_max
+-- справ. "Розпізнав" = submission (parallel) + collab-подія (create/edit/confirm),
+-- як у countUserCases. Юзери з 0 теж включені (left join). Уся агрегація — в БД.
+create or replace function bot_broadcast_recipients_select(
+  p_from timestamptz, p_to timestamptz, p_max int
+)
+returns table (tg_id text, display_name text)
+language sql security definer as $$
+  with subs as (
+    select tg_id, count(*) as c
+    from bot_submissions
+    where submitted_at >= p_from and submitted_at < p_to
+    group by tg_id
+  ),
+  confs as (
+    select tg_id, count(*) as c
+    from bot_case_confirmations
+    where at >= p_from and at < p_to
+    group by tg_id
+  ),
+  totals as (
+    select u.tg_id, u.display_name,
+           coalesce(s.c, 0) + coalesce(cf.c, 0) as recognized
+    from bot_users u
+    left join subs  s  on s.tg_id  = u.tg_id
+    left join confs cf on cf.tg_id = u.tg_id
+    where coalesce(u.banned, false) = false
+      and u.tg_id not like 'web:%'
+  )
+  select tg_id, display_name from totals where recognized < p_max;
+$$;
+revoke all on function bot_broadcast_recipients_select(timestamptz, timestamptz, int) from public, anon, authenticated;
+
+-- Прев'ю: лише КІЛЬКІСТЬ отримувачів (egress = одне число). Перевикористовує select.
+create or replace function bot_broadcast_preview(
+  p_from timestamptz, p_to timestamptz, p_max int
+)
+returns int language sql security definer as $$
+  select count(*)::int from bot_broadcast_recipients_select(p_from, p_to, p_max);
+$$;
+revoke all on function bot_broadcast_preview(timestamptz, timestamptz, int) from public, anon, authenticated;
+
+-- Атомарний claim батчу pending-отримувачів (for update skip locked — захист від
+-- паралельних воркерів/тіків, без подвійної відправки). Позначає 'sending'+claimed_at.
+create or replace function bot_broadcast_claim_batch(p_id bigint, p_limit int)
+returns table (tg_id text, display_name text)
+language plpgsql as $$
+begin
+  return query
+  update bot_broadcast_recipients r
+  set status = 'sending', claimed_at = now()
+  where (r.broadcast_id, r.tg_id) in (
+    select br.broadcast_id, br.tg_id
+    from bot_broadcast_recipients br
+    where br.broadcast_id = p_id and br.status = 'pending'
+    order by br.tg_id
+    limit greatest(p_limit, 0)
+    for update skip locked
+  )
+  returning r.tg_id, r.display_name;
+end;
+$$;
+revoke all on function bot_broadcast_claim_batch(bigint, int) from public, anon, authenticated;
+
+-- Повертає завислі 'sending' (воркер помер на півдорозі) назад у 'pending'.
+create or replace function bot_broadcast_reap(p_id bigint, p_older_seconds int)
+returns int language plpgsql as $$
+declare n int;
+begin
+  update bot_broadcast_recipients
+  set status = 'pending', claimed_at = null
+  where broadcast_id = p_id and status = 'sending'
+    and claimed_at < now() - make_interval(secs => p_older_seconds);
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+revoke all on function bot_broadcast_reap(bigint, int) from public, anon, authenticated;
+
+-- Інкремент лічильників кампанії одним апдейтом (по підсумку батчу).
+create or replace function bot_broadcast_inc(p_id bigint, p_sent int, p_failed int)
+returns void language sql as $$
+  update bot_broadcasts
+  set sent_count = sent_count + p_sent,
+      failed_count = failed_count + p_failed
+  where id = p_id;
+$$;
+revoke all on function bot_broadcast_inc(bigint, int, int) from public, anon, authenticated;
+
+-- Реєстрація кліку. Лише ПЕРШИЙ клік юзера інкрементує clicked_count (повертає true).
+create or replace function bot_broadcast_click(p_id bigint, p_tg_id text, p_action text)
+returns boolean language plpgsql as $$
+declare n int;
+begin
+  update bot_broadcast_recipients
+  set clicked_action = p_action, clicked_at = now()
+  where broadcast_id = p_id and tg_id = p_tg_id and clicked_at is null;
+  get diagnostics n = row_count;  -- 1 рядок оновлено = перший клік
+  if n > 0 then
+    update bot_broadcasts set clicked_count = clicked_count + 1 where id = p_id;
+    return true;
+  end if;
+  return false;
+end;
+$$;
+revoke all on function bot_broadcast_click(bigint, text, text) from public, anon, authenticated;

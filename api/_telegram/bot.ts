@@ -982,6 +982,38 @@ async function handleCallback(cb: any) {
       .catch(e => console.error('maybeShowIntro (callback) failed', e));
   }
 
+  // Клік по кнопці адмін-розсилки: `bc:<id>:<action>`. Логуємо клік (для звіту в
+  // адмінці) і делегуємо наявній команді бота — жодної нової поведінки для юзера.
+  if (data.startsWith('bc:')) {
+    await answerCallbackQuery(cb.id);
+    const [, idStr, action] = data.split(':');
+    const bcId = parseInt(idStr, 10);
+    if (Number.isFinite(bcId)) {
+      try {
+        const { recordBroadcastClick } = await import('./storage.js');
+        await recordBroadcastClick(bcId, tgId, action || '');
+      } catch (e) {
+        console.error('recordBroadcastClick failed', e);
+      }
+    }
+    if (!cbUser) return;
+    switch (action) {
+      case 'next': {
+        const session = await getSession(tgId);
+        await cmdNext(chatId, tgId, session);
+        break;
+      }
+      case 'stats':       await cmdStats(chatId, tgId, cbUser); break;
+      case 'progress':    await cmdProgress(chatId, cbUser); break;
+      case 'leaderboard': await cmdLeaderboard(chatId, tgId, cbUser); break;
+      case 'halloffame':  await cmdHallOfFame(chatId); break;
+      case 'help':        await sendMessage(chatId, T.helpText, { reply_markup: helpMenuKeyboard() }); break;
+      case 'settings':    await cmdSettings(chatId, cbUser); break;
+      default: break; // невідома дія — клік уже залоговано, мовчки виходимо
+    }
+    return;
+  }
+
   // Help-навігація — не залежить від сесії, обробляємо одразу.
   if (data.startsWith('help:')) {
     await answerCallbackQuery(cb.id);
