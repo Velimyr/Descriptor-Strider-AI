@@ -781,3 +781,54 @@ begin
 end;
 $$;
 revoke all on function botdev_broadcast_click(bigint, text, text) from public, anon, authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Активність (агрегати). Аналог bot_today_activity / bot_daily_activity.
+-- Замінюють пагіновані JS-скани, що під конкурентними вставками губили рядки
+-- (.range() без ORDER BY) і занижували лічильник «оброблено сьогодні».
+
+create index if not exists idx_dev_subs_submitted_at on botdev_submissions(submitted_at);
+create index if not exists idx_dev_confirms_at        on botdev_case_confirmations(at);
+create index if not exists idx_dev_verif_confirms_at  on botdev_verif_confirmations(at);
+
+create or replace function botdev_today_activity(p_start timestamptz, p_end timestamptz)
+returns table (cases bigint, users bigint)
+language sql security definer as $$
+  with ev as (
+    select case_id, tg_id as actor from botdev_submissions
+      where submitted_at >= p_start and submitted_at < p_end
+    union all
+    select case_id, tg_id as actor from botdev_case_confirmations
+      where at >= p_start and at < p_end
+  )
+  select count(distinct nullif(case_id, '')) as cases,
+         count(distinct nullif(actor, ''))   as users
+  from ev;
+$$;
+revoke all on function botdev_today_activity(timestamptz, timestamptz) from public, anon, authenticated;
+
+create or replace function botdev_daily_activity(
+  p_start  timestamptz,
+  p_end    timestamptz,
+  p_tz     text,
+  p_source text
+)
+returns table (day date, cases bigint, users bigint)
+language sql security definer as $$
+  with ev as (
+    select case_id, tg_id as actor, submitted_at as ts from botdev_submissions
+      where p_source <> 'web' and submitted_at >= p_start and submitted_at < p_end
+    union all
+    select case_id, tg_id as actor, at as ts from botdev_case_confirmations
+      where p_source <> 'web' and at >= p_start and at < p_end
+    union all
+    select case_id, verifier_id as actor, at as ts from botdev_verif_confirmations
+      where p_source <> 'telegram' and at >= p_start and at < p_end
+  )
+  select (ts at time zone p_tz)::date          as day,
+         count(distinct nullif(case_id, ''))   as cases,
+         count(distinct nullif(actor, ''))     as users
+  from ev
+  group by 1;
+$$;
+revoke all on function botdev_daily_activity(timestamptz, timestamptz, text, text) from public, anon, authenticated;

@@ -897,3 +897,62 @@ begin
 end;
 $$;
 revoke all on function bot_broadcast_click(bigint, text, text) from public, anon, authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Активність (агрегати). Замінюють пагіновані JS-скани у getTodayActivity /
+-- getDailyActivity. Раніше JS читав тисячі рядків через .range() БЕЗ ORDER BY —
+-- під конкурентними вставками сторінки зсувалися й частина рядків губилася, тож
+-- лічильник «оброблено сьогодні» міг показувати МЕНШЕ за попередній замір.
+-- count(distinct ...) у Postgres детермінований і не возить рядки в API.
+
+-- Індекси під віконні запити по часових колонках (раніше їх не було — скан робив seq scan).
+create index if not exists idx_subs_submitted_at        on bot_submissions(submitted_at);
+create index if not exists idx_confirms_at              on bot_case_confirmations(at);
+create index if not exists idx_verif_confirms_at        on bot_verif_confirmations(at);
+
+-- Унікальні справи/користувачі з активністю за вікно [p_start, p_end).
+-- Лише телеграм-джерела (parallel-сабміти + collab-події) — як було в JS.
+create or replace function bot_today_activity(p_start timestamptz, p_end timestamptz)
+returns table (cases bigint, users bigint)
+language sql security definer as $$
+  with ev as (
+    select case_id, tg_id as actor from bot_submissions
+      where submitted_at >= p_start and submitted_at < p_end
+    union all
+    select case_id, tg_id as actor from bot_case_confirmations
+      where at >= p_start and at < p_end
+  )
+  select count(distinct nullif(case_id, '')) as cases,
+         count(distinct nullif(actor, ''))   as users
+  from ev;
+$$;
+revoke all on function bot_today_activity(timestamptz, timestamptz) from public, anon, authenticated;
+
+-- Активність по днях за вікно [p_start, p_end), згрупована по даті в таймзоні p_tz.
+-- p_source: 'telegram' = сабміти+collab; 'web' = verif-перевірки; 'all' = обидва.
+-- Повертає лише непорожні дні — нульові дні добиває JS.
+create or replace function bot_daily_activity(
+  p_start  timestamptz,
+  p_end    timestamptz,
+  p_tz     text,
+  p_source text
+)
+returns table (day date, cases bigint, users bigint)
+language sql security definer as $$
+  with ev as (
+    select case_id, tg_id as actor, submitted_at as ts from bot_submissions
+      where p_source <> 'web' and submitted_at >= p_start and submitted_at < p_end
+    union all
+    select case_id, tg_id as actor, at as ts from bot_case_confirmations
+      where p_source <> 'web' and at >= p_start and at < p_end
+    union all
+    select case_id, verifier_id as actor, at as ts from bot_verif_confirmations
+      where p_source <> 'telegram' and at >= p_start and at < p_end
+  )
+  select (ts at time zone p_tz)::date          as day,
+         count(distinct nullif(case_id, ''))   as cases,
+         count(distinct nullif(actor, ''))     as users
+  from ev
+  group by 1;
+$$;
+revoke all on function bot_daily_activity(timestamptz, timestamptz, text, text) from public, anon, authenticated;

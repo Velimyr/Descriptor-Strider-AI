@@ -39,6 +39,8 @@ const RPC_LEADERBOARD_TOP = `${PREFIX}leaderboard_top`;
 const RPC_USER_RANK = `${PREFIX}user_rank`;
 const RPC_USER_STATUS_COUNTS = `${PREFIX}user_status_counts`;
 const RPC_FUND_ETA_STATS = `${PREFIX}fund_eta_stats`;
+const RPC_TODAY_ACTIVITY = `${PREFIX}today_activity`;
+const RPC_DAILY_ACTIVITY = `${PREFIX}daily_activity`;
 const RPC_BROADCAST_PREVIEW = `${PREFIX}broadcast_preview`;
 const RPC_BROADCAST_RECIPIENTS_SELECT = `${PREFIX}broadcast_recipients_select`;
 const RPC_BROADCAST_CLAIM_BATCH = `${PREFIX}broadcast_claim_batch`;
@@ -1027,45 +1029,18 @@ export async function getTodayActivity(timeZone: string): Promise<{ cases: numbe
   const startUtc = new Date(startUtcMs).toISOString();
   const endUtc = new Date(startUtcMs + 24 * 60 * 60 * 1000).toISOString();
 
-  const caseIds = new Set<string>();
-  const userIds = new Set<string>();
-  const pageSize = 1000;
-
-  // 1) parallel: bot_submissions
-  for (let from = 0; ; from += pageSize) {
-    const { data, error } = await db()
-      .from(T.submissions)
-      .select('case_id, tg_id')
-      .gte('submitted_at', startUtc)
-      .lt('submitted_at', endUtc)
-      .range(from, from + pageSize - 1);
-    if (error) throw error;
-    const rows = data || [];
-    for (const r of rows) {
-      if ((r as any).case_id) caseIds.add(String((r as any).case_id));
-      if ((r as any).tg_id) userIds.add(String((r as any).tg_id));
-    }
-    if (rows.length < pageSize) break;
-  }
-
-  // 2) collab: bot_case_confirmations (create/edit/confirm — будь-яка дія = участь)
-  for (let from = 0; ; from += pageSize) {
-    const { data, error } = await db()
-      .from(T.caseConfirmations)
-      .select('case_id, tg_id')
-      .gte('at', startUtc)
-      .lt('at', endUtc)
-      .range(from, from + pageSize - 1);
-    if (error) throw error;
-    const rows = data || [];
-    for (const r of rows) {
-      if ((r as any).case_id) caseIds.add(String((r as any).case_id));
-      if ((r as any).tg_id) userIds.add(String((r as any).tg_id));
-    }
-    if (rows.length < pageSize) break;
-  }
-
-  return { cases: caseIds.size, users: userIds.size };
+  // Підрахунок робить Postgres: count(distinct case_id/actor) по
+  // parallel-сабмітах + collab-подіях за вікно дня. Раніше тут був пагінований
+  // скан тисяч рядків у JS — він не лише жер egress, а й давав нестабільну
+  // (іноді меншу) цифру, бо .range() без ORDER BY пропускав рядки під час
+  // конкурентних вставок.
+  const { data, error } = await db().rpc(RPC_TODAY_ACTIVITY, {
+    p_start: startUtc,
+    p_end: endUtc,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return { cases: Number((row as any)?.cases ?? 0), users: Number((row as any)?.users ?? 0) };
 }
 
 // Активність за останні N днів у переданій таймзоні.
@@ -1089,75 +1064,37 @@ export async function getDailyActivity(
   const startUtc = new Date(startUtcMs).toISOString();
   const endUtc = new Date(endUtcMs).toISOString();
 
-  const buckets = new Map<string, { cases: Set<string>; users: Set<string> }>();
+  // Заздалегідь створюємо запис на КОЖЕН день діапазону з нулями — щоб у
+  // відповіді були всі дати, навіть без активності (RPC повертає лише непорожні).
+  const out = new Map<string, { cases: number; users: number }>();
   for (let i = 0; i < safeDays; i++) {
     const d = new Date(startUtcMs + i * 86_400_000 + 12 * 3600_000); // полудень дня — щоб TZ-форматування не плутало
-    const key = fmtDay.format(d);
-    buckets.set(key, { cases: new Set(), users: new Set() });
+    out.set(fmtDay.format(d), { cases: 0, users: 0 });
   }
 
-  const ingest = async (
-    table: string,
-    timeCol: string,
-    extra: (r: any) => { caseId: string; tgId: string; ts: string },
-    idCol: string = 'tg_id'
-  ) => {
-    const pageSize = 1000;
-    for (let from = 0; ; from += pageSize) {
-      const { data, error } = await db()
-        .from(table)
-        .select(`case_id, ${idCol}, ${timeCol}`)
-        .gte(timeCol, startUtc)
-        .lt(timeCol, endUtc)
-        .range(from, from + pageSize - 1);
-      if (error) throw error;
-      const rows = data || [];
-      for (const r of rows) {
-        const { caseId, tgId, ts } = extra(r);
-        if (!ts) continue;
-        const day = fmtDay.format(new Date(ts));
-        const bucket = buckets.get(day);
-        if (!bucket) continue;
-        if (caseId) bucket.cases.add(caseId);
-        if (tgId) bucket.users.add(tgId);
-      }
-      if (rows.length < pageSize) break;
-    }
-  };
-
-  if (source !== 'web') {
-    await ingest(T.submissions, 'submitted_at', (r: any) => ({
-      caseId: String(r.case_id || ''),
-      tgId: String(r.tg_id || ''),
-      ts: r.submitted_at,
-    }));
-    await ingest(T.caseConfirmations, 'at', (r: any) => ({
-      caseId: String(r.case_id || ''),
-      tgId: String(r.tg_id || ''),
-      ts: r.at,
-    }));
-  }
-  if (source !== 'telegram') {
-    // Веб-перевірки: одна дія = один рядок у verif_confirmations (verifier_id, at).
-    // Захищено try/catch: якщо verif-схему ще не прогнали, існуючий графік
-    // телеграму (source='all' за замовчуванням) не має падати через відсутню таблицю.
-    try {
-      await ingest(`${PREFIX}verif_confirmations`, 'at', (r: any) => ({
-        caseId: String(r.case_id || ''),
-        tgId: String(r.verifier_id || ''),
-        ts: r.at,
-      }), 'verifier_id');
-    } catch (e: any) {
-      console.warn('getDailyActivity: verif_confirmations ingest skipped:', e?.message || e);
+  // Групування по днях і count(distinct) робить Postgres. p_source керує тим,
+  // які джерела рахувати: 'telegram' (parallel+collab), 'web' (verif), 'all' —
+  // обидва. Денний ключ рахується в БД через (ts at time zone p_tz)::date, що
+  // збігається з en-CA форматом tzDateFmt ('YYYY-MM-DD').
+  const { data, error } = await db().rpc(RPC_DAILY_ACTIVITY, {
+    p_start: startUtc,
+    p_end: endUtc,
+    p_tz: timeZone,
+    p_source: source,
+  });
+  if (error) throw error;
+  for (const r of (data as any[]) || []) {
+    const day = String((r as any).day);
+    const slot = out.get(day);
+    if (slot) {
+      slot.cases = Number((r as any).cases || 0);
+      slot.users = Number((r as any).users || 0);
     }
   }
 
-  const out: Array<{ date: string; cases: number; users: number }> = [];
-  for (const [date, b] of buckets) {
-    out.push({ date, cases: b.cases.size, users: b.users.size });
-  }
-  out.sort((a, b) => a.date.localeCompare(b.date));
-  return out;
+  return [...out.entries()]
+    .map(([date, b]) => ({ date, cases: b.cases, users: b.users }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export async function getResultsTotals(): Promise<{ totalSubmissions: number }> {
