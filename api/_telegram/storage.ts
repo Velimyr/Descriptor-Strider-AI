@@ -26,6 +26,8 @@ export const T = {
   monthlyPoints:     `${PREFIX}monthly_points`,
   broadcasts:        `${PREFIX}broadcasts`,
   broadcastRecipients: `${PREFIX}broadcast_recipients`,
+  keywordBlocks:     `${PREFIX}keyword_blocks`,
+  keywordMatches:    `${PREFIX}keyword_matches`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
@@ -45,6 +47,8 @@ const RPC_BROADCAST_CLAIM_BATCH = `${PREFIX}broadcast_claim_batch`;
 const RPC_BROADCAST_REAP = `${PREFIX}broadcast_reap`;
 const RPC_BROADCAST_INC = `${PREFIX}broadcast_inc`;
 const RPC_BROADCAST_CLICK = `${PREFIX}broadcast_click`;
+const RPC_KEYWORD_BACKFILL_SCAN = `${PREFIX}keyword_backfill_scan`;
+const RPC_KEYWORD_VARIANT_STATUS = `${PREFIX}keyword_variant_status`;
 
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
@@ -72,7 +76,15 @@ export interface BotUser {
   lastDispatchedAt: string;
   consecutiveMisses: number;
   status: 'active' | 'paused';
-  pendingAction: '' | 'rename' | 'edit_city' | 'edit_facebook' | 'edit_photo' | 'edit_contact' | 'add_gemini_key';
+  pendingAction:
+    | ''
+    | 'rename'
+    | 'edit_city'
+    | 'edit_facebook'
+    | 'edit_photo'
+    | 'edit_contact'
+    | 'add_gemini_key'
+    | 'add_keyword_block';
   createdAt: string;
   introShownAt: string; // ISO або '' якщо ще не показували
   // Час "засіву" бейджів. '' (NULL у БД) = ще не засівали: на першій перевірці
@@ -817,7 +829,26 @@ export async function incMonthlyPoints(
     p_name: displayName || '',
   });
   if (error) throw error;
-  return Number(data || 0);
+  const next = Number(data || 0);
+
+  // Ключові слова: це єдина точка, де змінюються місячні бали (звідси й з усіх
+  // джерел балів — submit/verif/puzzle/адмін-бонус/марафон). Якщо інкремент щойно
+  // перетнув новий поріг 100 — у юзера могли з'явитися нові активні блоки; треба
+  // доставити збіги з черги (catch-up), інакше вони втрачаються назавжди (справа
+  // закрилась, поки блок був неактивний). Звичайний випадок (floor не змінився) —
+  // 0 додаткових запитів. Помилка тут не має ламати нарахування балів.
+  const prevFloor = Math.floor((next - delta) / 100);
+  const nextFloor = Math.floor(next / 100);
+  if (nextFloor > prevFloor) {
+    try {
+      const { runKeywordCatchUp } = await import('./keywords.js');
+      await runKeywordCatchUp(tgId);
+    } catch (e: any) {
+      console.error('keyword catch-up failed', e?.message || e);
+    }
+  }
+
+  return next;
 }
 
 // Атомарний інкремент накопичувальних (lifetime) балів. Для дробових веб-балів (0.1×слово).
@@ -862,6 +893,148 @@ export async function getMonthlyMonths(): Promise<string[]> {
   const { data, error } = await db().rpc(RPC_MONTHLY_MONTHS);
   if (error) throw error;
   return ((data as any[]) || []).map(r => r.month);
+}
+
+// Бали одного юзера за конкретний місяць (для екрана "Ключові слова" — скільки
+// блоків активно). Один точковий лукап, не скан.
+export async function getUserMonthlyPoints(month: string, tgId: string): Promise<number> {
+  const { data, error } = await db()
+    .from(T.monthlyPoints)
+    .select('points')
+    .eq('month', month)
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  return Number((data as any)?.points || 0);
+}
+
+// ---------- KEYWORD BLOCKS (фіча "Ключові слова") ----------
+export interface KeywordBlock {
+  id: number;
+  tgId: string;
+  variants: string[];
+  createdAt: string;
+}
+
+function mapKeywordBlock(r: any): KeywordBlock {
+  return {
+    id: Number(r.id),
+    tgId: r.tg_id,
+    variants: Array.isArray(r.variants) ? r.variants : [],
+    createdAt: r.created_at,
+  };
+}
+
+// Усі блоки юзера, найстаріші першими (порядок визначає, які активні — перші
+// floor(points/100) за created_at).
+export async function listKeywordBlocks(tgId: string): Promise<KeywordBlock[]> {
+  const { data, error } = await db()
+    .from(T.keywordBlocks)
+    .select('id, tg_id, variants, created_at')
+    .eq('tg_id', tgId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map(mapKeywordBlock);
+}
+
+export async function addKeywordBlock(tgId: string, variants: string[]): Promise<KeywordBlock> {
+  const { data, error } = await db()
+    .from(T.keywordBlocks)
+    .insert({ tg_id: tgId, variants })
+    .select('id, tg_id, variants, created_at')
+    .single();
+  if (error) throw error;
+  return mapKeywordBlock(data);
+}
+
+export async function deleteKeywordBlock(id: number, tgId: string): Promise<void> {
+  const { error } = await db().from(T.keywordBlocks).delete().eq('id', id).eq('tg_id', tgId);
+  if (error) throw error;
+}
+
+// Ретроскан бази при доданні нового блоку — лише case_id+джерело, вже готовим
+// SQL-індексом (search_text gin_trgm). Ніякого select * по кейсах.
+export async function keywordBackfillScan(
+  variants: string[],
+  limit = 300
+): Promise<Array<{ caseId: string; source: 'collab' | 'verif' }>> {
+  const { data, error } = await db().rpc(RPC_KEYWORD_BACKFILL_SCAN, {
+    p_variants: variants,
+    p_limit: limit,
+  });
+  if (error) throw error;
+  return ((data as any[]) || []).map(r => ({ caseId: r.case_id, source: r.source }));
+}
+
+// Усі варіанти всіх юзерів + прапорець "активний зараз" — читається на TTL у
+// keywords.ts, не на кожну подію закриття справи.
+export async function keywordVariantStatus(
+  month: string
+): Promise<Array<{ tgId: string; variant: string; active: boolean }>> {
+  const { data, error } = await db().rpc(RPC_KEYWORD_VARIANT_STATUS, { p_month: month });
+  if (error) throw error;
+  return ((data as any[]) || []).map(r => ({
+    tgId: r.tg_id,
+    variant: r.variant,
+    active: !!r.active,
+  }));
+}
+
+// Пише знайдений збіг. Повертає true, якщо рядок справді вставлено (тобто це не
+// повторний збіг — далі варто слати сповіщення/чекати catch-up). PK (case_id, tg_id)
+// → конфлікт означає "вже було", не помилка (той самий прийом, що й tryClaimAnnouncement).
+export async function insertKeywordMatch(
+  caseId: string,
+  tgId: string,
+  source: 'collab' | 'verif',
+  delivered: boolean
+): Promise<boolean> {
+  const { error } = await db()
+    .from(T.keywordMatches)
+    .insert({
+      case_id: caseId,
+      tg_id: tgId,
+      source,
+      delivered,
+      ...(delivered ? { delivered_at: new Date().toISOString() } : {}),
+    });
+  if (!error) return true;
+  if ((error as any).code === '23505') return false;
+  throw error;
+}
+
+export interface PendingKeywordMatch {
+  caseId: string;
+  source: 'collab' | 'verif';
+}
+
+// Незадоставлені збіги юзера (чекають на catch-up). Індекс (tg_id) where delivered=false
+// — точковий лукап, не скан таблиці.
+export async function listPendingKeywordMatches(tgId: string): Promise<PendingKeywordMatch[]> {
+  const { data, error } = await db()
+    .from(T.keywordMatches)
+    .select('case_id, source')
+    .eq('tg_id', tgId)
+    .eq('delivered', false);
+  if (error) throw error;
+  return (data || []).map(r => ({ caseId: (r as any).case_id, source: (r as any).source }));
+}
+
+export async function markKeywordMatchDelivered(caseId: string, tgId: string): Promise<void> {
+  const { error } = await db()
+    .from(T.keywordMatches)
+    .update({ delivered: true, delivered_at: new Date().toISOString() })
+    .eq('case_id', caseId)
+    .eq('tg_id', tgId);
+  if (error) throw error;
+}
+
+// Пишеться ОДИН РАЗ у момент закриття collab-справи (write-час) — джерело для
+// пошуку слів (фіча "Ключові слова"). Для bot_verif_cases аналогічна функція
+// живе в verifCases.ts (там своя таблиця/префікс).
+export async function setCaseSearchText(caseId: string, searchText: string): Promise<void> {
+  const { error } = await db().from(T.cases).update({ search_text: searchText }).eq('case_id', caseId);
+  if (error) throw error;
 }
 
 // ---------- SUBMISSIONS (Results) ----------

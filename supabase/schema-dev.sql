@@ -778,3 +778,63 @@ begin
 end;
 $$;
 revoke all on function botdev_broadcast_click(bigint, text, text) from public, anon, authenticated;
+
+-- ============================================================================
+-- Ключові слова (дзеркало bot_*, дет. коментарі — у schema.sql).
+-- ============================================================================
+
+create table if not exists botdev_keyword_blocks (
+  id         bigserial primary key,
+  tg_id      text        not null references botdev_users(tg_id) on delete cascade,
+  variants   jsonb       not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_dev_keyword_blocks_user on botdev_keyword_blocks(tg_id, created_at);
+alter table botdev_keyword_blocks enable row level security;
+
+create table if not exists botdev_keyword_matches (
+  case_id      text        not null,
+  tg_id        text        not null,
+  source       text        not null check (source in ('collab','verif')),
+  delivered    boolean     not null default false,
+  matched_at   timestamptz not null default now(),
+  delivered_at timestamptz,
+  primary key (case_id, tg_id)
+);
+create index if not exists idx_dev_keyword_matches_pending on botdev_keyword_matches(tg_id) where delivered = false;
+alter table botdev_keyword_matches enable row level security;
+
+alter table botdev_cases       add column if not exists search_text text not null default '';
+alter table botdev_verif_cases add column if not exists search_text text not null default '';
+create extension if not exists pg_trgm;
+create index if not exists idx_dev_cases_search_trgm       on botdev_cases       using gin (search_text gin_trgm_ops);
+create index if not exists idx_dev_verif_cases_search_trgm on botdev_verif_cases using gin (search_text gin_trgm_ops);
+
+create or replace function botdev_keyword_backfill_scan(p_variants text[], p_limit int default 300)
+returns table(case_id text, source text)
+language sql security definer as $$
+  select case_id, 'collab' from botdev_cases
+   where status = 'done' and search_text <> '' and exists (
+     select 1 from unnest(p_variants) v where search_text ilike '%' || v || '%')
+   union all
+  select case_id, 'verif' from botdev_verif_cases
+   where status = 'done' and search_text <> '' and exists (
+     select 1 from unnest(p_variants) v where search_text ilike '%' || v || '%')
+  limit greatest(p_limit, 0);
+$$;
+revoke all on function botdev_keyword_backfill_scan(text[], int) from public, anon, authenticated;
+
+create or replace function botdev_keyword_variant_status(p_month text)
+returns table(tg_id text, variant text, active boolean)
+language sql security definer as $$
+  select b.tg_id, v.value,
+         (b.rn <= floor(coalesce(mp.points, 0) / 100)) as active
+  from (
+    select id, tg_id, variants, created_at,
+           row_number() over (partition by tg_id order by created_at) as rn
+    from botdev_keyword_blocks
+  ) b
+  left join botdev_monthly_points mp on mp.month = p_month and mp.tg_id = b.tg_id
+  cross join lateral jsonb_array_elements_text(b.variants) as v(value);
+$$;
+revoke all on function botdev_keyword_variant_status(text) from public, anon, authenticated;

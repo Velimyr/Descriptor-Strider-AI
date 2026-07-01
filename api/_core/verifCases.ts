@@ -158,6 +158,14 @@ export async function getVerifCase(caseId: string): Promise<VerifCaseRow | null>
   return data ? mapCaseRow(data) : null;
 }
 
+// Пишеться ОДИН РАЗ у момент закриття справи — джерело для пошуку слів
+// (фіча "Ключові слова"). Аналог setCaseSearchText у storage.ts, тільки для
+// bot_verif_cases (окрема таблиця/префікс, не варто змішувати з storage.ts).
+export async function setVerifCaseSearchText(caseId: string, searchText: string): Promise<void> {
+  const { error } = await db().from(T.cases).update({ search_text: searchText }).eq('case_id', caseId);
+  if (error) throw error;
+}
+
 // ---------- word-diff для балів ----------
 // Нормалізація: lower-case, пунктуація → пробіл, стиснення пробілів. Тобто зміни
 // лише в пунктуації/пробілах НЕ рахуються як виправлене слово.
@@ -280,6 +288,19 @@ export async function submitVerification(opts: {
   const row = Array.isArray(data) ? data[0] : data;
   const count = Number(row?.new_count ?? 0);
   const done = String(row?.new_status ?? 'open') === 'done';
+
+  // Ключові слова: справа щойно пройшла верифікацію (є канонічний фінальний текст) —
+  // незалежно від балів нижче. Помилка тут не має ламати підтвердження.
+  if (done) {
+    try {
+      const adminQuestions = await getAdminQuestions();
+      const questions = adminQuestions.length ? adminQuestions : cse.questions;
+      const { evaluateKeywordMatches } = await import('../_telegram/keywords.js');
+      await evaluateKeywordMatches({ caseId: opts.caseId, source: 'verif', questions, answers: submitted });
+    } catch (e: any) {
+      console.error('keyword match (verif close) failed', e?.message || e);
+    }
+  }
 
   const basePts = Math.round((POINTS_BASE + POINTS_PER_WORD * corrected) * 100) / 100;
   // Веб-перевірка — це дія 'verification'. У дні марафону множимо на коефіцієнт.

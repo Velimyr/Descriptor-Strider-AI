@@ -894,3 +894,90 @@ begin
 end;
 $$;
 revoke all on function bot_broadcast_click(bigint, text, text) from public, anon, authenticated;
+
+-- ============================================================================
+-- Ключові слова: користувач стежить за словами, отримує сповіщення, коли будь-яка
+-- ПІДТВЕРДЖЕНА справа (collab bot_cases або bot_verif_cases) містить його слово —
+-- навіть якщо сам не розпізнавав/не підтверджував.
+--
+-- Egress-принципи (щоб не повторити candidate_cases_v2/leaderboard):
+-- 1. search_text пишеться ОДИН РАЗ у момент закриття справи (write-час), під ним —
+--    trigram-індекс. Ретроскан і матчинг ніколи не тягнуть questions+answers у JS.
+-- 2. Матчинг у реальному часі звіряє текст, що вже й так у процесі, проти
+--    TTL-кешованого (в keywords.ts) списку варіантів — жодного нового запиту на подію.
+-- 3. Активність блоку (100 балів/блок цього місяця) НЕ зберігається окремим прапорцем —
+--    рахується на льоту (floor(points/100) перших блоків за created_at), інакше довелось
+--    би тримати фонову задачу синхронізації прапорця при зміні балів.
+-- ============================================================================
+
+-- Блоки слів користувача. variants — jsonb-масив рядків (1..5), попарна відстань
+-- Левенштейна між ними перевіряється в коді (не в БД) при доданні.
+create table if not exists bot_keyword_blocks (
+  id         bigserial primary key,
+  tg_id      text        not null references bot_users(tg_id) on delete cascade,
+  variants   jsonb       not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_keyword_blocks_user on bot_keyword_blocks(tg_id, created_at);
+alter table bot_keyword_blocks enable row level security;
+
+-- Черга збігів. delivered=false = знайдено, але блок був НЕактивний (бракувало балів)
+-- у момент закриття справи — чекає на catch-up, коли юзер перетне поріг 100 знову.
+-- PK (case_id, tg_id): одна справа = одне сповіщення юзеру, назавжди, скільки б
+-- блоків не збіглося.
+create table if not exists bot_keyword_matches (
+  case_id      text        not null,
+  tg_id        text        not null,
+  source       text        not null check (source in ('collab','verif')),
+  delivered    boolean     not null default false,
+  matched_at   timestamptz not null default now(),
+  delivered_at timestamptz,
+  primary key (case_id, tg_id)
+);
+-- Часткові індекси: пошук "чекає на catch-up для цього юзера" не сканує всю таблицю.
+create index if not exists idx_keyword_matches_pending on bot_keyword_matches(tg_id) where delivered = false;
+alter table bot_keyword_matches enable row level security;
+
+-- Нормалізований (lowercase) текст полів role in ('title','notes') — джерело для
+-- пошуку слів. Пишеться при закритті справи, читається лише через індекс нижче.
+alter table bot_cases       add column if not exists search_text text not null default '';
+alter table bot_verif_cases add column if not exists search_text text not null default '';
+create extension if not exists pg_trgm;
+create index if not exists idx_cases_search_trgm       on bot_cases       using gin (search_text gin_trgm_ops);
+create index if not exists idx_verif_cases_search_trgm on bot_verif_cases using gin (search_text gin_trgm_ops);
+
+-- Ретроскан при доданні нового блоку: тільки закриті справи, тільки case_id+джерело,
+-- LIMIT. Викликається рідко (додавання блоку обмежене балами), і навіть тоді не тягне
+-- нічого важкого в JS.
+create or replace function bot_keyword_backfill_scan(p_variants text[], p_limit int default 300)
+returns table(case_id text, source text)
+language sql security definer as $$
+  select case_id, 'collab' from bot_cases
+   where status = 'done' and search_text <> '' and exists (
+     select 1 from unnest(p_variants) v where search_text ilike '%' || v || '%')
+   union all
+  select case_id, 'verif' from bot_verif_cases
+   where status = 'done' and search_text <> '' and exists (
+     select 1 from unnest(p_variants) v where search_text ilike '%' || v || '%')
+  limit greatest(p_limit, 0);
+$$;
+revoke all on function bot_keyword_backfill_scan(text[], int) from public, anon, authenticated;
+
+-- Усі варіанти слів усіх юзерів + прапорець "активний" (для конкретного місяця).
+-- Читається РАЗ на TTL у keywords.ts (кеш у пам'яті процесу), не на кожне закриття
+-- справи. active рахується тут же (floor(points/100) перших блоків за created_at) —
+-- один спільний запит для матчингу і для catch-up (той самий кеш фільтрується по tg_id).
+create or replace function bot_keyword_variant_status(p_month text)
+returns table(tg_id text, variant text, active boolean)
+language sql security definer as $$
+  select b.tg_id, v.value,
+         (b.rn <= floor(coalesce(mp.points, 0) / 100)) as active
+  from (
+    select id, tg_id, variants, created_at,
+           row_number() over (partition by tg_id order by created_at) as rn
+    from bot_keyword_blocks
+  ) b
+  left join bot_monthly_points mp on mp.month = p_month and mp.tg_id = b.tg_id
+  cross join lateral jsonb_array_elements_text(b.variants) as v(value);
+$$;
+revoke all on function bot_keyword_variant_status(text) from public, anon, authenticated;
