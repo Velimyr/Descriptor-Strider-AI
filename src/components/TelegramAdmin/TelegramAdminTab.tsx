@@ -2315,8 +2315,10 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        canvas.width = Math.round(box.w * img.width);
-        canvas.height = Math.round(box.h * img.height);
+        // Math.max(1, ...) — дуже тонкий/куций box інакше округлюється до 0px і
+        // Telegram відкидає таке фото з PHOTO_INVALID_DIMENSIONS.
+        canvas.width = Math.max(1, Math.round(box.w * img.width));
+        canvas.height = Math.max(1, Math.round(box.h * img.height));
         const ctx = canvas.getContext('2d')!;
         if (box.rotation) {
           // Розкручуємо джерело так, щоб повернутий прямокутник став вісь-вирівняним
@@ -2347,9 +2349,45 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     });
   };
 
-  // Склеює кілька JPEG-зображень вертикально в одне (нормалізує ширину).
+  // Ліміти Telegram sendPhoto (недокументовані офіційно, але стабільно відтворювані):
+  // сторони не більше ніж 20:1, сума width+height не більше 10000 — інакше
+  // "Bad Request: PHOTO_INVALID_DIMENSIONS". Групи з багатьма дрібними/тонкими
+  // фрагментами після вертикального склеювання це порушують.
+  const MAX_PHOTO_RATIO = 20;
+  const MAX_PHOTO_SUM = 10000;
+
+  // Домальовує білі поля, щоб співвідношення сторін влізло в ліміт Telegram.
+  const padToSafeRatio = (canvas: HTMLCanvasElement): HTMLCanvasElement => {
+    let w = canvas.width;
+    let h = canvas.height;
+    if (h / w > MAX_PHOTO_RATIO) w = Math.ceil(h / MAX_PHOTO_RATIO);
+    else if (w / h > MAX_PHOTO_RATIO) h = Math.ceil(w / MAX_PHOTO_RATIO);
+    if (w === canvas.width && h === canvas.height) return canvas;
+    const padded = document.createElement('canvas');
+    padded.width = w;
+    padded.height = h;
+    const ctx = padded.getContext('2d')!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(canvas, Math.round((w - canvas.width) / 2), Math.round((h - canvas.height) / 2));
+    return padded;
+  };
+
+  // Якщо навіть після паддінгу сума сторін завелика — пропорційно зменшуємо.
+  const clampToSumLimit = (canvas: HTMLCanvasElement): HTMLCanvasElement => {
+    const sum = canvas.width + canvas.height;
+    if (sum <= MAX_PHOTO_SUM) return canvas;
+    const scale = MAX_PHOTO_SUM / sum;
+    const scaled = document.createElement('canvas');
+    scaled.width = Math.max(1, Math.round(canvas.width * scale));
+    scaled.height = Math.max(1, Math.round(canvas.height * scale));
+    scaled.getContext('2d')!.drawImage(canvas, 0, 0, scaled.width, scaled.height);
+    return scaled;
+  };
+
+  // Склеює кілька JPEG-зображень вертикально в одне (нормалізує ширину) і
+  // гарантує безпечні для sendPhoto пропорції/розміри.
   const stackImagesVertically = async (dataUrls: string[]): Promise<string> => {
-    if (dataUrls.length === 1) return dataUrls[0].split(',')[1];
     const imgs = await Promise.all(
       dataUrls.map(
         src =>
@@ -2360,9 +2398,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           })
       )
     );
-    const targetWidth = Math.max(...imgs.map(im => im.width));
+    const targetWidth = Math.max(1, ...imgs.map(im => im.width));
     const totalHeight = imgs.reduce(
-      (s, im) => s + Math.round(im.height * (targetWidth / im.width)),
+      (s, im) => s + Math.max(1, Math.round(im.height * (targetWidth / im.width))),
       0
     );
     const canvas = document.createElement('canvas');
@@ -2371,11 +2409,12 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     const ctx = canvas.getContext('2d')!;
     let y = 0;
     for (const im of imgs) {
-      const h = Math.round(im.height * (targetWidth / im.width));
+      const h = Math.max(1, Math.round(im.height * (targetWidth / im.width)));
       ctx.drawImage(im, 0, y, targetWidth, h);
       y += h;
     }
-    return canvas.toDataURL('image/jpeg', 0.88).split(',')[1];
+    const safe = clampToSumLimit(padToSafeRatio(canvas));
+    return safe.toDataURL('image/jpeg', 0.88).split(',')[1];
   };
 
   const uploadAll = async () => {
