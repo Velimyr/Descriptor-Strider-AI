@@ -78,6 +78,11 @@ alter table botdev_cases add column if not exists locked_by_tg_id      text     
 alter table botdev_cases add column if not exists locked_until         timestamptz;
 -- updated_at: фіксується при collab-подіях (create/edit/confirm), щоб коректно сортувати експорт.
 alter table botdev_cases add column if not exists updated_at           timestamptz not null default now();
+
+-- Per-опис оверрайди (NULL = глобальний дефолт) — дзеркало bot_cases у schema.sql.
+alter table botdev_cases add column if not exists target_submissions  integer;
+alter table botdev_cases add column if not exists points_recognition  numeric;
+alter table botdev_cases add column if not exists points_verification numeric;
 alter table botdev_cases drop constraint if exists botdev_cases_mode_check;
 alter table botdev_cases
   add  constraint botdev_cases_mode_check
@@ -319,12 +324,12 @@ returns table (
     count(*) as total_cases,
     count(*) filter (
       where c.status = 'done'
-         or (c.mode = 'collaborative' and c.confirmations_count >= p_target)
-         or (c.mode <> 'collaborative' and c.submissions_count >= p_target)
+         or (c.mode = 'collaborative' and c.confirmations_count >= coalesce(c.target_submissions, p_target))
+         or (c.mode <> 'collaborative' and c.submissions_count >= coalesce(c.target_submissions, p_target))
     ) as done_cases,
     sum(least(
       case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end,
-      p_target
+      coalesce(c.target_submissions, p_target)
     )) as capped_sum
   from botdev_cases c
   group by c.archive, c.fund, c.opys;
@@ -341,8 +346,8 @@ language sql security definer as $$
       count(*) as total_cases,
       count(*) filter (
         where status = 'done'
-           or (mode = 'collaborative' and confirmations_count >= p_target)
-           or (mode <> 'collaborative' and submissions_count >= p_target)
+           or (mode = 'collaborative' and confirmations_count >= coalesce(target_submissions, p_target))
+           or (mode <> 'collaborative' and submissions_count >= coalesce(target_submissions, p_target))
       ) as done_cases,
       max(updated_at) as last_updated
     from botdev_cases
@@ -398,7 +403,8 @@ returns table (
   with cand as (
     select c.case_id, c.archive, c.fund, c.opys, c.mode,
            c.confirmations_count, c.submissions_count, c.created_at, c.current_answers,
-           case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end as progress
+           case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end as progress,
+           coalesce(c.target_submissions, p_target) as target
     from botdev_cases c
     where c.status = 'open'
       and not exists (select 1 from botdev_submissions s where s.case_id = c.case_id and s.tg_id = p_tg_id)
@@ -425,7 +431,7 @@ returns table (
     where exists (
       select 1 from cand c
       where c.archive = a.archive and c.fund = a.fund and c.opys = a.opys
-        and c.progress < p_target
+        and c.progress < c.target
     )
     order by a.age, a.archive, a.fund, a.opys
     limit 1
@@ -471,6 +477,10 @@ create table if not exists botdev_verif_cases (
 create index if not exists idx_dev_verif_cases_status on botdev_verif_cases(status);
 create index if not exists idx_dev_verif_cases_lock   on botdev_verif_cases(locked_until);
 create index if not exists idx_dev_verif_cases_desc   on botdev_verif_cases(archive, fund, opys);
+
+-- Per-опис оверрайди (NULL = глобальний дефолт) — дзеркало bot_verif_cases у schema.sql.
+alter table botdev_verif_cases add column if not exists verif_threshold integer;
+alter table botdev_verif_cases add column if not exists points_base numeric;
 
 create table if not exists botdev_verif_confirmations (
   case_id         text        not null,
@@ -832,3 +842,63 @@ language sql security definer as $$
   group by 1;
 $$;
 revoke all on function botdev_daily_activity(timestamptz, timestamptz, text, text) from public, anon, authenticated;
+
+-- ============================================================================
+-- Ключові слова (дзеркало bot_*, дет. коментарі — у schema.sql).
+-- ============================================================================
+
+create table if not exists botdev_keyword_blocks (
+  id         bigserial primary key,
+  tg_id      text        not null references botdev_users(tg_id) on delete cascade,
+  variants   jsonb       not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_dev_keyword_blocks_user on botdev_keyword_blocks(tg_id, created_at);
+alter table botdev_keyword_blocks enable row level security;
+
+create table if not exists botdev_keyword_matches (
+  case_id      text        not null,
+  tg_id        text        not null,
+  source       text        not null check (source in ('collab','verif')),
+  delivered    boolean     not null default false,
+  matched_at   timestamptz not null default now(),
+  delivered_at timestamptz,
+  primary key (case_id, tg_id)
+);
+create index if not exists idx_dev_keyword_matches_pending on botdev_keyword_matches(tg_id) where delivered = false;
+alter table botdev_keyword_matches enable row level security;
+
+alter table botdev_cases       add column if not exists search_text text not null default '';
+alter table botdev_verif_cases add column if not exists search_text text not null default '';
+create extension if not exists pg_trgm;
+create index if not exists idx_dev_cases_search_trgm       on botdev_cases       using gin (search_text gin_trgm_ops);
+create index if not exists idx_dev_verif_cases_search_trgm on botdev_verif_cases using gin (search_text gin_trgm_ops);
+
+create or replace function botdev_keyword_backfill_scan(p_variants text[], p_limit int default 300)
+returns table(case_id text, source text)
+language sql security definer as $$
+  select case_id, 'collab' from botdev_cases
+   where status = 'done' and search_text <> '' and exists (
+     select 1 from unnest(p_variants) v where search_text ilike '%' || v || '%')
+   union all
+  select case_id, 'verif' from botdev_verif_cases
+   where status = 'done' and search_text <> '' and exists (
+     select 1 from unnest(p_variants) v where search_text ilike '%' || v || '%')
+  limit greatest(p_limit, 0);
+$$;
+revoke all on function botdev_keyword_backfill_scan(text[], int) from public, anon, authenticated;
+
+create or replace function botdev_keyword_variant_status(p_month text)
+returns table(tg_id text, variant text, active boolean)
+language sql security definer as $$
+  select b.tg_id, v.value,
+         (b.rn <= floor(coalesce(mp.points, 0) / 100)) as active
+  from (
+    select id, tg_id, variants, created_at,
+           row_number() over (partition by tg_id order by created_at) as rn
+    from botdev_keyword_blocks
+  ) b
+  left join botdev_monthly_points mp on mp.month = p_month and mp.tg_id = b.tg_id
+  cross join lateral jsonb_array_elements_text(b.variants) as v(value);
+$$;
+revoke all on function botdev_keyword_variant_status(text) from public, anon, authenticated;

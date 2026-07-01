@@ -92,12 +92,21 @@ import {
   sendPuzzleRules,
   sendPuzzleResults,
 } from './puzzle.js';
+import {
+  listKeywordBlocksWithStatus,
+  createKeywordBlock,
+  removeKeywordBlock,
+  parseVariantsInput,
+  MAX_VARIANTS,
+  KeywordBlockWithStatus,
+  KeywordValidationError,
+} from './keywords.js';
 
 const T = telegramBotConfig.texts;
 
 // --------- helpers ---------
 
-function fmt(template: string, values: Record<string, string | number>): string {
+export function fmt(template: string, values: Record<string, string | number>): string {
   return template.replace(/\{(\w+)\}/g, (_, k) => String(values[k] ?? `{${k}}`));
 }
 
@@ -172,7 +181,7 @@ function validateAnswer(role: ColumnRole | undefined, text: string): string | nu
   return null;
 }
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s.replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] || ch));
 }
 
@@ -232,6 +241,7 @@ function settingsMenuKeyboard(): any {
       [{ text: T.profileKeysButton, callback_data: 'settings:keys' }],
       [{ text: T.aiModelButton, callback_data: 'settings:aimodel' }],
       [{ text: T.caseFilterButton, callback_data: 'settings:casefilter' }],
+      [{ text: T.keywordsButton, callback_data: 'settings:keywords' }],
     ],
   };
 }
@@ -319,6 +329,66 @@ async function sendGeminiKeysScreen(chatId: number | string, tgId: string) {
   await sendMessage(chatId, `${T.profileKeysTitle}\n\n${list}`, {
     reply_markup: geminiKeysKeyboard(keys),
   });
+}
+
+// Екран "Ключові слова": список блоків (варіанти + 🟢/⚪ активний) + додати/видалити.
+function keywordsKeyboard(blocks: KeywordBlockWithStatus[]): any {
+  const rows: any[] = [];
+  blocks.forEach((b, i) => {
+    rows.push([{ text: fmt(T.keywordsDeleteButton, { n: i + 1 }), callback_data: `keywords:del:${b.id}` }]);
+  });
+  rows.push([{ text: T.keywordsAddButton, callback_data: 'keywords:add' }]);
+  rows.push([{ text: T.profileBackButton, callback_data: 'settings:back' }]);
+  return { inline_keyboard: rows };
+}
+
+async function sendKeywordsScreen(chatId: number | string, tgId: string): Promise<void> {
+  const blocks = await listKeywordBlocksWithStatus(tgId);
+  const list = blocks.length
+    ? blocks
+        .map((b, i) =>
+          fmt(T.keywordsBlockLine, {
+            n: i + 1,
+            variants: b.variants.join(', '),
+            status: b.active ? T.keywordsActiveMark : T.keywordsInactiveMark,
+          })
+        )
+        .join('\n')
+    : T.keywordsEmpty;
+  await sendMessage(chatId, `${T.keywordsTitle}\n\n${list}`, {
+    reply_markup: keywordsKeyboard(blocks),
+  });
+}
+
+// Обробка введених варіантів слова: парсинг → валідація → створення блоку →
+// ретроскан (усередині createKeywordBlock) → результат користувачу.
+async function processKeywordBlockInput(chatId: number | string, tgId: string, rawText: string): Promise<void> {
+  const variants = parseVariantsInput(rawText);
+  await patchUser(tgId, { pendingAction: '' });
+
+  try {
+    const { active, matchedCount, deliveredCount } = await createKeywordBlock(tgId, variants);
+    await sendMessage(
+      chatId,
+      active
+        ? fmt(T.keywordsAddedActive, { matched: matchedCount, delivered: deliveredCount })
+        : T.keywordsAddedInactive
+    );
+  } catch (e) {
+    if (!(e instanceof KeywordValidationError)) throw e;
+    if (e.code === 'empty') {
+      await sendMessage(chatId, T.keywordsErrorEmpty);
+    } else if (e.code === 'too_many') {
+      await sendMessage(chatId, fmt(T.keywordsErrorTooMany, { max: MAX_VARIANTS }));
+    } else {
+      await sendMessage(chatId, fmt(T.keywordsErrorTooDifferent, {
+        a: e.details.a || '',
+        b: e.details.b || '',
+        dist: e.details.dist || 0,
+      }));
+    }
+  }
+  await sendKeywordsScreen(chatId, tgId);
 }
 
 // Обробка введеного ключа: валідація → збереження → видалення повідомлення з ключем.
@@ -505,10 +575,19 @@ async function maybeShowIntro(chatId: number | string, user: BotUser): Promise<v
   }
 }
 
+// Мінімальна форма справи, потрібна для посилання на опис/фото — той самий
+// набір полів є і в BotCase (collab), і в VerifCaseRow (веб-перевірка), тож
+// сповіщення "Ключові слова" (keywords.ts) можуть переюзати ці функції для обох.
+export interface CasePhotoInfo {
+  tgFileId: string;
+  sourcePdf: string;
+  page: string;
+}
+
 // Повне посилання на PDF архівного опису: база (config.verif.opysBaseUrl) + назва файлу
 // + #page=N (скрол до сторінки у вбудованих PDF-переглядачах). Назва файлу — завжди
 // source_pdf справи. '' якщо source_pdf порожній (тоді кнопку не показуємо).
-function buildOpysUrl(cse: BotCase): string {
+export function buildOpysUrl(cse: CasePhotoInfo): string {
   const fileName = String(cse.sourcePdf || '').trim();
   if (!fileName) return '';
   const base = telegramBotConfig.verif.opysBaseUrl || 'https://cdiak.archives.gov.ua/files/';
@@ -520,9 +599,9 @@ function buildOpysUrl(cse: BotCase): string {
 // Надсилає дисклеймер + кнопки («Переглянути опис» і, у flow створення, «AI розпізнавання»)
 // ПЕРЕД фото, а потім саме фото. Якщо опису немає — AI-кнопку чіпляємо до фото,
 // а без жодних кнопок шлемо просто фото.
-async function sendCasePhotoWithOpys(
+export async function sendCasePhotoWithOpys(
   chatId: number | string,
-  cse: BotCase,
+  cse: CasePhotoInfo,
   // Якщо передано — додаємо кнопку «AI розпізнавання» (лише у flow створення).
   aiCaseId?: string
 ): Promise<void> {
@@ -557,9 +636,14 @@ async function resendCasePhoto(chatId: number | string, caseId: string): Promise
   }
 }
 
-function buildSummary(questions: TableColumn[], answers: string[]): string {
-  const lines = questions.map((q, i) => `<b>${escapeHtml(q.label)}</b>: ${escapeHtml(answers[i] ?? '—')}`);
-  return `${T.confirmHeader}\n\n${lines.join('\n')}`;
+// Лише рядки полів, без заголовка "Перевірте відповіді:" — для переюзання там,
+// де заголовок уже інший (напр. сповіщення "Ключові слова" в keywords.ts).
+export function buildFieldsList(questions: { label: string }[], answers: string[]): string {
+  return questions.map((q, i) => `<b>${escapeHtml(q.label)}</b>: ${escapeHtml(answers[i] ?? '—')}`).join('\n');
+}
+
+export function buildSummary(questions: { label: string }[], answers: string[]): string {
+  return `${T.confirmHeader}\n\n${buildFieldsList(questions, answers)}`;
 }
 
 // --------- Collaborative mode helpers ---------
@@ -577,7 +661,10 @@ function keyboardForCollabPreview(): any {
   };
 }
 
-async function getMinConfirmations(): Promise<number> {
+async function getMinConfirmations(caseOverride?: number | null): Promise<number> {
+  // Per-опис оверрайд (виставляється в адмінці для конкретної справи) має пріоритет
+  // над глобальним bot_meta-перемикачем.
+  if (typeof caseOverride === 'number' && caseOverride > 0) return caseOverride;
   const raw = await getMeta('min_confirmations');
   const n = parseInt(raw || '', 10);
   // Fallback — config (а не хардкод), щоб поріг закриття бота збігався з порогом
@@ -984,6 +1071,16 @@ async function handleMessage(msg: any) {
     user.pendingAction = '';
   }
 
+  // Ключові слова: користувач надсилає варіанти нового блоку одним повідомленням.
+  if (user.pendingAction === 'add_keyword_block') {
+    if (!text.startsWith('/')) {
+      await processKeywordBlockInput(chatId, tgId, rawText);
+      return;
+    }
+    await patchUser(tgId, { pendingAction: '' });
+    user.pendingAction = '';
+  }
+
   // Профіль: текстові поля (місто/Facebook). Скидаємо режим якщо юзер тицьнув кнопку меню.
   if (user.pendingAction === 'edit_city' || user.pendingAction === 'edit_facebook') {
     if (!text.startsWith('/')) {
@@ -1175,6 +1272,11 @@ async function handleCallback(cb: any) {
       await sendGeminiKeysScreen(chatId, tgId);
       return;
     }
+    // --- Ключові слова ---
+    if (action === 'keywords') {
+      await sendKeywordsScreen(chatId, tgId);
+      return;
+    }
     // --- Фільтр «Які справи надсилати» ---
     if (action === 'casefilter') {
       await sendMessage(chatId, fmt(T.caseFilterTitle, { current: caseFilterLabel(user.caseFilter) }), {
@@ -1211,6 +1313,33 @@ async function handleCallback(cb: any) {
     }
     if (action === 'back') {
       await cmdSettings(chatId, user);
+      return;
+    }
+    return;
+  }
+
+  // ---- Ключові слова: callback-кнопки додати/видалити ----
+  if (data.startsWith('keywords:')) {
+    await answerCallbackQuery(cb.id);
+    const action = data.slice('keywords:'.length);
+    const user = await getUser(tgId);
+    if (!user) {
+      await sendMessage(chatId, 'Надішліть /start');
+      return;
+    }
+    if (action === 'add') {
+      await Promise.all([
+        patchUser(tgId, { pendingAction: 'add_keyword_block' }),
+        sendMessage(chatId, fmt(T.keywordsAddPrompt, { max: MAX_VARIANTS }), {
+          reply_markup: profileEditCancelKeyboard(),
+        }),
+      ]);
+      return;
+    }
+    if (action.startsWith('del:')) {
+      const id = Number(action.slice('del:'.length));
+      if (Number.isInteger(id)) await removeKeywordBlock(id, tgId);
+      await sendKeywordsScreen(chatId, tgId);
       return;
     }
     return;
@@ -2381,11 +2510,12 @@ async function confirmAndSubmit(
   });
   const [, newCaseCount, todayCount, todayDone] = await Promise.all([
     deleteSession(tgId),
-    recomputeCaseSubmissionCount(cse.caseId),
+    recomputeCaseSubmissionCount(cse.caseId, cse.targetSubmissions),
     incDailyCount(tgId, today),
     getTodayProcessedCases(),
   ]);
-  if (newCaseCount >= telegramBotConfig.cases.targetSubmissions) {
+  const target = cse.targetSubmissions ?? telegramBotConfig.cases.targetSubmissions;
+  if (newCaseCount >= target) {
     try {
       const { maybeAnnounceDescriptionDone } = await import('./groupAnnounce.js');
       await maybeAnnounceDescriptionDone(cse.archive, cse.fund, cse.opys);
@@ -2394,8 +2524,8 @@ async function confirmAndSubmit(
     }
   }
 
-  const pts = computePointsForToday(todayCount);
-  const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1) : { multiplier: 1 };
+  const pts = computePointsForToday(todayCount, cse.pointsRecognition ?? undefined);
+  const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1, cse.pointsRecognition ?? undefined) : { multiplier: 1 };
   // Марафон: розпізнавання (parallel-сабміт). Коефіцієнт — поверх денного множника.
   const bonus = applyMarathonBonus(pts.pointsEarned, 'recognition');
   const earned = bonus.points;
@@ -2494,7 +2624,8 @@ async function collabSubmit(
   }
 
   // Розпізнавання (create) — 3 бали база; редагування — 1 (це перевірка з правкою).
-  const actionBase = alreadyEdit ? 1 : 3;
+  // Обидва можуть бути перевизначені per-опис (cse.pointsRecognition/pointsVerification).
+  const actionBase = alreadyEdit ? (cse.pointsVerification ?? 1) : (cse.pointsRecognition ?? 3);
   const action: MarathonAction = alreadyEdit ? 'verification' : 'recognition';
   // Розпізнавання/редагування — бали тримаємо як «непідтверджені» до закриття справи.
   await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase, action, /*held*/ true, cse.caseId);
@@ -2515,12 +2646,12 @@ async function collabConfirm(
     await deleteSession(tgId);
     return;
   }
-  const min = await getMinConfirmations();
+  const min = await getMinConfirmations(cse.targetSubmissions);
   // Снапшот того, що користувач підтвердив — поточні current_answers справи.
   await recordCaseEvent(caseId, tgId, 'confirm', cse.currentAnswers || []);
   const { closed } = await confirmCase(caseId, min);
   // Перевірка — 1 бал база (нараховується одразу, не «непідтверджені»).
-  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1, 'verification');
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, cse.pointsVerification ?? 1, 'verification');
   // Справу закрито — розраховуємо непідтверджені бали її розпізнавача/редакторів.
   if (closed) {
     try {

@@ -269,9 +269,12 @@ export function computePointsForToday(
   };
 }
 
-export async function recomputeCaseSubmissionCount(caseId: string): Promise<number> {
+export async function recomputeCaseSubmissionCount(
+  caseId: string,
+  targetOverride?: number | null
+): Promise<number> {
   const count = await countSubmissionsByCase(caseId);
-  const target = cfg.cases.targetSubmissions;
+  const target = targetOverride ?? cfg.cases.targetSubmissions;
   await patchCase(caseId, {
     submissionsCount: count,
     status: count >= target ? 'done' : 'open',

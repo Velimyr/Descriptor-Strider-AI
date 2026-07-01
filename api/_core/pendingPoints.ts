@@ -23,7 +23,8 @@ function stripForCompare(s: unknown): string {
   return String(s ?? '').replace(/[^\p{L}\p{N}]/gu, '');
 }
 
-function levenshtein(a: string, b: string): number {
+// Експортована — переюзана в keywords.ts для фаззі-мачингу ключових слів.
+export function levenshtein(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
   if (m === 0) return n;
@@ -118,6 +119,18 @@ export async function getUnconfirmedTotal(tgId: string): Promise<number> {
 // Розрахунок усіх непідтверджених учасників справи на момент закриття.
 // finalAnswers — current_answers справи. Нараховує підтверджені, списує надто відмінні.
 export async function settleCaseAtClose(caseId: string, finalAnswers: string[]): Promise<void> {
+  const questions = await getQuestions();
+
+  // Ключові слова: справа щойно закрилась (є канонічний фінальний текст) —
+  // незалежно від того, чи лишились непідтверджені бали нижче. Помилка тут не
+  // має ламати розрахунок балів.
+  try {
+    const { evaluateKeywordMatches } = await import('../_telegram/keywords.js');
+    await evaluateKeywordMatches({ caseId, source: 'collab', questions, answers: finalAnswers });
+  } catch (e: any) {
+    console.error('keyword match (collab close) failed', e?.message || e);
+  }
+
   const { data, error } = await db()
     .from(T.caseConfirmations)
     .select('tg_id, answers, points')
@@ -127,7 +140,6 @@ export async function settleCaseAtClose(caseId: string, finalAnswers: string[]):
   const rows = (data as any[]) || [];
   if (rows.length === 0) return;
 
-  const questions = await getQuestions();
   // Імена для місячного рейтингу — одним запитом по всіх учасниках.
   const ids = rows.map(r => String(r.tg_id));
   const { data: usersData } = await db().from(T.users).select('tg_id, display_name').in('tg_id', ids);

@@ -93,6 +93,13 @@ alter table bot_cases add column if not exists locked_until         timestamptz;
 -- updated_at: фіксується при collab-подіях (create/edit/confirm), щоб коректно сортувати експорт.
 alter table bot_cases add column if not exists updated_at           timestamptz not null default now();
 alter table bot_cases drop constraint if exists bot_cases_mode_check;
+
+-- Per-опис оверрайди (NULL = глобальний дефолт cases.targetSubmissions/points.*).
+-- Денормалізовано на кожен рядок справи (як archive/fund/opys) — щоб гарячі шляхи
+-- (сабміт/підтвердження) не робили зайвого запиту в окрему таблицю налаштувань.
+alter table bot_cases add column if not exists target_submissions  integer;
+alter table bot_cases add column if not exists points_recognition  numeric;
+alter table bot_cases add column if not exists points_verification numeric;
 alter table bot_cases
   add  constraint bot_cases_mode_check
   check (mode in ('parallel','collaborative'));
@@ -358,6 +365,8 @@ $$;
 revoke all on function bot_monthly_months() from public, anon, authenticated;
 
 -- Агрегований прогрес опису. Уникає підкачки всіх справ у код.
+-- p_target — глобальний дефолт; per-справа може мати свій target_submissions
+-- (per-опис оверрайд, виставляється в адмінці) — тоді він має пріоритет.
 create or replace function bot_description_progress(p_target int)
 returns table (
   archive text,
@@ -374,12 +383,12 @@ returns table (
     count(*) as total_cases,
     count(*) filter (
       where c.status = 'done'
-         or (c.mode = 'collaborative' and c.confirmations_count >= p_target)
-         or (c.mode <> 'collaborative' and c.submissions_count >= p_target)
+         or (c.mode = 'collaborative' and c.confirmations_count >= coalesce(c.target_submissions, p_target))
+         or (c.mode <> 'collaborative' and c.submissions_count >= coalesce(c.target_submissions, p_target))
     ) as done_cases,
     sum(least(
       case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end,
-      p_target
+      coalesce(c.target_submissions, p_target)
     )) as capped_sum
   from bot_cases c
   group by c.archive, c.fund, c.opys;
@@ -406,8 +415,8 @@ language sql security definer as $$
       count(*) as total_cases,
       count(*) filter (
         where status = 'done'
-           or (mode = 'collaborative' and confirmations_count >= p_target)
-           or (mode <> 'collaborative' and submissions_count >= p_target)
+           or (mode = 'collaborative' and confirmations_count >= coalesce(target_submissions, p_target))
+           or (mode <> 'collaborative' and submissions_count >= coalesce(target_submissions, p_target))
       ) as done_cases,
       max(updated_at) as last_updated
     from bot_cases
@@ -467,7 +476,8 @@ returns table (
   with cand as (
     select c.case_id, c.archive, c.fund, c.opys, c.mode,
            c.confirmations_count, c.submissions_count, c.created_at, c.current_answers,
-           case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end as progress
+           case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end as progress,
+           coalesce(c.target_submissions, p_target) as target
     from bot_cases c
     where c.status = 'open'
       and not exists (select 1 from bot_submissions s where s.case_id = c.case_id and s.tg_id = p_tg_id)
@@ -494,7 +504,7 @@ returns table (
     where exists (
       select 1 from cand c
       where c.archive = a.archive and c.fund = a.fund and c.opys = a.opys
-        and c.progress < p_target
+        and c.progress < c.target
     )
     order by a.age, a.archive, a.fund, a.opys
     limit 1
@@ -547,6 +557,13 @@ create table if not exists bot_verif_cases (
 create index if not exists idx_verif_cases_status on bot_verif_cases(status);
 create index if not exists idx_verif_cases_lock   on bot_verif_cases(locked_until);
 create index if not exists idx_verif_cases_desc   on bot_verif_cases(archive, fund, opys);
+
+-- Per-опис оверрайди (NULL = глобальний дефолт). Денормалізовано на кожен рядок
+-- справи опису (як archive/fund/opys), щоб гарячі шляхи не робили зайвих запитів.
+-- verif_threshold — заміна VERIF_THRESHOLD; points_base — заміна POINTS_BASE
+-- (бали за слово POINTS_PER_WORD лишаються глобальними, як і форфейт AI-розпізнавання).
+alter table bot_verif_cases add column if not exists verif_threshold integer;
+alter table bot_verif_cases add column if not exists points_base numeric;
 
 -- Аудит перевірок. PK(case_id, verifier_id): один перевіряльник = одна дія на справу.
 -- corrected_words — к-сть слів, що перевіряльник змінив (для балів 0.1×слово).
@@ -956,3 +973,90 @@ language sql security definer as $$
   group by 1;
 $$;
 revoke all on function bot_daily_activity(timestamptz, timestamptz, text, text) from public, anon, authenticated;
+
+-- ============================================================================
+-- Ключові слова: користувач стежить за словами, отримує сповіщення, коли будь-яка
+-- ПІДТВЕРДЖЕНА справа (collab bot_cases або bot_verif_cases) містить його слово —
+-- навіть якщо сам не розпізнавав/не підтверджував.
+--
+-- Egress-принципи (щоб не повторити candidate_cases_v2/leaderboard):
+-- 1. search_text пишеться ОДИН РАЗ у момент закриття справи (write-час), під ним —
+--    trigram-індекс. Ретроскан і матчинг ніколи не тягнуть questions+answers у JS.
+-- 2. Матчинг у реальному часі звіряє текст, що вже й так у процесі, проти
+--    TTL-кешованого (в keywords.ts) списку варіантів — жодного нового запиту на подію.
+-- 3. Активність блоку (100 балів/блок цього місяця) НЕ зберігається окремим прапорцем —
+--    рахується на льоту (floor(points/100) перших блоків за created_at), інакше довелось
+--    би тримати фонову задачу синхронізації прапорця при зміні балів.
+-- ============================================================================
+
+-- Блоки слів користувача. variants — jsonb-масив рядків (1..5), попарна відстань
+-- Левенштейна між ними перевіряється в коді (не в БД) при доданні.
+create table if not exists bot_keyword_blocks (
+  id         bigserial primary key,
+  tg_id      text        not null references bot_users(tg_id) on delete cascade,
+  variants   jsonb       not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_keyword_blocks_user on bot_keyword_blocks(tg_id, created_at);
+alter table bot_keyword_blocks enable row level security;
+
+-- Черга збігів. delivered=false = знайдено, але блок був НЕактивний (бракувало балів)
+-- у момент закриття справи — чекає на catch-up, коли юзер перетне поріг 100 знову.
+-- PK (case_id, tg_id): одна справа = одне сповіщення юзеру, назавжди, скільки б
+-- блоків не збіглося.
+create table if not exists bot_keyword_matches (
+  case_id      text        not null,
+  tg_id        text        not null,
+  source       text        not null check (source in ('collab','verif')),
+  delivered    boolean     not null default false,
+  matched_at   timestamptz not null default now(),
+  delivered_at timestamptz,
+  primary key (case_id, tg_id)
+);
+-- Часткові індекси: пошук "чекає на catch-up для цього юзера" не сканує всю таблицю.
+create index if not exists idx_keyword_matches_pending on bot_keyword_matches(tg_id) where delivered = false;
+alter table bot_keyword_matches enable row level security;
+
+-- Нормалізований (lowercase) текст полів role in ('title','notes') — джерело для
+-- пошуку слів. Пишеться при закритті справи, читається лише через індекс нижче.
+alter table bot_cases       add column if not exists search_text text not null default '';
+alter table bot_verif_cases add column if not exists search_text text not null default '';
+create extension if not exists pg_trgm;
+create index if not exists idx_cases_search_trgm       on bot_cases       using gin (search_text gin_trgm_ops);
+create index if not exists idx_verif_cases_search_trgm on bot_verif_cases using gin (search_text gin_trgm_ops);
+
+-- Ретроскан при доданні нового блоку: тільки закриті справи, тільки case_id+джерело,
+-- LIMIT. Викликається рідко (додавання блоку обмежене балами), і навіть тоді не тягне
+-- нічого важкого в JS.
+create or replace function bot_keyword_backfill_scan(p_variants text[], p_limit int default 300)
+returns table(case_id text, source text)
+language sql security definer as $$
+  select case_id, 'collab' from bot_cases
+   where status = 'done' and search_text <> '' and exists (
+     select 1 from unnest(p_variants) v where search_text ilike '%' || v || '%')
+   union all
+  select case_id, 'verif' from bot_verif_cases
+   where status = 'done' and search_text <> '' and exists (
+     select 1 from unnest(p_variants) v where search_text ilike '%' || v || '%')
+  limit greatest(p_limit, 0);
+$$;
+revoke all on function bot_keyword_backfill_scan(text[], int) from public, anon, authenticated;
+
+-- Усі варіанти слів усіх юзерів + прапорець "активний" (для конкретного місяця).
+-- Читається РАЗ на TTL у keywords.ts (кеш у пам'яті процесу), не на кожне закриття
+-- справи. active рахується тут же (floor(points/100) перших блоків за created_at) —
+-- один спільний запит для матчингу і для catch-up (той самий кеш фільтрується по tg_id).
+create or replace function bot_keyword_variant_status(p_month text)
+returns table(tg_id text, variant text, active boolean)
+language sql security definer as $$
+  select b.tg_id, v.value,
+         (b.rn <= floor(coalesce(mp.points, 0) / 100)) as active
+  from (
+    select id, tg_id, variants, created_at,
+           row_number() over (partition by tg_id order by created_at) as rn
+    from bot_keyword_blocks
+  ) b
+  left join bot_monthly_points mp on mp.month = p_month and mp.tg_id = b.tg_id
+  cross join lateral jsonb_array_elements_text(b.variants) as v(value);
+$$;
+revoke all on function bot_keyword_variant_status(text) from public, anon, authenticated;
