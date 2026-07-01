@@ -3,6 +3,7 @@ import { Upload, Loader2, Wand2 } from 'lucide-react';
 import { tgApi } from '../../services/telegramApi';
 import { ArchivalRecord } from '../../types';
 import { RecoverFragmentsModal } from '../Recognition/RecoverFragmentsModal';
+import { DescriptionSettingsFields, useDescriptionSettings } from '../TelegramAdmin/DescriptionSettings';
 
 // Вкладка «Веб» у Підготовці справ: завантаження справ на ВЕБ-перевірку з файлу,
 // експортованого зі сторінки розпізнавання (.json проєкту: tableStructure + results[]).
@@ -34,6 +35,9 @@ export const VerifUploadView: React.FC = () => {
   // конвеєр) і роздільність зразка. Допомагає вирішити, чи треба «Покращити (hi-res)».
   const [quality, setQuality] = useState<{ withBbox: number; total: number; sampleWidth: number } | null>(null);
   const needsImprovement = !!quality && quality.total > 0 && quality.withBbox < quality.total;
+  // Per-опис оверрайди порогу підтверджень/балів (порожньо = глобальний дефолт).
+  const { settings: descSettings, setSettings: setDescSettings, defaults: descDefaults } =
+    useDescriptionSettings(archive, fund, opys);
 
   const metaValid = !!(archive.trim() && fund.trim() && opys.trim());
   const withImageCount = project ? project.results.filter(r => typeof r.fragmentImage === 'string' && r.fragmentImage.includes(',')).length : 0;
@@ -102,6 +106,8 @@ export const VerifUploadView: React.FC = () => {
           opys: opys.trim(),
           questions,
           aiAnswers,
+          targetSubmissions: descSettings.targetSubmissions,
+          pointsVerification: descSettings.pointsVerification,
         };
 
         // Ретрай на тимчасових збоях (ліміти Telegram / мережа). На «постійних»
@@ -161,6 +167,12 @@ export const VerifUploadView: React.FC = () => {
           <input value={opys} onChange={e => setOpys(e.target.value)} placeholder="Опис *"
             className={`border rounded px-2 py-1.5 text-sm ${!opys.trim() ? 'border-amber-400' : ''}`} />
         </div>
+        <DescriptionSettingsFields
+          value={descSettings}
+          onChange={setDescSettings}
+          defaults={descDefaults}
+          showRecognition={false}
+        />
       </section>
 
       <label className="inline-flex items-center gap-2 px-3 py-2 bg-slate-100 hover:bg-slate-200 rounded cursor-pointer text-sm font-medium">

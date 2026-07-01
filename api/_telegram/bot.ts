@@ -637,7 +637,10 @@ function keyboardForCollabPreview(): any {
   };
 }
 
-async function getMinConfirmations(): Promise<number> {
+async function getMinConfirmations(caseOverride?: number | null): Promise<number> {
+  // Per-опис оверрайд (виставляється в адмінці для конкретної справи) має пріоритет
+  // над глобальним bot_meta-перемикачем.
+  if (typeof caseOverride === 'number' && caseOverride > 0) return caseOverride;
   const raw = await getMeta('min_confirmations');
   const n = parseInt(raw || '', 10);
   // Fallback — config (а не хардкод), щоб поріг закриття бота збігався з порогом
@@ -2415,11 +2418,12 @@ async function confirmAndSubmit(
   });
   const [, newCaseCount, todayCount, todayDone] = await Promise.all([
     deleteSession(tgId),
-    recomputeCaseSubmissionCount(cse.caseId),
+    recomputeCaseSubmissionCount(cse.caseId, cse.targetSubmissions),
     incDailyCount(tgId, today),
     getTodayProcessedCases(),
   ]);
-  if (newCaseCount >= telegramBotConfig.cases.targetSubmissions) {
+  const target = cse.targetSubmissions ?? telegramBotConfig.cases.targetSubmissions;
+  if (newCaseCount >= target) {
     try {
       const { maybeAnnounceDescriptionDone } = await import('./groupAnnounce.js');
       await maybeAnnounceDescriptionDone(cse.archive, cse.fund, cse.opys);
@@ -2428,8 +2432,8 @@ async function confirmAndSubmit(
     }
   }
 
-  const pts = computePointsForToday(todayCount);
-  const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1) : { multiplier: 1 };
+  const pts = computePointsForToday(todayCount, cse.pointsRecognition ?? undefined);
+  const prevPts = todayCount > 1 ? computePointsForToday(todayCount - 1, cse.pointsRecognition ?? undefined) : { multiplier: 1 };
   // Марафон: розпізнавання (parallel-сабміт). Коефіцієнт — поверх денного множника.
   const bonus = applyMarathonBonus(pts.pointsEarned, 'recognition');
   const earned = bonus.points;
@@ -2528,7 +2532,8 @@ async function collabSubmit(
   }
 
   // Розпізнавання (create) — 3 бали база; редагування — 1 (це перевірка з правкою).
-  const actionBase = alreadyEdit ? 1 : 3;
+  // Обидва можуть бути перевизначені per-опис (cse.pointsRecognition/pointsVerification).
+  const actionBase = alreadyEdit ? (cse.pointsVerification ?? 1) : (cse.pointsRecognition ?? 3);
   const action: MarathonAction = alreadyEdit ? 'verification' : 'recognition';
   // Розпізнавання/редагування — бали тримаємо як «непідтверджені» до закриття справи.
   await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase, action, /*held*/ true, cse.caseId);
@@ -2549,12 +2554,12 @@ async function collabConfirm(
     await deleteSession(tgId);
     return;
   }
-  const min = await getMinConfirmations();
+  const min = await getMinConfirmations(cse.targetSubmissions);
   // Снапшот того, що користувач підтвердив — поточні current_answers справи.
   await recordCaseEvent(caseId, tgId, 'confirm', cse.currentAnswers || []);
   const { closed } = await confirmCase(caseId, min);
   // Перевірка — 1 бал база (нараховується одразу, не «непідтверджені»).
-  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, 1, 'verification');
+  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, cse.pointsVerification ?? 1, 'verification');
   // Справу закрито — розраховуємо непідтверджені бали її розпізнавача/редакторів.
   if (closed) {
     try {

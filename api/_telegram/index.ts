@@ -9,6 +9,8 @@ import {
   deleteSession,
   getTodayActivity,
   getDailyActivity,
+  getCaseSettingsByDescription,
+  updateCaseSettingsByDescription,
 } from './storage.js';
 import { handleUpdate, dispatchCaseToUser, sendScheduledGreeting } from './bot.js';
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
@@ -601,7 +603,10 @@ router.post('/admin/delete-webhook', async (req, res) => {
 // Завантаження картинки в канал. Приймає base64 PNG/JPEG.
 router.post('/admin/upload-case', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { imageBase64, sourcePdf, page, bbox, archive, fund, opys, mode } = req.body || {};
+  const {
+    imageBase64, sourcePdf, page, bbox, archive, fund, opys, mode,
+    targetSubmissions, pointsRecognition, pointsVerification,
+  } = req.body || {};
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
   // Архів/Фонд/Опис ідентифікують опис — без них результати не мають сенсу.
   // Поле sprava більше не використовується (видалено з адмінки).
@@ -643,6 +648,9 @@ router.post('/admin/upload-case', async (req, res) => {
         lockedByTgId: '',
         lockedUntil: '',
         updatedAt: '',
+        targetSubmissions: Number.isFinite(Number(targetSubmissions)) && targetSubmissions ? Number(targetSubmissions) : null,
+        pointsRecognition: Number.isFinite(Number(pointsRecognition)) && pointsRecognition ? Number(pointsRecognition) : null,
+        pointsVerification: Number.isFinite(Number(pointsVerification)) && pointsVerification ? Number(pointsVerification) : null,
       },
     ]);
     res.json({ ok: true, caseId, fileId, messageId: result?.message_id });
@@ -655,7 +663,10 @@ router.post('/admin/upload-case', async (req, res) => {
 // Картинка → група (як для бота), текст + питання + ai-відповіді → verif_cases.
 router.post('/admin/upload-verif-case', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { imageBase64, sourcePdf, page, bbox, archive, fund, opys, questions, aiAnswers } = req.body || {};
+  const {
+    imageBase64, sourcePdf, page, bbox, archive, fund, opys, questions, aiAnswers,
+    targetSubmissions, pointsVerification,
+  } = req.body || {};
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
   for (const [k, v] of [['archive', archive], ['fund', fund], ['opys', opys]] as const) {
     if (!v || !String(v).trim()) return res.status(400).json({ error: `Field "${k}" is required` });
@@ -680,8 +691,61 @@ router.post('/admin/upload-verif-case', async (req, res) => {
       opys: String(opys).trim(),
       questions: Array.isArray(questions) ? questions : [],
       aiAnswers: Array.isArray(aiAnswers) ? aiAnswers.map((x: any) => String(x ?? '')) : [],
+      verifThreshold: Number.isFinite(Number(targetSubmissions)) && targetSubmissions ? Number(targetSubmissions) : null,
+      pointsBase: Number.isFinite(Number(pointsVerification)) && pointsVerification ? Number(pointsVerification) : null,
     });
     res.json({ ok: true, caseId, fileId, messageId: result?.message_id });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Per-опис оверрайди порогу підтверджень і базових балів — спільні для бота й
+// веб-перевірки (одна трійка archive/fund/opys). null = глобальний дефолт.
+router.get('/admin/description-settings', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { archive, fund, opys } = req.query as Record<string, string>;
+  if (!archive || !fund || !opys) return res.status(400).json({ error: 'archive/fund/opys required' });
+  try {
+    const { getVerifSettingsByDescription } = await import('../_core/verifCases.js');
+    const [botSettings, verifSettings] = await Promise.all([
+      getCaseSettingsByDescription(archive, fund, opys),
+      getVerifSettingsByDescription(archive, fund, opys),
+    ]);
+    res.json({
+      ok: true,
+      settings: {
+        targetSubmissions: botSettings?.targetSubmissions ?? verifSettings?.verifThreshold ?? null,
+        pointsRecognition: botSettings?.pointsRecognition ?? null,
+        pointsVerification: botSettings?.pointsVerification ?? verifSettings?.pointsBase ?? null,
+      },
+      defaults: {
+        targetSubmissions: telegramBotConfig.cases.targetSubmissions,
+        pointsRecognition: 3,
+        pointsVerification: 1,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/admin/description-settings', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { archive, fund, opys, targetSubmissions, pointsRecognition, pointsVerification } = req.body || {};
+  if (!archive || !fund || !opys) return res.status(400).json({ error: 'archive/fund/opys required' });
+  try {
+    const { updateVerifSettingsByDescription } = await import('../_core/verifCases.js');
+    const patch = {
+      targetSubmissions: targetSubmissions === null || targetSubmissions === undefined ? null : Number(targetSubmissions),
+      pointsRecognition: pointsRecognition === null || pointsRecognition === undefined ? null : Number(pointsRecognition),
+      pointsVerification: pointsVerification === null || pointsVerification === undefined ? null : Number(pointsVerification),
+    };
+    await Promise.all([
+      updateCaseSettingsByDescription(archive, fund, opys, patch),
+      updateVerifSettingsByDescription(archive, fund, opys, patch),
+    ]);
+    res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }

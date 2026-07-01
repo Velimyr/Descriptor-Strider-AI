@@ -85,6 +85,9 @@ interface VerifCaseRow {
   status: string;
   lockedBy: string;
   lockedUntil: string;
+  // Per-опис оверрайди (null = глобальний дефолт VERIF_THRESHOLD/POINTS_BASE).
+  verifThreshold: number | null;
+  pointsBase: number | null;
 }
 
 // ---------- token для проксі зображення ----------
@@ -136,6 +139,8 @@ function mapCaseRow(r: any): VerifCaseRow {
     status: r.status || 'open',
     lockedBy: r.locked_by || '',
     lockedUntil: r.locked_until || '',
+    verifThreshold: r.verif_threshold ?? null,
+    pointsBase: r.points_base ?? null,
   };
 }
 
@@ -282,7 +287,7 @@ export async function submitVerification(opts: {
     p_kind: kind,
     p_answers: submitted,
     p_corrected: corrected,
-    p_threshold: VERIF_THRESHOLD,
+    p_threshold: cse.verifThreshold ?? VERIF_THRESHOLD,
   });
   if (error) throw error;
   const row = Array.isArray(data) ? data[0] : data;
@@ -302,7 +307,7 @@ export async function submitVerification(opts: {
     }
   }
 
-  const basePts = Math.round((POINTS_BASE + POINTS_PER_WORD * corrected) * 100) / 100;
+  const basePts = Math.round(((cse.pointsBase ?? POINTS_BASE) + POINTS_PER_WORD * corrected) * 100) / 100;
   // Веб-перевірка — це дія 'verification'. У дні марафону множимо на коефіцієнт.
   const bonus = applyMarathonBonus(basePts, 'verification');
   const pts = bonus.points;
@@ -387,6 +392,8 @@ export async function appendVerifCase(input: {
   sprava?: string;
   questions: VerifQuestion[];
   aiAnswers: string[];
+  verifThreshold?: number | null;
+  pointsBase?: number | null;
 }): Promise<string> {
   const caseId = (globalThis.crypto?.randomUUID?.() || `v_${Date.now()}_${Math.random().toString(36).slice(2)}`).replace(/-/g, '');
   const { error } = await db().from(T.cases).insert({
@@ -407,9 +414,57 @@ export async function appendVerifCase(input: {
     confirmations_count: 0,
     status: 'open',
     locked_by: '',
+    verif_threshold: input.verifThreshold ?? null,
+    points_base: input.pointsBase ?? null,
   });
   if (error) throw error;
   return caseId;
+}
+
+// ---------- per-опис оверрайди (спільні з bot_cases за (archive,fund,opys)) ----------
+export interface VerifDescriptionSettings {
+  verifThreshold: number | null;
+  pointsBase: number | null;
+}
+
+export async function getVerifSettingsByDescription(
+  archive: string,
+  fund: string,
+  opys: string
+): Promise<VerifDescriptionSettings | null> {
+  const { data, error } = await db()
+    .from(T.cases)
+    .select('verif_threshold, points_base')
+    .eq('archive', archive)
+    .eq('fund', fund)
+    .eq('opys', opys)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return {
+    verifThreshold: data.verif_threshold ?? null,
+    pointsBase: data.points_base ?? null,
+  };
+}
+
+export async function updateVerifSettingsByDescription(
+  archive: string,
+  fund: string,
+  opys: string,
+  patch: { targetSubmissions?: number | null; pointsVerification?: number | null }
+): Promise<void> {
+  const dbPatch: Record<string, number | null> = {};
+  if ('targetSubmissions' in patch) dbPatch.verif_threshold = patch.targetSubmissions ?? null;
+  if ('pointsVerification' in patch) dbPatch.points_base = patch.pointsVerification ?? null;
+  if (Object.keys(dbPatch).length === 0) return;
+  const { error } = await db()
+    .from(T.cases)
+    .update(dbPatch)
+    .eq('archive', archive)
+    .eq('fund', fund)
+    .eq('opys', opys);
+  if (error) throw error;
 }
 
 // ---------- експорт опису (вкладка «Експортувати опис») ----------

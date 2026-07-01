@@ -138,6 +138,11 @@ export interface BotCase {
   lockedByTgId: string;
   lockedUntil: string; // ISO або '' якщо не лочена
   updatedAt: string;   // оновлюється при collab-подіях
+  // Per-опис оверрайди (null = глобальний дефолт). Денормалізовано з рядка налаштувань
+  // опису при завантаженні/редагуванні — див. updateCaseSettingsByDescription.
+  targetSubmissions: number | null;
+  pointsRecognition: number | null;
+  pointsVerification: number | null;
 }
 
 export interface BotSession {
@@ -250,6 +255,9 @@ function mapCase(r: any): BotCase {
     lockedByTgId: r.locked_by_tg_id || '',
     lockedUntil: r.locked_until || '',
     updatedAt: r.updated_at || r.created_at || '',
+    targetSubmissions: r.target_submissions ?? null,
+    pointsRecognition: r.points_recognition ?? null,
+    pointsVerification: r.points_verification ?? null,
   };
 }
 
@@ -725,8 +733,64 @@ export async function appendCases(items: Omit<BotCase, 'rowIndex'>[]) {
       status: c.status,
       mode: c.mode || 'parallel',
       ...(c.createdAt ? { created_at: c.createdAt } : {}),
+      target_submissions: c.targetSubmissions ?? null,
+      points_recognition: c.pointsRecognition ?? null,
+      points_verification: c.pointsVerification ?? null,
     }))
   );
+  if (error) throw error;
+}
+
+// ---------- per-опис оверрайди (поріг підтверджень, базові бали) ----------
+// Читає ОДИН представницький рядок опису — усі справи одного опису мають
+// однакові оверрайди (виставляються разом при завантаженні/редагуванні).
+export interface DescriptionCaseSettings {
+  targetSubmissions: number | null;
+  pointsRecognition: number | null;
+  pointsVerification: number | null;
+}
+
+export async function getCaseSettingsByDescription(
+  archive: string,
+  fund: string,
+  opys: string
+): Promise<DescriptionCaseSettings | null> {
+  const { data, error } = await db()
+    .from(T.cases)
+    .select('target_submissions, points_recognition, points_verification')
+    .eq('archive', archive)
+    .eq('fund', fund)
+    .eq('opys', opys)
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return {
+    targetSubmissions: data.target_submissions ?? null,
+    pointsRecognition: data.points_recognition ?? null,
+    pointsVerification: data.points_verification ?? null,
+  };
+}
+
+// Bulk-апдейт усіх справ опису (обидва режими). patch-поле = undefined → не чіпати,
+// null → явно скинути на глобальний дефолт.
+export async function updateCaseSettingsByDescription(
+  archive: string,
+  fund: string,
+  opys: string,
+  patch: Partial<DescriptionCaseSettings>
+): Promise<void> {
+  const dbPatch: Record<string, number | null> = {};
+  if ('targetSubmissions' in patch) dbPatch.target_submissions = patch.targetSubmissions ?? null;
+  if ('pointsRecognition' in patch) dbPatch.points_recognition = patch.pointsRecognition ?? null;
+  if ('pointsVerification' in patch) dbPatch.points_verification = patch.pointsVerification ?? null;
+  if (Object.keys(dbPatch).length === 0) return;
+  const { error } = await db()
+    .from(T.cases)
+    .update(dbPatch)
+    .eq('archive', archive)
+    .eq('fund', fund)
+    .eq('opys', opys);
   if (error) throw error;
 }
 

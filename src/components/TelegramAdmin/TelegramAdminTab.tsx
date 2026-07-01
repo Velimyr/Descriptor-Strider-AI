@@ -7,6 +7,7 @@ import { createDefaultColumns, createColumn, COLUMN_ROLE_LABELS, COLUMN_ROLE_OPT
 import { detectViaGemini } from '../../lib/sliceDetection';
 import { VerifUploadView } from '../CasesPreparation/VerifUploadView';
 import { BroadcastView } from './BroadcastView';
+import { DescriptionSettingsFields, useDescriptionSettings } from './DescriptionSettings';
 
 interface Props {
   onClose: () => void;
@@ -684,6 +685,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const [opys, setOpys] = useState('');
   // Режим обробки для всієї пачки. Фіксується при завантаженні справи.
   const [batchMode, setBatchMode] = useState<'parallel' | 'collaborative'>('collaborative');
+  // Per-опис оверрайди порогу підтверджень/балів (порожньо = глобальний дефолт).
+  const { settings: descSettings, setSettings: setDescSettings, defaults: descDefaults } =
+    useDescriptionSettings(archive, fund, opys);
   // Згорнути блок «Архівні реквізити + Режим», коли все заповнено і PDF уже відкрито —
   // звільняє ~120px по вертикалі для скану.
   const [metaCollapsed, setMetaCollapsed] = useState(false);
@@ -2433,6 +2437,9 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           fund: fund.trim(),
           opys: opys.trim(),
           mode: batchMode,
+          targetSubmissions: descSettings.targetSubmissions,
+          pointsRecognition: descSettings.pointsRecognition,
+          pointsVerification: descSettings.pointsVerification,
         });
         done++;
         setUploadProgress({ done, total });
@@ -2552,6 +2559,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
             Режим фіксується при завантаженні справи. Поточні справи в БД не змінюються.
           </div>
         </div>
+        <DescriptionSettingsFields value={descSettings} onChange={setDescSettings} defaults={descDefaults} />
       </section>
       )}
 
@@ -4526,6 +4534,26 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const descName =
     descriptions.find(d => d.key === descKey && d.source === descSource)?.name || '';
 
+  // Редагування per-опис оверрайдів (поріг підтверджень/бали) для ВЖЕ завантаженого
+  // опису, обраного вище. archive/fund/opys — розпарсені з descKey (формат "a|f|o").
+  const [editArchive, editFund, editOpys] = descKey ? descKey.split('|') : ['', '', ''];
+  const { settings: editSettings, setSettings: setEditSettings, defaults: editDefaults } =
+    useDescriptionSettings(editArchive, editFund, editOpys);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [savedSettingsMsg, setSavedSettingsMsg] = useState('');
+  const saveDescriptionSettings = async () => {
+    setSavingSettings(true);
+    setSavedSettingsMsg('');
+    try {
+      await tgApi.setDescriptionSettings({ archive: editArchive, fund: editFund, opys: editOpys, ...editSettings });
+      setSavedSettingsMsg('✓ Збережено');
+    } catch (e: any) {
+      setSavedSettingsMsg('❌ ' + e.message);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
   const refresh = async () => {
     setBusy(true);
     setMsg('');
@@ -5183,6 +5211,27 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
               ))}
             </select>
           </div>
+          {descKey && (
+            <section className="border rounded p-3 bg-slate-50">
+              <div className="text-sm font-medium mb-1">Налаштування опису «{descName}»</div>
+              <DescriptionSettingsFields
+                value={editSettings}
+                onChange={setEditSettings}
+                defaults={editDefaults}
+                showRecognition={descSource === 'tg'}
+              />
+              <div className="flex items-center gap-2 mt-2">
+                <button
+                  onClick={saveDescriptionSettings}
+                  disabled={savingSettings}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white rounded text-xs font-medium"
+                >
+                  {savingSettings ? 'Зберігаю…' : 'Зберегти налаштування опису'}
+                </button>
+                {savedSettingsMsg && <span className="text-xs">{savedSettingsMsg}</span>}
+              </div>
+            </section>
+          )}
           <div>
             <label className="block text-xs text-slate-500 mb-1">Колонка-«номер» (для сортування й групування)</label>
             <select

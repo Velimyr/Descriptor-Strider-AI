@@ -90,6 +90,13 @@ alter table bot_cases add column if not exists locked_until         timestamptz;
 -- updated_at: фіксується при collab-подіях (create/edit/confirm), щоб коректно сортувати експорт.
 alter table bot_cases add column if not exists updated_at           timestamptz not null default now();
 alter table bot_cases drop constraint if exists bot_cases_mode_check;
+
+-- Per-опис оверрайди (NULL = глобальний дефолт cases.targetSubmissions/points.*).
+-- Денормалізовано на кожен рядок справи (як archive/fund/opys) — щоб гарячі шляхи
+-- (сабміт/підтвердження) не робили зайвого запиту в окрему таблицю налаштувань.
+alter table bot_cases add column if not exists target_submissions  integer;
+alter table bot_cases add column if not exists points_recognition  numeric;
+alter table bot_cases add column if not exists points_verification numeric;
 alter table bot_cases
   add  constraint bot_cases_mode_check
   check (mode in ('parallel','collaborative'));
@@ -355,6 +362,8 @@ $$;
 revoke all on function bot_monthly_months() from public, anon, authenticated;
 
 -- Агрегований прогрес опису. Уникає підкачки всіх справ у код.
+-- p_target — глобальний дефолт; per-справа може мати свій target_submissions
+-- (per-опис оверрайд, виставляється в адмінці) — тоді він має пріоритет.
 create or replace function bot_description_progress(p_target int)
 returns table (
   archive text,
@@ -371,12 +380,12 @@ returns table (
     count(*) as total_cases,
     count(*) filter (
       where c.status = 'done'
-         or (c.mode = 'collaborative' and c.confirmations_count >= p_target)
-         or (c.mode <> 'collaborative' and c.submissions_count >= p_target)
+         or (c.mode = 'collaborative' and c.confirmations_count >= coalesce(c.target_submissions, p_target))
+         or (c.mode <> 'collaborative' and c.submissions_count >= coalesce(c.target_submissions, p_target))
     ) as done_cases,
     sum(least(
       case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end,
-      p_target
+      coalesce(c.target_submissions, p_target)
     )) as capped_sum
   from bot_cases c
   group by c.archive, c.fund, c.opys;
@@ -403,8 +412,8 @@ language sql security definer as $$
       count(*) as total_cases,
       count(*) filter (
         where status = 'done'
-           or (mode = 'collaborative' and confirmations_count >= p_target)
-           or (mode <> 'collaborative' and submissions_count >= p_target)
+           or (mode = 'collaborative' and confirmations_count >= coalesce(target_submissions, p_target))
+           or (mode <> 'collaborative' and submissions_count >= coalesce(target_submissions, p_target))
       ) as done_cases,
       max(updated_at) as last_updated
     from bot_cases
@@ -464,7 +473,8 @@ returns table (
   with cand as (
     select c.case_id, c.archive, c.fund, c.opys, c.mode,
            c.confirmations_count, c.submissions_count, c.created_at, c.current_answers,
-           case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end as progress
+           case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end as progress,
+           coalesce(c.target_submissions, p_target) as target
     from bot_cases c
     where c.status = 'open'
       and not exists (select 1 from bot_submissions s where s.case_id = c.case_id and s.tg_id = p_tg_id)
@@ -491,7 +501,7 @@ returns table (
     where exists (
       select 1 from cand c
       where c.archive = a.archive and c.fund = a.fund and c.opys = a.opys
-        and c.progress < p_target
+        and c.progress < c.target
     )
     order by a.age, a.archive, a.fund, a.opys
     limit 1
@@ -544,6 +554,13 @@ create table if not exists bot_verif_cases (
 create index if not exists idx_verif_cases_status on bot_verif_cases(status);
 create index if not exists idx_verif_cases_lock   on bot_verif_cases(locked_until);
 create index if not exists idx_verif_cases_desc   on bot_verif_cases(archive, fund, opys);
+
+-- Per-опис оверрайди (NULL = глобальний дефолт). Денормалізовано на кожен рядок
+-- справи опису (як archive/fund/opys), щоб гарячі шляхи не робили зайвих запитів.
+-- verif_threshold — заміна VERIF_THRESHOLD; points_base — заміна POINTS_BASE
+-- (бали за слово POINTS_PER_WORD лишаються глобальними, як і форфейт AI-розпізнавання).
+alter table bot_verif_cases add column if not exists verif_threshold integer;
+alter table bot_verif_cases add column if not exists points_base numeric;
 
 -- Аудит перевірок. PK(case_id, verifier_id): один перевіряльник = одна дія на справу.
 -- corrected_words — к-сть слів, що перевіряльник змінив (для балів 0.1×слово).

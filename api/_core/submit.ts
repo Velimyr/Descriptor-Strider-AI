@@ -46,7 +46,8 @@ export class SubmitError extends Error {
   }
 }
 
-async function getMinConfirmations(): Promise<number> {
+async function getMinConfirmations(caseOverride?: number | null): Promise<number> {
+  if (typeof caseOverride === 'number' && caseOverride > 0) return caseOverride;
   const raw = await getMeta('collab_min_confirmations');
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : telegramBotConfig.cases.targetSubmissions;
@@ -127,12 +128,13 @@ async function submitParallel(user: BotUser, cse: BotCase, answers: string[]): P
     page: cse.page,
     partnerId: user.partnerId, // денормалізована атрибуція до партнера
   });
+  const target = cse.targetSubmissions ?? telegramBotConfig.cases.targetSubmissions;
   const [newCaseCount, todayCount] = await Promise.all([
-    recomputeCaseSubmissionCount(cse.caseId),
+    recomputeCaseSubmissionCount(cse.caseId, cse.targetSubmissions),
     incDailyCount(user.tgId, today),
   ]);
   // Якщо саме цим сабмітом справу закрили — перевіримо, чи закрився ВЕСЬ опис.
-  if (newCaseCount >= telegramBotConfig.cases.targetSubmissions) {
+  if (newCaseCount >= target) {
     try {
       const { maybeAnnounceDescriptionDone } = await import('../_telegram/groupAnnounce.js');
       await maybeAnnounceDescriptionDone(cse.archive, cse.fund, cse.opys);
@@ -140,7 +142,7 @@ async function submitParallel(user: BotUser, cse: BotCase, answers: string[]): P
       console.error('maybeAnnounceDescriptionDone (parallel) failed', e);
     }
   }
-  const pts = computePointsForToday(todayCount);
+  const pts = computePointsForToday(todayCount, cse.pointsRecognition ?? undefined);
   const bonus = applyMarathonBonus(pts.pointsEarned, 'recognition');
   const newTotal = await applyUserPoints(user, bonus.points);
   return {
@@ -160,7 +162,7 @@ async function submitCollabCreate(user: BotUser, cse: BotCase, answers: string[]
     setCaseCreated(cse.caseId, user.tgId, answers),
     recordCaseEvent(cse.caseId, user.tgId, 'create', answers, user.partnerId),
   ]);
-  return deliverCollabPoints(user, false, 3, 'collab-create', 'recognition', true, cse.caseId);
+  return deliverCollabPoints(user, false, cse.pointsRecognition ?? 3, 'collab-create', 'recognition', true, cse.caseId);
 }
 
 // ---- Collab: edit ----
@@ -169,12 +171,12 @@ async function submitCollabEdit(user: BotUser, cse: BotCase, answers: string[]):
     setCaseEdited(cse.caseId, user.tgId, answers),
     recordCaseEvent(cse.caseId, user.tgId, 'edit', answers, user.partnerId),
   ]);
-  return deliverCollabPoints(user, false, 1, 'collab-edit', 'verification', true, cse.caseId);
+  return deliverCollabPoints(user, false, cse.pointsVerification ?? 1, 'collab-edit', 'verification', true, cse.caseId);
 }
 
 // ---- Collab: confirm ----
 async function submitCollabConfirm(user: BotUser, cse: BotCase): Promise<SubmitResult> {
-  const min = await getMinConfirmations();
+  const min = await getMinConfirmations(cse.targetSubmissions);
   await recordCaseEvent(cse.caseId, user.tgId, 'confirm', cse.currentAnswers || [], user.partnerId);
   const { closed } = await confirmCase(cse.caseId, min);
   // Справу закрито — розраховуємо непідтверджені бали її розпізнавача/редакторів.
@@ -200,7 +202,7 @@ async function submitCollabConfirm(user: BotUser, cse: BotCase): Promise<SubmitR
       console.error('maybeAnnounceDescriptionDone (collab) failed', e);
     }
   }
-  return deliverCollabPoints(user, closed, 1, 'collab-confirm', 'verification');
+  return deliverCollabPoints(user, closed, cse.pointsVerification ?? 1, 'collab-confirm', 'verification');
 }
 
 async function deliverCollabPoints(

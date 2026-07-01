@@ -60,6 +60,9 @@ export const tgApi = {
     fund: string;
     opys: string;
     mode?: 'parallel' | 'collaborative';
+    targetSubmissions?: number | null;
+    pointsRecognition?: number | null;
+    pointsVerification?: number | null;
   }) => call('/admin/upload-case', { method: 'POST', body: JSON.stringify(payload) }),
   uploadVerifCase: (payload: {
     imageBase64: string;
@@ -72,7 +75,25 @@ export const tgApi = {
     opys: string;
     questions: Array<{ label: string; role: string }>;
     aiAnswers: string[];
+    targetSubmissions?: number | null;
+    pointsVerification?: number | null;
   }) => call('/admin/upload-verif-case', { method: 'POST', body: JSON.stringify(payload) }),
+  getDescriptionSettings: (archive: string, fund: string, opys: string) =>
+    call(
+      `/admin/description-settings?archive=${encodeURIComponent(archive)}` +
+        `&fund=${encodeURIComponent(fund)}&opys=${encodeURIComponent(opys)}`
+    ) as Promise<{
+      settings: { targetSubmissions: number | null; pointsRecognition: number | null; pointsVerification: number | null };
+      defaults: { targetSubmissions: number; pointsRecognition: number; pointsVerification: number };
+    }>,
+  setDescriptionSettings: (payload: {
+    archive: string;
+    fund: string;
+    opys: string;
+    targetSubmissions: number | null;
+    pointsRecognition: number | null;
+    pointsVerification: number | null;
+  }) => call('/admin/description-settings', { method: 'POST', body: JSON.stringify(payload) }),
   verifDescriptions: () =>
     call('/admin/verif-descriptions') as Promise<{
       descriptions: Array<{ key: string; name: string; donePct: number; doneCases: number; totalCases: number }>;
