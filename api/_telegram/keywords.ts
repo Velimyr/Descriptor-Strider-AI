@@ -33,7 +33,7 @@ import {
   markKeywordMatchDelivered,
   KeywordBlock,
 } from './storage.js';
-import { sendMessage } from './tg-api.js';
+import { sendMessage, sendPhotoByFileId } from './tg-api.js';
 // Лише типи (erased при компіляції) — значення (buildSummary/sendCasePhotoWithOpys)
 // імпортуємо динамічно нижче, щоб не створити статичний цикл bot.ts ⇄ keywords.ts
 // (bot.ts статично імпортує keywords.ts для UI "Ключові слова").
@@ -181,11 +181,12 @@ async function getGlobalQuestions(): Promise<QuestionLike[]> {
   }
 }
 
+// Одне повідомлення (заголовок + поля), потім голе фото — без дисклеймера про
+// якість/кнопки "Переглянути опис" (те, що доречно у флоу розпізнавання, тут зайве).
 async function notifyUser(tgId: string, info: CaseRenderInfo): Promise<void> {
-  const { buildSummary, sendCasePhotoWithOpys } = await import('./bot.js');
-  await sendMessage(tgId, T.keywordMatchHeader);
-  await sendMessage(tgId, buildSummary(info.questions, info.answers));
-  await sendCasePhotoWithOpys(tgId, info);
+  const { buildFieldsList } = await import('./bot.js');
+  await sendMessage(tgId, `${T.keywordMatchHeader}\n\n${buildFieldsList(info.questions, info.answers)}`);
+  if (info.tgFileId) await sendPhotoByFileId(tgId, info.tgFileId);
 }
 
 // ---------- матчинг у реальному часі (гачок при закритті справи) ----------

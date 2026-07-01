@@ -612,9 +612,14 @@ async function resendCasePhoto(chatId: number | string, caseId: string): Promise
   }
 }
 
+// Лише рядки полів, без заголовка "Перевірте відповіді:" — для переюзання там,
+// де заголовок уже інший (напр. сповіщення "Ключові слова" в keywords.ts).
+export function buildFieldsList(questions: { label: string }[], answers: string[]): string {
+  return questions.map((q, i) => `<b>${escapeHtml(q.label)}</b>: ${escapeHtml(answers[i] ?? '—')}`).join('\n');
+}
+
 export function buildSummary(questions: { label: string }[], answers: string[]): string {
-  const lines = questions.map((q, i) => `<b>${escapeHtml(q.label)}</b>: ${escapeHtml(answers[i] ?? '—')}`);
-  return `${T.confirmHeader}\n\n${lines.join('\n')}`;
+  return `${T.confirmHeader}\n\n${buildFieldsList(questions, answers)}`;
 }
 
 // --------- Collaborative mode helpers ---------
