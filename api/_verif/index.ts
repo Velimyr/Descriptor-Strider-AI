@@ -90,6 +90,8 @@ async function ensureTelegramUser(tgId: string, name: string): Promise<void> {
     hasGeminiKeys: false,
     caseFilter: 'all',
     geminiModel: 'flash-lite',
+    sendHardCases: false,
+    casesSinceHardOffer: 0,
   });
 }
 

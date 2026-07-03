@@ -642,7 +642,7 @@ router.post('/admin/upload-case', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   const {
     imageBase64, sourcePdf, page, bbox, archive, fund, opys, mode,
-    targetSubmissions, pointsRecognition, pointsVerification,
+    targetSubmissions, pointsRecognition, pointsVerification, difficulty,
   } = req.body || {};
   if (!imageBase64) return res.status(400).json({ error: 'imageBase64 required' });
   // Архів/Фонд/Опис ідентифікують опис — без них результати не мають сенсу.
@@ -688,6 +688,7 @@ router.post('/admin/upload-case', async (req, res) => {
         targetSubmissions: Number.isFinite(Number(targetSubmissions)) && targetSubmissions ? Number(targetSubmissions) : null,
         pointsRecognition: Number.isFinite(Number(pointsRecognition)) && pointsRecognition ? Number(pointsRecognition) : null,
         pointsVerification: Number.isFinite(Number(pointsVerification)) && pointsVerification ? Number(pointsVerification) : null,
+        difficulty: difficulty === 'hard' ? 'hard' : 'normal',
       },
     ]);
     res.json({ ok: true, caseId, fileId, messageId: result?.message_id });
@@ -755,11 +756,13 @@ router.get('/admin/description-settings', async (req, res) => {
         targetSubmissions: botSettings?.targetSubmissions ?? verifSettings?.verifThreshold ?? null,
         pointsRecognition: botSettings?.pointsRecognition ?? null,
         pointsVerification: botSettings?.pointsVerification ?? verifSettings?.pointsBase ?? null,
+        difficulty: botSettings?.difficulty ?? 'normal',
       },
       defaults: {
         targetSubmissions: telegramBotConfig.cases.targetSubmissions,
         pointsRecognition: 3,
         pointsVerification: 1,
+        difficulty: 'normal',
       },
     });
   } catch (e: any) {
@@ -769,7 +772,7 @@ router.get('/admin/description-settings', async (req, res) => {
 
 router.post('/admin/description-settings', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
-  const { archive, fund, opys, targetSubmissions, pointsRecognition, pointsVerification } = req.body || {};
+  const { archive, fund, opys, targetSubmissions, pointsRecognition, pointsVerification, difficulty } = req.body || {};
   if (!archive || !fund || !opys) return res.status(400).json({ error: 'archive/fund/opys required' });
   try {
     const { updateVerifSettingsByDescription } = await import('../_core/verifCases.js');
@@ -778,8 +781,12 @@ router.post('/admin/description-settings', async (req, res) => {
       pointsRecognition: pointsRecognition === null || pointsRecognition === undefined ? null : Number(pointsRecognition),
       pointsVerification: pointsVerification === null || pointsVerification === undefined ? null : Number(pointsVerification),
     };
+    // Складність — лише для бот-справ (у веб-перевірки її немає).
+    const botPatch = difficulty === undefined
+      ? patch
+      : { ...patch, difficulty: (difficulty === 'hard' ? 'hard' : 'normal') as 'hard' | 'normal' };
     await Promise.all([
-      updateCaseSettingsByDescription(archive, fund, opys, patch),
+      updateCaseSettingsByDescription(archive, fund, opys, botPatch),
       updateVerifSettingsByDescription(archive, fund, opys, patch),
     ]);
     res.json({ ok: true });

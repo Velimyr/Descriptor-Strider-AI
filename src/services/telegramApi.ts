@@ -63,6 +63,7 @@ export const tgApi = {
     targetSubmissions?: number | null;
     pointsRecognition?: number | null;
     pointsVerification?: number | null;
+    difficulty?: 'normal' | 'hard';
   }) => call('/admin/upload-case', { method: 'POST', body: JSON.stringify(payload) }),
   uploadVerifCase: (payload: {
     imageBase64: string;
@@ -83,8 +84,8 @@ export const tgApi = {
       `/admin/description-settings?archive=${encodeURIComponent(archive)}` +
         `&fund=${encodeURIComponent(fund)}&opys=${encodeURIComponent(opys)}`
     ) as Promise<{
-      settings: { targetSubmissions: number | null; pointsRecognition: number | null; pointsVerification: number | null };
-      defaults: { targetSubmissions: number; pointsRecognition: number; pointsVerification: number };
+      settings: { targetSubmissions: number | null; pointsRecognition: number | null; pointsVerification: number | null; difficulty: 'normal' | 'hard' };
+      defaults: { targetSubmissions: number; pointsRecognition: number; pointsVerification: number; difficulty: 'normal' | 'hard' };
     }>,
   setDescriptionSettings: (payload: {
     archive: string;
@@ -93,6 +94,7 @@ export const tgApi = {
     targetSubmissions: number | null;
     pointsRecognition: number | null;
     pointsVerification: number | null;
+    difficulty?: 'normal' | 'hard';
   }) => call('/admin/description-settings', { method: 'POST', body: JSON.stringify(payload) }),
   verifDescriptions: () =>
     call('/admin/verif-descriptions') as Promise<{

@@ -33,6 +33,10 @@ alter table botdev_users add column if not exists case_filter text not null defa
 -- Модель Gemini для AI-розпізнавання: 'flash-lite' (дефолт) | 'flash' — див. schema.sql.
 alter table botdev_users add column if not exists gemini_model text not null default 'flash-lite';
 
+-- Складні справи — див. schema.sql.
+alter table botdev_users add column if not exists send_hard_cases        boolean not null default false;
+alter table botdev_users add column if not exists cases_since_hard_offer integer not null default 0;
+
 create table if not exists botdev_integrity_reviews (
   case_id          text        not null,
   first_tg_id      text        not null,
@@ -83,6 +87,8 @@ alter table botdev_cases add column if not exists updated_at           timestamp
 alter table botdev_cases add column if not exists target_submissions  integer;
 alter table botdev_cases add column if not exists points_recognition  numeric;
 alter table botdev_cases add column if not exists points_verification numeric;
+-- Складність опису: 'normal' (деф.) | 'hard' — див. schema.sql.
+alter table botdev_cases add column if not exists difficulty text not null default 'normal';
 alter table botdev_cases drop constraint if exists botdev_cases_mode_check;
 alter table botdev_cases
   add  constraint botdev_cases_mode_check
@@ -369,7 +375,8 @@ revoke all on function botdev_fund_eta_stats(int, int) from public, anon, authen
 -- де користувач НЕ брав участі (не сабмітив, не пропустив, не торкався в collab).
 -- ORDER BY обов'язковий: PostgREST обрізає відповідь до db_max_rows (~1000),
 -- і без сортування старіші описи можуть випадати з вибірки → шедулер їх "не бачить".
-create or replace function botdev_candidate_cases(p_tg_id text)
+drop function if exists botdev_candidate_cases(text);
+create or replace function botdev_candidate_cases(p_tg_id text, p_hard text default 'include')
 returns setof botdev_cases language sql security definer as $$
   select c.* from botdev_cases c
   where c.status = 'open'
@@ -382,13 +389,19 @@ returns setof botdev_cases language sql security definer as $$
       or c.locked_until < now()
       or c.locked_by_tg_id = p_tg_id
     )
+    and (
+      p_hard = 'include'
+      or (p_hard = 'exclude' and coalesce(c.difficulty, 'normal') <> 'hard')
+      or (p_hard = 'only'    and coalesce(c.difficulty, 'normal') =  'hard')
+    )
   order by c.created_at, c.case_id;
 $$;
-revoke all on function botdev_candidate_cases(text) from public, anon, authenticated;
+revoke all on function botdev_candidate_cases(text, text) from public, anon, authenticated;
 
 -- v2 (egress-фікс) — дзеркало bot_candidate_cases_v2 із schema.sql: лише справи
 -- одного-двох релевантних описів у слім-проєкції замість усіх кандидатів.
-create or replace function botdev_candidate_cases_v2(p_tg_id text, p_target integer)
+drop function if exists botdev_candidate_cases_v2(text, integer);
+create or replace function botdev_candidate_cases_v2(p_tg_id text, p_target integer, p_hard text default 'include')
 returns table (
   case_id text,
   archive text,
@@ -398,11 +411,13 @@ returns table (
   confirmations_count integer,
   submissions_count integer,
   created_at timestamptz,
-  current_answers jsonb
+  current_answers jsonb,
+  difficulty text
 ) language sql security definer as $$
   with cand as (
     select c.case_id, c.archive, c.fund, c.opys, c.mode,
            c.confirmations_count, c.submissions_count, c.created_at, c.current_answers,
+           coalesce(c.difficulty, 'normal') as difficulty,
            case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end as progress,
            coalesce(c.target_submissions, p_target) as target
     from botdev_cases c
@@ -415,6 +430,11 @@ returns table (
         or c.locked_until is null
         or c.locked_until < now()
         or c.locked_by_tg_id = p_tg_id
+      )
+      and (
+        p_hard = 'include'
+        or (p_hard = 'exclude' and coalesce(c.difficulty, 'normal') <> 'hard')
+        or (p_hard = 'only'    and coalesce(c.difficulty, 'normal') =  'hard')
       )
   ),
   ages as (
@@ -437,7 +457,7 @@ returns table (
     limit 1
   )
   select c.case_id, c.archive, c.fund, c.opys, c.mode,
-         c.confirmations_count, c.submissions_count, c.created_at, c.current_answers
+         c.confirmations_count, c.submissions_count, c.created_at, c.current_answers, c.difficulty
   from cand c
   where (c.archive, c.fund, c.opys) in (
     select archive, fund, opys from d_all
@@ -446,7 +466,7 @@ returns table (
   )
   order by c.created_at, c.case_id;
 $$;
-revoke all on function botdev_candidate_cases_v2(text, integer) from public, anon, authenticated;
+revoke all on function botdev_candidate_cases_v2(text, integer, text) from public, anon, authenticated;
 
 -- =====================================================================
 -- ВЕБ-ПЕРЕВІРКА справ (staging, префікс botdev_). Дзеркало verif-секції з schema.sql.

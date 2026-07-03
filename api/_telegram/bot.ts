@@ -37,6 +37,7 @@ import {
   setUserGeminiKeys,
   getUserGeminiModel,
   resolveGeminiModelId,
+  getUserHardPref,
   CaseFilter,
   GeminiModelChoice,
 } from './storage.js';
@@ -241,7 +242,22 @@ function settingsMenuKeyboard(): any {
       [{ text: T.profileKeysButton, callback_data: 'settings:keys' }],
       [{ text: T.aiModelButton, callback_data: 'settings:aimodel' }],
       [{ text: T.caseFilterButton, callback_data: 'settings:casefilter' }],
+      [{ text: T.hardButton, callback_data: 'settings:hard' }],
       [{ text: T.keywordsButton, callback_data: 'settings:keywords' }],
+    ],
+  };
+}
+
+// Підменю «Чи надсилати складні справи». Поточний варіант позначаємо ✅.
+function hardCasesKeyboard(current: boolean): any {
+  const opt = (value: boolean, label: string) => [
+    { text: (current === value ? '✅ ' : '') + label, callback_data: `settings:sh:${value ? 'yes' : 'no'}` },
+  ];
+  return {
+    inline_keyboard: [
+      opt(true, T.hardYes),
+      opt(false, T.hardNo),
+      [{ text: T.profileBackButton, callback_data: 'settings:back' }],
     ],
   };
 }
@@ -800,6 +816,8 @@ async function handleMessage(msg: any) {
         hasGeminiKeys: false,
         caseFilter: 'all',
         geminiModel: 'flash-lite',
+        sendHardCases: false,
+        casesSinceHardOffer: 0,
       };
       await upsertUser(newUser);
       currentUser = { ...newUser, rowIndex: 0 } as BotUser;
@@ -1311,6 +1329,19 @@ async function handleCallback(cb: any) {
       }
       return;
     }
+    // --- Чи надсилати складні справи ---
+    if (action === 'hard') {
+      await sendMessage(chatId, T.hardTitle, { reply_markup: hardCasesKeyboard(user.sendHardCases) });
+      return;
+    }
+    if (action.startsWith('sh:')) {
+      const value = action.slice('sh:'.length) === 'yes';
+      await patchUser(tgId, { sendHardCases: value });
+      await sendMessage(chatId, value ? T.hardSavedYes : T.hardSavedNo, {
+        reply_markup: hardCasesKeyboard(value),
+      });
+      return;
+    }
     if (action === 'back') {
       await cmdSettings(chatId, user);
       return;
@@ -1464,6 +1495,15 @@ async function handleCallback(cb: any) {
   if (data === 'nopoints') {
     await answerCallbackQuery(cb.id);
     await sendNoPointsList(chatId, tgId);
+    return;
+  }
+
+  // Відповідь на пропозицію складної справи. У будь-якому разі скидаємо лічильник.
+  if (data === 'hardoffer:yes' || data === 'hardoffer:no') {
+    await answerCallbackQuery(cb.id);
+    await patchUser(tgId, { casesSinceHardOffer: 0 });
+    await sendMessage(chatId, T.processingNotice);
+    await dispatchCaseToUser(tgId, true, /*forceHard*/ data === 'hardoffer:yes');
     return;
   }
 
@@ -1712,9 +1752,25 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
     }
     return;
   }
+  // Кожну 20-ту справу юзеру з «Ні» пропонуємо складну (перш ніж видати звичайну).
+  const hardPref = await getUserHardPref(tgId);
+  if (!hardPref.sendHardCases && hardPref.casesSinceHardOffer >= HARD_OFFER_EVERY) {
+    await sendMessage(chatId, T.hardOfferPrompt, {
+      reply_markup: {
+        inline_keyboard: [[
+          { text: T.hardOfferYes, callback_data: 'hardoffer:yes' },
+          { text: T.hardOfferNo, callback_data: 'hardoffer:no' },
+        ]],
+      },
+    });
+    return;
+  }
   // Ручне «Нова справа» — іґноруємо paused, бо опція розсилки тільки для авторозсилок.
   await dispatchCaseToUser(tgId, true);
 }
+
+// Кожну N-ту видану справу пропонуємо складну юзеру, який їх не отримує за замовч.
+const HARD_OFFER_EVERY = 20;
 
 async function cmdStats(chatId: number, tgId: string, user: BotUser) {
   const today = kyivDateString();
@@ -2141,12 +2197,13 @@ export async function dispatchCaseToUser(
   // ignorePaused=true — ручний виклик (кнопка «Нова справа») іґнорує статус paused.
   // Опція «Зупинити розсилку» — тільки для авторозсилок за розкладом.
   ignorePaused = false,
-  preloadedCases?: BotCase[]
+  // forceHard=true — примусово складна справа (юзер прийняв пропозицію «хочеш складну?»).
+  forceHard = false
 ): Promise<boolean> {
   // Паралельні незалежні читання.
   const [user, next, questions] = await Promise.all([
     getUser(tgId),
-    selectNextCaseForUser(tgId, preloadedCases),
+    selectNextCaseForUser(tgId, { forceHard }),
     getQuestions(),
   ]);
   console.log('[dispatch]', { tgId, userStatus: user?.status, ignorePaused, hasNext: !!next, nextCaseId: next?.caseId, questions: questions.length });
@@ -2154,10 +2211,18 @@ export async function dispatchCaseToUser(
   if (user.banned) return false; // забаненим (перевірка доброчесності) не розсилаємо
   if (!ignorePaused && user.status !== 'active') return false;
   if (!next) {
+    // Просили складну, але її немає — фолбек на звичайну (без «справ немає»).
+    if (forceHard) return dispatchCaseToUser(tgId, ignorePaused, false);
     await sendMessage(tgId, T.noCasesLeft);
     return false;
   }
   if (questions.length === 0) return false;
+
+  // Лічильник «справ від останньої пропозиції складної» — рахуємо будь-яку видану
+  // справу юзерам, що НЕ отримують складні (для «кожну 20-ту пропонуємо складну»).
+  if (!user.sendHardCases) {
+    await patchUser(tgId, { casesSinceHardOffer: (user.casesSinceHardOffer || 0) + 1 });
+  }
 
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
   // Під фото — кнопка «Показати опис» (PDF архівного опису) + дисклеймер.

@@ -42,6 +42,12 @@ alter table bot_users add column if not exists case_filter text not null default
 -- Модель Gemini для AI-розпізнавання: 'flash-lite' (дефолт) | 'flash'.
 alter table bot_users add column if not exists gemini_model text not null default 'flash-lite';
 
+-- Складні справи. send_hard_cases=false (деф.) → складні описи не надсилаються.
+-- cases_since_hard_offer — лічильник виданих справ; на 20-й «Нова справа» юзеру з
+-- false пропонуємо складну (після відповіді лічильник скидається).
+alter table bot_users add column if not exists send_hard_cases      boolean not null default false;
+alter table bot_users add column if not exists cases_since_hard_offer integer not null default 0;
+
 -- Журнал рішень адміна по парах різночитань ("Перевірка доброчесності").
 -- Пара ідентифікується справою + двома tg_id у відсортованому порядку (щоб
 -- (A,B) і (B,A) трактувались як одна пара). action: penalized — комусь зняли бали;
@@ -100,6 +106,9 @@ alter table bot_cases drop constraint if exists bot_cases_mode_check;
 alter table bot_cases add column if not exists target_submissions  integer;
 alter table bot_cases add column if not exists points_recognition  numeric;
 alter table bot_cases add column if not exists points_verification numeric;
+-- Складність опису (денормалізовано на кожну справу опису, як і оверрайди вище):
+-- 'normal' (деф.) | 'hard'. Складні описи ховаються від юзерів із send_hard_cases=false.
+alter table bot_cases add column if not exists difficulty text not null default 'normal';
 alter table bot_cases
   add  constraint bot_cases_mode_check
   check (mode in ('parallel','collaborative'));
@@ -438,7 +447,8 @@ revoke all on function bot_fund_eta_stats(int, int) from public, anon, authentic
 -- де користувач НЕ брав участі (не сабмітив, не пропустив, не торкався в collab).
 -- ORDER BY обов'язковий: PostgREST обрізає відповідь до db_max_rows (~1000),
 -- і без сортування старіші описи можуть випадати з вибірки → шедулер їх "не бачить".
-create or replace function bot_candidate_cases(p_tg_id text)
+drop function if exists bot_candidate_cases(text);
+create or replace function bot_candidate_cases(p_tg_id text, p_hard text default 'include')
 returns setof bot_cases language sql security definer as $$
   select c.* from bot_cases c
   where c.status = 'open'
@@ -451,9 +461,14 @@ returns setof bot_cases language sql security definer as $$
       or c.locked_until < now()
       or c.locked_by_tg_id = p_tg_id
     )
+    and (
+      p_hard = 'include'
+      or (p_hard = 'exclude' and coalesce(c.difficulty, 'normal') <> 'hard')
+      or (p_hard = 'only'    and coalesce(c.difficulty, 'normal') =  'hard')
+    )
   order by c.created_at, c.case_id;
 $$;
-revoke all on function bot_candidate_cases(text) from public, anon, authenticated;
+revoke all on function bot_candidate_cases(text, text) from public, anon, authenticated;
 
 -- v2 (egress-фікс): v1 повертає ВСІ доступні справи (~1000 рядків × ~1.2 КБ JSON
 -- на кожну видачу). Логіка вибору в selectNextCaseForUser завжди бере справу або
@@ -461,7 +476,11 @@ revoke all on function bot_candidate_cases(text) from public, anon, authenticate
 -- опису, де ще є справи з progress < p_target (primary-шлях). Тому повертаємо лише
 -- кандидатів цих одного-двох описів і лише колонки, потрібні для вибору; повний
 -- рядок обраної справи код добирає окремим точковим getCase().
-create or replace function bot_candidate_cases_v2(p_tg_id text, p_target integer)
+-- p_hard: 'include' (усі), 'exclude' (без складних описів), 'only' (лише складні).
+-- Фільтр складності — ВСЕРЕДИНІ RPC (до звуження до найстарішого опису), інакше
+-- при hard-описі зверху вибірка була б порожня замість наступного звичайного.
+drop function if exists bot_candidate_cases_v2(text, integer);
+create or replace function bot_candidate_cases_v2(p_tg_id text, p_target integer, p_hard text default 'include')
 returns table (
   case_id text,
   archive text,
@@ -471,11 +490,13 @@ returns table (
   confirmations_count integer,
   submissions_count integer,
   created_at timestamptz,
-  current_answers jsonb
+  current_answers jsonb,
+  difficulty text
 ) language sql security definer as $$
   with cand as (
     select c.case_id, c.archive, c.fund, c.opys, c.mode,
            c.confirmations_count, c.submissions_count, c.created_at, c.current_answers,
+           coalesce(c.difficulty, 'normal') as difficulty,
            case when c.mode = 'collaborative' then c.confirmations_count else c.submissions_count end as progress,
            coalesce(c.target_submissions, p_target) as target
     from bot_cases c
@@ -488,6 +509,11 @@ returns table (
         or c.locked_until is null
         or c.locked_until < now()
         or c.locked_by_tg_id = p_tg_id
+      )
+      and (
+        p_hard = 'include'
+        or (p_hard = 'exclude' and coalesce(c.difficulty, 'normal') <> 'hard')
+        or (p_hard = 'only'    and coalesce(c.difficulty, 'normal') =  'hard')
       )
   ),
   ages as (
@@ -510,7 +536,7 @@ returns table (
     limit 1
   )
   select c.case_id, c.archive, c.fund, c.opys, c.mode,
-         c.confirmations_count, c.submissions_count, c.created_at, c.current_answers
+         c.confirmations_count, c.submissions_count, c.created_at, c.current_answers, c.difficulty
   from cand c
   where (c.archive, c.fund, c.opys) in (
     select archive, fund, opys from d_all
@@ -519,7 +545,7 @@ returns table (
   )
   order by c.created_at, c.case_id;
 $$;
-revoke all on function bot_candidate_cases_v2(text, integer) from public, anon, authenticated;
+revoke all on function bot_candidate_cases_v2(text, integer, text) from public, anon, authenticated;
 
 -- =====================================================================
 -- ВЕБ-ПЕРЕВІРКА справ (вкладка «Перевірка»). Окремі таблиці — бот їх НЕ читає.

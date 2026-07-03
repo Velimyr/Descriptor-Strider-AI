@@ -9,6 +9,8 @@ import {
   getCase,
   getLastUserCaseKind,
   getUserCaseFilter,
+  getUserHardPref,
+  HardMode,
   getMeta,
   getPuzzle,
   getTodayActivity,
@@ -137,26 +139,37 @@ function buildDescriptionOrder(
 
 export async function selectNextCaseForUser(
   tgId: string,
-  _preloadedCases?: BotCase[] // legacy, ігнорується — фільтр перенесли в SQL
+  // forceHard — примусово ЛИШЕ складні (коли юзер прийняв пропозицію «хочеш складну?»).
+  opts?: { forceHard?: boolean }
 ): Promise<BotCase | null> {
   // Один SQL: тільки кандидати, які цьому юзеру можна показати.
   // Фільтри: status='open', не сабмітив/пропустив/торкався, не лочена іншим.
   // v2 (egress-фікс): слім-рядки лише з релевантних описів. Фолбек на v1 —
   // на випадок, якщо код задеплоєно раніше, ніж SQL-функцію v2.
   const targetParallel = cfg.cases.targetSubmissions;
-  const fetchCandidates = async (): Promise<CandidateCase[]> => {
-    try {
-      return await getCandidateCasesSlimForUser(tgId, targetParallel);
-    } catch (e: any) {
-      console.error('candidate_cases_v2 failed, fallback to v1:', e?.message || e);
-      return getCandidateCasesForUser(tgId);
-    }
-  };
-  const [allCandidates, lastKind, caseFilter] = await Promise.all([
-    fetchCandidates(),
+
+  // Спершу — легкі преференси (складність, фільтр справ, остання дія), бо режим
+  // складності треба знати ДО вибірки кандидатів (фільтр складності — всередині RPC).
+  const [hardPref, lastKind, caseFilter] = await Promise.all([
+    getUserHardPref(tgId),
     getLastUserCaseKind(tgId),
     getUserCaseFilter(tgId),
   ]);
+  const hardMode: HardMode = opts?.forceHard
+    ? 'only'
+    : hardPref.sendHardCases
+      ? 'include'
+      : 'exclude';
+
+  const fetchCandidates = async (): Promise<CandidateCase[]> => {
+    try {
+      return await getCandidateCasesSlimForUser(tgId, targetParallel, hardMode);
+    } catch (e: any) {
+      console.error('candidate_cases_v2 failed, fallback to v1:', e?.message || e);
+      return getCandidateCasesForUser(tgId, hardMode);
+    }
+  };
+  const allCandidates = await fetchCandidates();
   // Фільтр «Які справи надсилати». Перевірка = collab із вже наявною версією
   // (confirmationsCount>0); решта (parallel або collab без версії) = розпізнавання.
   const isVerification = (c: CandidateCase) => c.mode === 'collaborative' && c.confirmationsCount > 0;

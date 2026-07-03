@@ -8,12 +8,14 @@ export interface DescriptionSettingsValue {
   targetSubmissions: number | null;
   pointsRecognition: number | null;
   pointsVerification: number | null;
+  difficulty: 'normal' | 'hard';
 }
 
 export const EMPTY_DESCRIPTION_SETTINGS: DescriptionSettingsValue = {
   targetSubmissions: null,
   pointsRecognition: null,
   pointsVerification: null,
+  difficulty: 'normal',
 };
 
 // Тягне поточні оверрайди + глобальні дефолти для опису (archive/fund/opys), коли
@@ -118,6 +120,19 @@ export function DescriptionSettingsFields({
           />
         </label>
       </div>
+      {showRecognition && (
+        <label className="text-xs text-slate-500 block mt-2">
+          Складність опису
+          <select
+            value={value.difficulty || 'normal'}
+            onChange={e => onChange({ ...value, difficulty: e.target.value === 'hard' ? 'hard' : 'normal' })}
+            className="mt-0.5 border rounded px-2 py-1.5 text-sm w-full"
+          >
+            <option value="normal">Звичайний (normal)</option>
+            <option value="hard">Складний (hard) — надсилається лише охочим</option>
+          </select>
+        </label>
+      )}
     </div>
   );
 }

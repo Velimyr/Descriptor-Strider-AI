@@ -114,9 +114,16 @@ export interface BotUser {
   caseFilter: CaseFilter;
   // Модель Gemini для AI-розпізнавання: 'flash-lite' (дефолт) або 'flash'.
   geminiModel: GeminiModelChoice;
+  // Складні справи: чи надсилати складні описи (деф. false) + лічильник виданих
+  // справ від останньої пропозиції складної («кожну 20-ту пропонуємо складну»).
+  sendHardCases: boolean;
+  casesSinceHardOffer: number;
 }
 
 export type CaseFilter = 'all' | 'recognition' | 'verification';
+export type CaseDifficulty = 'normal' | 'hard';
+// Режим фільтра складності для вибірки кандидатів (передається в RPC).
+export type HardMode = 'include' | 'exclude' | 'only';
 export type GeminiModelChoice = 'flash-lite' | 'flash';
 
 // Маппінг вибору моделі → ідентифікатор моделі Gemini (стабільні -latest аліаси).
@@ -153,6 +160,8 @@ export interface BotCase {
   targetSubmissions: number | null;
   pointsRecognition: number | null;
   pointsVerification: number | null;
+  // Складність опису: 'normal' (деф.) | 'hard'.
+  difficulty: CaseDifficulty;
 }
 
 export interface BotSession {
@@ -194,6 +203,8 @@ function mapUser(r: any): BotUser {
     hasGeminiKeys: !!r.gemini_keys_enc,
     caseFilter: (r.case_filter || 'all') as CaseFilter,
     geminiModel: (r.gemini_model || 'flash-lite') as GeminiModelChoice,
+    sendHardCases: r.send_hard_cases === true,
+    casesSinceHardOffer: Number(r.cases_since_hard_offer || 0),
   };
 }
 
@@ -280,6 +291,7 @@ function mapCase(r: any): BotCase {
     targetSubmissions: r.target_submissions ?? null,
     pointsRecognition: r.points_recognition ?? null,
     pointsVerification: r.points_verification ?? null,
+    difficulty: (r.difficulty || 'normal') as CaseDifficulty,
   };
 }
 
@@ -604,6 +616,8 @@ export async function patchUser(tgId: string, patch: Partial<Omit<BotUser, 'rowI
   if (patch.photoMessageId !== undefined) dbPatch.photo_message_id = patch.photoMessageId || null;
   if (patch.caseFilter !== undefined) dbPatch.case_filter = patch.caseFilter;
   if (patch.geminiModel !== undefined) dbPatch.gemini_model = patch.geminiModel;
+  if (patch.sendHardCases !== undefined) dbPatch.send_hard_cases = patch.sendHardCases;
+  if (patch.casesSinceHardOffer !== undefined) dbPatch.cases_since_hard_offer = patch.casesSinceHardOffer;
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db().from(T.users).update(dbPatch).eq('tg_id', tgId);
   if (error) throw error;
@@ -786,6 +800,7 @@ export async function appendCases(items: Omit<BotCase, 'rowIndex'>[]) {
       target_submissions: c.targetSubmissions ?? null,
       points_recognition: c.pointsRecognition ?? null,
       points_verification: c.pointsVerification ?? null,
+      difficulty: c.difficulty || 'normal',
     }))
   );
   if (error) throw error;
@@ -798,6 +813,7 @@ export interface DescriptionCaseSettings {
   targetSubmissions: number | null;
   pointsRecognition: number | null;
   pointsVerification: number | null;
+  difficulty: CaseDifficulty;
 }
 
 export async function getCaseSettingsByDescription(
@@ -807,7 +823,7 @@ export async function getCaseSettingsByDescription(
 ): Promise<DescriptionCaseSettings | null> {
   const { data, error } = await db()
     .from(T.cases)
-    .select('target_submissions, points_recognition, points_verification')
+    .select('target_submissions, points_recognition, points_verification, difficulty')
     .eq('archive', archive)
     .eq('fund', fund)
     .eq('opys', opys)
@@ -819,6 +835,7 @@ export async function getCaseSettingsByDescription(
     targetSubmissions: data.target_submissions ?? null,
     pointsRecognition: data.points_recognition ?? null,
     pointsVerification: data.points_verification ?? null,
+    difficulty: (data.difficulty || 'normal') as CaseDifficulty,
   };
 }
 
@@ -830,10 +847,11 @@ export async function updateCaseSettingsByDescription(
   opys: string,
   patch: Partial<DescriptionCaseSettings>
 ): Promise<void> {
-  const dbPatch: Record<string, number | null> = {};
+  const dbPatch: Record<string, number | string | null> = {};
   if ('targetSubmissions' in patch) dbPatch.target_submissions = patch.targetSubmissions ?? null;
   if ('pointsRecognition' in patch) dbPatch.points_recognition = patch.pointsRecognition ?? null;
   if ('pointsVerification' in patch) dbPatch.points_verification = patch.pointsVerification ?? null;
+  if ('difficulty' in patch) dbPatch.difficulty = patch.difficulty || 'normal';
   if (Object.keys(dbPatch).length === 0) return;
   const { error } = await db()
     .from(T.cases)
@@ -1664,8 +1682,8 @@ export async function getFundEtaStats(
 
 // Кандидати для dispatch для конкретного юзера (виключає вже опрацьовані).
 // Виконує всі фільтри в SQL — масштабується незалежно від розміру bot_cases.
-export async function getCandidateCasesForUser(tgId: string): Promise<BotCase[]> {
-  const { data, error } = await db().rpc(RPC_CANDIDATE_CASES, { p_tg_id: tgId });
+export async function getCandidateCasesForUser(tgId: string, hard: HardMode = 'include'): Promise<BotCase[]> {
+  const { data, error } = await db().rpc(RPC_CANDIDATE_CASES, { p_tg_id: tgId, p_hard: hard });
   if (error) throw error;
   return ((data as any[]) || []).map(mapCase);
 }
@@ -1684,14 +1702,17 @@ export interface CandidateCase {
   submissionsCount: number;
   createdAt: string;
   currentAnswers: string[];
+  difficulty: CaseDifficulty;
 }
 export async function getCandidateCasesSlimForUser(
   tgId: string,
-  target: number
+  target: number,
+  hard: HardMode = 'include'
 ): Promise<CandidateCase[]> {
   const { data, error } = await db().rpc(RPC_CANDIDATE_CASES_V2, {
     p_tg_id: tgId,
     p_target: target,
+    p_hard: hard,
   });
   if (error) throw error;
   return ((data as any[]) || []).map(r => ({
@@ -1704,7 +1725,24 @@ export async function getCandidateCasesSlimForUser(
     submissionsCount: r.submissions_count || 0,
     createdAt: r.created_at || '',
     currentAnswers: Array.isArray(r.current_answers) ? r.current_answers.map(String) : [],
+    difficulty: (r.difficulty || 'normal') as CaseDifficulty,
   }));
+}
+
+// Легке читання складних-налаштувань юзера (2 колонки) — для вибору справи/лічильника.
+export async function getUserHardPref(
+  tgId: string
+): Promise<{ sendHardCases: boolean; casesSinceHardOffer: number }> {
+  const { data, error } = await db()
+    .from(T.users)
+    .select('send_hard_cases, cases_since_hard_offer')
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  return {
+    sendHardCases: (data as any)?.send_hard_cases === true,
+    casesSinceHardOffer: Number((data as any)?.cases_since_hard_offer || 0),
+  };
 }
 
 // Усі рядки confirmations для заданого набору case_id (для адмін-перегляду).

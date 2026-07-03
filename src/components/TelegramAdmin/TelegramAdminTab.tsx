@@ -2479,6 +2479,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
           targetSubmissions: descSettings.targetSubmissions,
           pointsRecognition: descSettings.pointsRecognition,
           pointsVerification: descSettings.pointsVerification,
+          difficulty: descSettings.difficulty,
         });
         done++;
         setUploadProgress({ done, total });
