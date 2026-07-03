@@ -1752,18 +1752,23 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
     }
     return;
   }
-  // Кожну 20-ту справу юзеру з «Ні» пропонуємо складну (перш ніж видати звичайну).
+  // Кожну 20-ту справу юзеру з «Ні» пропонуємо складну — але ЛИШЕ якщо складна справа
+  // реально доступна цьому юзеру. Немає складних → не набридаємо, даємо звичайну
+  // (лічильник не скидаємо — запропонуємо, щойно складна зʼявиться).
   const hardPref = await getUserHardPref(tgId);
   if (!hardPref.sendHardCases && hardPref.casesSinceHardOffer >= HARD_OFFER_EVERY) {
-    await sendMessage(chatId, T.hardOfferPrompt, {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: T.hardOfferYes, callback_data: 'hardoffer:yes' },
-          { text: T.hardOfferNo, callback_data: 'hardoffer:no' },
-        ]],
-      },
-    });
-    return;
+    const hardAvailable = await selectNextCaseForUser(tgId, { forceHard: true });
+    if (hardAvailable) {
+      await sendMessage(chatId, T.hardOfferPrompt, {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: T.hardOfferYes, callback_data: 'hardoffer:yes' },
+            { text: T.hardOfferNo, callback_data: 'hardoffer:no' },
+          ]],
+        },
+      });
+      return;
+    }
   }
   // Ручне «Нова справа» — іґноруємо paused, бо опція розсилки тільки для авторозсилок.
   await dispatchCaseToUser(tgId, true);
