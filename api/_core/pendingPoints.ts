@@ -191,7 +191,7 @@ export async function settleCaseAtClose(caseId: string, finalAnswers: string[]):
 export interface ForfeitedCase {
   caseId: string;
   opysLabel: string;  // «{archive} {fund}-{opys}» з картки справи
-  spravaNo: string;   // номер справи, який ВНІС розпізнавач (роль case_no); '—' якщо порожньо
+  spravaNo: string;   // номер справи, який ВНІС розпізнавач (роль order_no, фолбек case_no); '—' якщо порожньо
   points: number;
   settledAt: string;
   fields: FieldDiff[];
@@ -213,8 +213,13 @@ export async function getRecentForfeited(tgId: string, hours = 24): Promise<Forf
   if (rows.length === 0) return [];
 
   const questions = await getQuestions();
-  // Індекс поля «Номер справи» (роль case_no) — звідти беремо те, що ввів розпізнавач.
-  const caseNoIdx = questions.findIndex(q => q.role === 'case_no');
+  // Індекс поля з номером справи — пріоритет "Порядковий номер справи" (order_no,
+  // фактично завжди заповнений і саме ним ідентифікують справу скрізь в адмінці).
+  // "Номер справи (додатковий)" (case_no) — лише фолбек, він частіше порожній.
+  const caseNoIdx = (() => {
+    const orderIdx = questions.findIndex(q => q.role === 'order_no');
+    return orderIdx >= 0 ? orderIdx : questions.findIndex(q => q.role === 'case_no');
+  })();
 
   return Promise.all(
     rows.map(async r => {
