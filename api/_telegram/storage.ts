@@ -173,6 +173,9 @@ export interface BotSession {
   startedAt: string;
   updatedAt: string;
   state: 'asking' | 'confirming' | 'editing' | 'previewing';
+  // Денормалізований режим справи цієї сесії — щоб автопродовження collab-локу
+  // (у setSession) не вимагало окремого читання bot_cases на кожну відповідь.
+  mode: 'parallel' | 'collaborative';
 }
 
 // Маперивчасть тут — нижче є мапери row → доменна модель.
@@ -305,6 +308,7 @@ function mapSession(r: any): BotSession {
     startedAt: r.started_at || '',
     updatedAt: r.updated_at || '',
     state: (r.state || 'asking') as 'asking' | 'confirming' | 'editing' | 'previewing',
+    mode: (r.mode || 'parallel') as 'parallel' | 'collaborative',
   };
 }
 
@@ -936,10 +940,26 @@ export async function setSession(s: Omit<BotSession, 'rowIndex'>, _existingRowIn
         started_at: s.startedAt || new Date().toISOString(),
         updated_at: s.updatedAt || new Date().toISOString(),
         state: s.state,
+        mode: s.mode || 'parallel',
       },
       { onConflict: 'tg_id' }
     );
   if (error) throw error;
+
+  // Автопродовження collab-локу на кожну відповідь (нуль нових читань понад
+  // getMeta-кеш): активна людина не втрачає лок посеред проходження питань,
+  // навіть якщо базовий TTL від видачі вже сплив. Для parallel — не чіпаємо
+  // (locked_until там ніде не читається).
+  if (s.mode === 'collaborative' && s.caseId) {
+    try {
+      const raw = await getMeta('collab_lock_minutes');
+      const n = parseInt(raw || '', 10);
+      const lockMinutes = Number.isFinite(n) && n > 0 ? n : 30;
+      await lockCase(s.caseId, s.tgId, lockMinutes);
+    } catch (e) {
+      console.error('setSession: renew collab lock failed', e);
+    }
+  }
 }
 
 export async function deleteSession(tgId: string): Promise<boolean> {

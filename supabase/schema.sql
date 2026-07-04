@@ -163,6 +163,10 @@ alter table bot_sessions
   add  constraint bot_sessions_state_check
   check (state in ('asking','confirming','editing','previewing'));
 
+-- Денормалізований режим справи сесії (parallel/collaborative) — щоб автопродовження
+-- collab-локу (при кожній відповіді) не потребувало окремого читання bot_cases.
+alter table bot_sessions add column if not exists mode text not null default 'parallel';
+
 -- Підтверджені відповіді. answers — jsonb-масив у тому самому порядку, що bot_meta.questions.
 -- Метадані справи (archive/fund/opys/sprava/source_pdf/page) денормалізовані сюди,
 -- щоб «Результати» були самодостатні навіть якщо bot_cases поправлять/чистять.

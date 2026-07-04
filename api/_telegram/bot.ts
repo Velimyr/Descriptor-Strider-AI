@@ -2258,6 +2258,7 @@ export async function dispatchCaseToUser(
         startedAt: nowIsoUtc(),
         updatedAt: nowIsoUtc(),
         state: 'previewing',
+        mode: next.mode,
       }),
       upsertUser(
         { ...user, lastDispatchedCaseId: next.caseId, lastDispatchedAt: nowIsoUtc() },
@@ -2282,6 +2283,7 @@ export async function dispatchCaseToUser(
       startedAt: nowIsoUtc(),
       updatedAt: nowIsoUtc(),
       state: 'asking',
+      mode: next.mode,
     }),
     upsertUser(
       { ...user, lastDispatchedCaseId: next.caseId, lastDispatchedAt: nowIsoUtc() },
@@ -2555,7 +2557,15 @@ async function confirmAndSubmit(
   });
   // Collab-режим: розгалуження на create vs edit.
   if (cse.mode === 'collaborative') {
-    return collabSubmit(chatId, tgId, cse, user, questions, answers, ackMessageId);
+    const alreadyEdit = await hasUserTouchedCase(cse.caseId, tgId);
+    // Сесія стартувала як 'asking' → на момент видачі справа була порожня. Якщо
+    // зараз (на момент сабміту) вона вже МАЄ версію, а цей юзер її не торкався —
+    // хтось інший устиг розпізнати її, поки юзер відповідав (лок протух). Тоді не
+    // перезаписуємо його роботу мовчки, а показуємо перевірку/пропозицію іншої.
+    if (!alreadyEdit && session.state === 'asking' && cse.confirmationsCount > 0) {
+      return handleCaseStolenWhileAnswering(chatId, tgId, cse, questions);
+    }
+    return collabSubmit(chatId, tgId, cse, user, questions, answers, alreadyEdit, ackMessageId);
   }
 
   const sourceLinkEnabled = telegramBotConfig.sheets.sourceLink.mode !== 'none';
@@ -2661,10 +2671,42 @@ async function confirmAndSubmit(
   });
 }
 
+// Поки юзер відповідав на питання (сесія 'asking' — справа була порожня на момент
+// видачі), хтось інший устиг розпізнати ту саму справу (лок протух і бот віддав
+// її далі). Не перезаписуємо чужу роботу мовчки: показуємо перевірку поточної
+// версії (якщо справа ще не завершена) або пропонуємо взяти іншу (якщо завершена).
+async function handleCaseStolenWhileAnswering(
+  chatId: number,
+  tgId: string,
+  cse: BotCase,
+  questions: TableColumn[]
+) {
+  if (cse.status === 'done') {
+    await Promise.all([deleteSession(tgId), sendMessage(chatId, T.caseStolenDone)]);
+    return;
+  }
+  const summary = buildSummary(questions, cse.currentAnswers);
+  await Promise.all([
+    // mode: 'collaborative' → setSession сам продовжить лок за юзером на цю справу.
+    setSession({
+      tgId,
+      caseId: cse.caseId,
+      answersJson: JSON.stringify(cse.currentAnswers),
+      currentQ: 0,
+      startedAt: nowIsoUtc(),
+      updatedAt: nowIsoUtc(),
+      state: 'previewing',
+      mode: cse.mode,
+    }),
+    sendMessage(chatId, T.caseStolenReview),
+    sendMessage(chatId, summary, { reply_markup: keyboardForCollabPreview() }),
+  ]);
+}
+
 // ----- Collaborative submit: спільна логіка для create і edit. -----
 // Викликається з confirmAndSubmit коли case.mode === 'collaborative'.
-// Розрізняє create vs edit по тому, чи юзер уже фігурує в bot_case_confirmations
-// (collab:edit вписує 'edit' одразу при натисканні; для creation запису ще немає).
+// alreadyEdit — чи юзер уже фігурує в bot_case_confirmations (порахований раніше
+// у confirmAndSubmit, щоб не робити той самий запит двічі).
 async function collabSubmit(
   chatId: number,
   tgId: string,
@@ -2672,10 +2714,10 @@ async function collabSubmit(
   user: BotUser,
   questions: TableColumn[],
   answers: string[],
+  alreadyEdit: boolean,
   ackMessageId?: number
 ) {
   const finalAnswers = questions.map((_, i) => answers[i] ?? '');
-  const alreadyEdit = await hasUserTouchedCase(cse.caseId, tgId);
 
   if (alreadyEdit) {
     // EDIT: якщо змінився лише «Коментар розпізнавача» (технічне поле) — не рвемо
