@@ -85,7 +85,24 @@ export function compareVersions(
   return { sum, fields };
 }
 
-async function getQuestions(): Promise<TableColumn[]> {
+// Чи змінилось якесь поле, КРІМ «Коментаря розпізнавача», між старою і новою
+// версією відповідей. Використовується, щоб редагування ЛИШЕ коментаря не
+// скидало коло підтверджень (setCaseEdited) у collab-режимі — трактуємо це як
+// технічну правку, а не змістовне виправлення справи.
+export function onlyCommentFieldChanged(
+  oldAnswers: string[],
+  newAnswers: string[],
+  questions: TableColumn[]
+): boolean {
+  const len = Math.max(oldAnswers.length, newAnswers.length, questions.length);
+  for (let i = 0; i < len; i++) {
+    if (isCommentField(questions[i])) continue;
+    if (stripForCompare(oldAnswers[i]) !== stripForCompare(newAnswers[i])) return false;
+  }
+  return true;
+}
+
+export async function getQuestions(): Promise<TableColumn[]> {
   const raw = await getMeta('questions');
   if (!raw) return [];
   try {

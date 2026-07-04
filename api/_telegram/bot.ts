@@ -31,6 +31,7 @@ import {
   hasUserTouchedCase,
   setCaseCreated,
   setCaseEdited,
+  updateCaseCommentOnly,
   confirmCase,
   captureTgUsername,
   getUserGeminiKeys,
@@ -62,6 +63,7 @@ import {
   getUnconfirmedTotal,
   getRecentForfeited,
   isCommentField,
+  onlyCommentFieldChanged,
 } from '../_core/pendingPoints.js';
 import {
   computeFundEtaFromStats,
@@ -2676,11 +2678,16 @@ async function collabSubmit(
   const alreadyEdit = await hasUserTouchedCase(cse.caseId, tgId);
 
   if (alreadyEdit) {
-    // EDIT: оновлюємо current_answers, скидаємо лічильник до 1.
+    // EDIT: якщо змінився лише «Коментар розпізнавача» (технічне поле) — не рвемо
+    // коло підтверджень (лічильник лишається як був); інакше звична поведінка —
+    // оновлюємо current_answers і скидаємо лічильник до 1.
     // Перезаписуємо edit-подію зі снапшотом фактичних відповідей (recordCaseEvent
     // при натисканні collab:edit ще не знав, що саме введе користувач).
+    const commentOnly = onlyCommentFieldChanged(cse.currentAnswers || [], finalAnswers, questions);
     await Promise.all([
-      setCaseEdited(cse.caseId, tgId, finalAnswers),
+      commentOnly
+        ? updateCaseCommentOnly(cse.caseId, finalAnswers)
+        : setCaseEdited(cse.caseId, tgId, finalAnswers),
       recordCaseEvent(cse.caseId, tgId, 'edit', finalAnswers),
     ]);
   } else {

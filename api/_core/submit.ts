@@ -13,6 +13,7 @@ import {
   recordCaseEvent,
   setCaseCreated,
   setCaseEdited,
+  updateCaseCommentOnly,
   upsertUser,
 } from '../_telegram/storage.js';
 import {
@@ -24,7 +25,7 @@ import {
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import { getMeta } from '../_telegram/storage.js';
 import { applyMarathonBonus, type MarathonAction } from '../_telegram/marathon.js';
-import { recordPendingPoints, settleCaseAtClose } from './pendingPoints.js';
+import { recordPendingPoints, settleCaseAtClose, getQuestions, onlyCommentFieldChanged } from './pendingPoints.js';
 
 export type SubmitAction = 'submit' | 'confirm';
 
@@ -167,8 +168,14 @@ async function submitCollabCreate(user: BotUser, cse: BotCase, answers: string[]
 
 // ---- Collab: edit ----
 async function submitCollabEdit(user: BotUser, cse: BotCase, answers: string[]): Promise<SubmitResult> {
+  // Якщо змінився лише «Коментар розпізнавача» (технічне поле) — не рвемо коло
+  // підтверджень (лічильник лишається як був), інакше звична поведінка (скидання до 1).
+  const questions = await getQuestions();
+  const commentOnly = onlyCommentFieldChanged(cse.currentAnswers || [], answers, questions);
   await Promise.all([
-    setCaseEdited(cse.caseId, user.tgId, answers),
+    commentOnly
+      ? updateCaseCommentOnly(cse.caseId, answers)
+      : setCaseEdited(cse.caseId, user.tgId, answers),
     recordCaseEvent(cse.caseId, user.tgId, 'edit', answers, user.partnerId),
   ]);
   return deliverCollabPoints(user, false, cse.pointsVerification ?? 1, 'collab-edit', 'verification', true, cse.caseId);

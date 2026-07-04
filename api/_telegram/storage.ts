@@ -1591,6 +1591,22 @@ export async function setCaseEdited(
   if (error) throw error;
 }
 
+// Технічна правка (напр. лише «Коментар розпізнавача»): оновлює текст і знімає
+// лок, але НЕ скидає confirmations_count/current_author_tg_id — коло підтверджень
+// не рветься, бо змістовно у справі нічого не змінилось.
+export async function updateCaseCommentOnly(caseId: string, answers: string[]): Promise<void> {
+  const { error } = await db()
+    .from(T.cases)
+    .update({
+      current_answers: answers,
+      locked_by_tg_id: '',
+      locked_until: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('case_id', caseId);
+  if (error) throw error;
+}
+
 // Підтвердження: атомарно інкрементує лічильник, повертає нове значення.
 // Закриває справу, якщо досягнуто minConfirmations.
 export async function confirmCase(
