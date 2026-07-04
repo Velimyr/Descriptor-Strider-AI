@@ -334,6 +334,46 @@ export async function setMeta(key: string, value: string) {
   if (error) throw error;
 }
 
+// Читання meta ПОВЗ кеш — для стану, який мутують паралельні інстанси
+// (курсор поновлюваного dispatch-раунду): 60-секундний кеш тут повертав би
+// застарілий курсор і призводив до повторної розсилки тих самих юзерів.
+export async function getMetaNoCache(key: string): Promise<string | null> {
+  const { data, error } = await db().from(T.meta).select('value').eq('key', key).maybeSingle();
+  if (error) throw error;
+  return data?.value || null;
+}
+
+// Лізинг у bot_meta: value = ISO-момент закінчення оренди. INSERT → захопили;
+// конфлікт ключа → пробуємо CAS-ом перехопити протерміновану лізу (WHERE value < now).
+// Так інстанс, убитий по maxDuration без release, не блокує наступні чанки назавжди.
+// ISO-рядки фіксованої довжини, тож текстове порівняння = хронологічне.
+export async function tryClaimLease(key: string, ttlMs: number): Promise<boolean> {
+  const nowIso = new Date().toISOString();
+  const expiresIso = new Date(Date.now() + ttlMs).toISOString();
+  const ins = await db().from(T.meta).insert({ key, value: expiresIso });
+  if (!ins.error) {
+    invalidateMetaCache(key);
+    return true;
+  }
+  if ((ins.error as any).code !== '23505') throw ins.error;
+  const upd = await db()
+    .from(T.meta)
+    .update({ value: expiresIso })
+    .eq('key', key)
+    .lt('value', nowIso)
+    .select('key');
+  if (upd.error) throw upd.error;
+  const claimed = (upd.data || []).length > 0;
+  if (claimed) invalidateMetaCache(key);
+  return claimed;
+}
+
+export async function releaseLease(key: string): Promise<void> {
+  const { error } = await db().from(T.meta).delete().eq('key', key);
+  invalidateMetaCache(key);
+  if (error) throw error;
+}
+
 // ---------- USERS ----------
 export async function getAllUsers(): Promise<BotUser[]> {
   // Пагінація — Supabase за замовчуванням обмежує 1000 рядками.

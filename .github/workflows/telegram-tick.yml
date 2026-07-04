@@ -48,7 +48,33 @@ jobs:
           echo "GET target: https://$host/api/telegram/cron/tick"
 
           URL="${BASE_URL%/}/api/telegram/cron/tick?secret=$SECRET"
-          curl -fsS --max-time 60 "$URL"
+
+          # Тік поновлюваний: сервер обробляє чанк юзерів (~40 с бюджету) і повертає
+          # status 'partial' (є ще юзери) | 'done' (раунд завершено) | 'busy' (чанк
+          # вже виконується деінде). Викликаємо в циклі до 'done'. Стан раунду —
+          # в bot_meta, тож обрив джоба посеред циклу не губить прогрес: повторний
+          # запуск продовжить з курсора (а завершений <1 год тому раунд не
+          # передублюється — сервер відповість done/recent-round).
+          MAX_ATTEMPTS=15
+          for i in $(seq 1 "$MAX_ATTEMPTS"); do
+            if ! RESP=$(curl -fsS --max-time 90 "$URL"); then
+              echo "attempt $i/$MAX_ATTEMPTS: curl failed, retry in 10s"
+              sleep 10
+              continue
+            fi
+            # `|| true` — щоб не-JSON відповідь не вбила степ (bash -e).
+            STATUS=$(printf '%s' "$RESP" | jq -r '.status // empty' 2>/dev/null || true)
+            PROGRESS=$(printf '%s' "$RESP" | jq -c '{chunkProcessed, remaining, stats} | with_entries(select(.value != null))' 2>/dev/null || true)
+            echo "attempt $i/$MAX_ATTEMPTS: status=$STATUS $PROGRESS"
+            if [ "$STATUS" = "done" ]; then
+              echo "Dispatch round complete."
+              exit 0
+            fi
+            # busy — інший чанк ще працює (напр., ліза попереднього виклику): чекаємо довше.
+            if [ "$STATUS" = "busy" ]; then sleep 20; else sleep 3; fi
+          done
+          echo "::error::Dispatch round not finished after $MAX_ATTEMPTS attempts"
+          exit 1
 
   cleanup:
     if: github.event.schedule == '15 * * * *' || github.event_name == 'workflow_dispatch'

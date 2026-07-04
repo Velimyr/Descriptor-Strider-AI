@@ -12,7 +12,7 @@ import {
   getCaseSettingsByDescription,
   updateCaseSettingsByDescription,
 } from './storage.js';
-import { handleUpdate, dispatchCaseToUser, sendScheduledGreeting } from './bot.js';
+import { handleUpdate } from './bot.js';
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
 import { detectCaseBoxes } from './slicer.js';
 import {
@@ -51,113 +51,24 @@ router.post('/webhook', async (req, res) => {
 });
 
 // ----------- Cron tick (зовнішній) -----------
+// Поновлюваний: обробляє чанк юзерів у межах часового бюджету (курсор і стан
+// раунду — в bot_meta) і повертає status 'partial' | 'done' | 'busy'.
+// GH Actions викликає в циклі, поки не отримає 'done', — тож розсилка будь-якого
+// розміру не впирається в maxDuration Vercel-функції. Деталі — dispatchRound.ts.
+// ?force=1 — стартувати новий раунд попри кулдаун після щойно завершеного.
 router.get('/cron/tick', async (req, res) => {
   const expected = process.env[telegramBotConfig.cronSecretEnv];
   if (expected && req.query.secret !== expected) {
     return res.status(403).send('forbidden');
   }
-
-  const cfg = telegramBotConfig.dispatch;
-  // selectNextCaseForUser тепер тягне кандидатів через SQL-RPC per-user,
-  // тож префетч усіх справ більше не потрібен.
-  // Egress-фікс: тягнемо тільки tg_id активних юзерів (~10 байт/юзер замість ~5 KB),
-  // а лічильники total/active/paused отримуємо одним маленьким RPC.
-  const { getActiveUserTgIds, getUserStatusCounts } = await import('./storage.js');
-  const [activeTgIds, sessions, counts] = await Promise.all([
-    getActiveUserTgIds(),
-    getAllSessions(),
-    getUserStatusCounts(),
-  ]);
-  const sessionMap = new Map(sessions.map(s => [s.tgId, s]));
-
-  const stats = {
-    totalUsers: counts.total,
-    activeUsers: 0,
-    pausedUsers: counts.paused,
-    skippedSessionOpen: 0,
-    sent: 0,
-    noCases: 0,
-    errors: 0,
-  };
-  const results: any[] = [];
-
-  // Bounded concurrency — щоб і Vercel-функція укладалася в ліміт,
-  // і Telegram API не отримував шторм одночасних запитів.
-  const CONCURRENCY = 6;
-  const queue = [...activeTgIds];
-  const workers: Promise<void>[] = [];
-
-  const processOne = async (tgId: string) => {
-    stats.activeUsers++;
-
-    const session = sessionMap.get(tgId);
-    if (session && cfg.skipIfSessionOpen) {
-      const ageMs = Date.now() - new Date(session.updatedAt || session.startedAt).getTime();
-      const ttlMs = cfg.sessionTtlHours * 3600 * 1000;
-      if (ageMs > ttlMs) {
-        await deleteSession(tgId);
-        // Звільняємо collab-лок і фіксуємо «пропущено», щоб ту саму справу не показати знову.
-        if (session.caseId) {
-          try {
-            const { unlockCase, getCase, recordSkippedCase } = await import('./storage.js');
-            const cse = await getCase(session.caseId);
-            if (cse?.mode === 'collaborative' && cse.lockedByTgId === tgId) {
-              await unlockCase(session.caseId);
-            }
-            await recordSkippedCase(tgId, session.caseId);
-          } catch (e) {
-            console.error('unlockCase/skip on tick-expiry failed', session.caseId, e);
-          }
-        }
-        // Повідомляємо користувача про прострочену справу.
-        try {
-          const { sendMessage } = await import('./tg-api.js');
-          const notice = telegramBotConfig.texts.sessionExpiredNotice.replace(
-            '{button}',
-            telegramBotConfig.texts.menuNext
-          );
-          await sendMessage(tgId, notice);
-        } catch (e) {
-          console.error('tick-expiry notice failed', tgId, e);
-        }
-      } else {
-        stats.skippedSessionOpen++;
-        results.push({ tgId, skipped: 'session-open' });
-        return;
-      }
-    }
-
-    try {
-      try {
-        await sendScheduledGreeting(tgId);
-      } catch (e) {
-        console.error('greeting failed', tgId, e);
-      }
-      const sent = await dispatchCaseToUser(tgId, false);
-      if (sent) {
-        stats.sent++;
-        results.push({ tgId, sent: true });
-      } else {
-        stats.noCases++;
-        results.push({ tgId, sent: false, reason: 'no-cases-or-inactive' });
-      }
-    } catch (e: any) {
-      stats.errors++;
-      results.push({ tgId, error: e.message });
-    }
-  };
-
-  const runWorker = async () => {
-    while (queue.length > 0) {
-      const next = queue.shift();
-      if (!next) break;
-      await processOne(next);
-    }
-  };
-  for (let i = 0; i < CONCURRENCY; i++) workers.push(runWorker());
-  await Promise.all(workers);
-
-  res.json({ ok: true, stats, dispatched: results });
+  try {
+    const { runDispatchTickChunk } = await import('./dispatchRound.js');
+    const result = await runDispatchTickChunk({ force: req.query.force === '1' });
+    res.json({ ok: true, ...result });
+  } catch (e: any) {
+    console.error('[tick] failed', e?.stack || e);
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
 });
 
 // ----------- Cron cleanup (можна викликати тим самим зовнішнім cron) -----------
