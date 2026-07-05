@@ -3,8 +3,10 @@
 // Ідея: за розпізнавання/редагування (create/edit) бали НЕ нараховуються одразу —
 // тримаються як 'unconfirmed' на рядку bot_case_confirmations. Коли справу закрито
 // (досягнуто потрібної к-сті підтверджень), версію учасника звіряють із фінальною
-// (поле-в-поле, крім ролі 'notes'); якщо різниця >5 символів — бали 'forfeited'
-// (не нараховуються), інакше 'confirmed' (нараховуються в total + місячний рейтинг).
+// ЛИШЕ за полями номера справи (ролі 'order_no', 'case_no') і назви ('title');
+// дати, кількість сторінок, примітки й коментар розпізнавача на рішення не впливають.
+// Якщо сумарна різниця >5 символів — бали 'forfeited' (не нараховуються),
+// інакше 'confirmed' (нараховуються в total + місячний рейтинг).
 import { db, T, incTotalPoints, incMonthlyPoints, getMeta, getCase } from '../_telegram/storage.js';
 import { kyivMonthString } from '../_telegram/scheduler.js';
 import type { TableColumn } from '../../src/types.js';
@@ -48,8 +50,8 @@ export interface FieldDiff {
   dist: number;
 }
 
-// Сумарна символьна різниця між версією учасника і фінальною, поле-в-поле,
-// крім поля «Коментар розпізнавача». Повертає суму + деталі змінених полів.
+// Сумарна символьна різниця між версією учасника і фінальною — лише за полями
+// номера справи та назви (SCORED_ROLES). Повертає суму + деталі змінених полів.
 //
 // Поле коментаря визначаємо ХАРДКОДОМ — за точною назвою «Коментар розпізнавача»
 // (НЕ за роллю). Та сама перевірка вживається і в AI-промті (bot.ts).
@@ -57,6 +59,16 @@ export const RECOGNIZER_COMMENT_LABEL = 'Коментар розпізнавач
 
 export function isCommentField(q?: { label?: string }): boolean {
   return (q?.label || '').trim().toLowerCase() === RECOGNIZER_COMMENT_LABEL.toLowerCase();
+}
+
+// Ролі полів, за якими вирішується правильність версії (нарахування балів):
+// лише номер справи (порядковий 'order_no' і додатковий 'case_no') та назва
+// ('title'). Розбіжності в датах, кількості сторінок, примітках і коментарі
+// розпізнавача балів не позбавляють.
+const SCORED_ROLES = new Set<string>(['order_no', 'case_no', 'title']);
+
+function isScoredField(q?: TableColumn): boolean {
+  return SCORED_ROLES.has(q?.role ?? '');
 }
 
 export function compareVersions(
@@ -68,7 +80,7 @@ export function compareVersions(
   let sum = 0;
   const fields: FieldDiff[] = [];
   for (let i = 0; i < len; i++) {
-    if (isCommentField(questions[i])) continue; // коментар розпізнавача не враховуємо
+    if (!isScoredField(questions[i])) continue; // рахуємо лише номер справи та назву
     // Дистанцію рахуємо по значущих символах (без пробілів/спецсимволів),
     // а показуємо користувачу читабельні значення.
     const d = levenshtein(stripForCompare(theirs[i]), stripForCompare(final[i]));
