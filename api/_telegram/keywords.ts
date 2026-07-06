@@ -39,7 +39,7 @@ import { sendMessage, sendPhotoByFileId } from './tg-api.js';
 // (bot.ts статично імпортує keywords.ts для UI "Ключові слова").
 import type { CasePhotoInfo } from './bot.js';
 import { kyivMonthString } from './scheduler.js';
-import { levenshtein } from '../_core/pendingPoints.js';
+import { levenshtein, isCommentField } from '../_core/pendingPoints.js';
 
 const T = telegramBotConfig.texts;
 
@@ -151,6 +151,9 @@ export function invalidateVariantsCache(): void {
 interface CaseRenderInfo extends CasePhotoInfo {
   questions: QuestionLike[];
   answers: string[];
+  archive: string;
+  fund: string;
+  opys: string;
 }
 
 async function getCaseRenderInfo(caseId: string, source: 'collab' | 'verif'): Promise<CaseRenderInfo | null> {
@@ -158,13 +161,31 @@ async function getCaseRenderInfo(caseId: string, source: 'collab' | 'verif'): Pr
     const cse = await getCase(caseId);
     if (!cse) return null;
     const questions = await getGlobalQuestions();
-    return { tgFileId: cse.tgFileId, sourcePdf: cse.sourcePdf, page: cse.page, questions, answers: cse.currentAnswers };
+    return {
+      tgFileId: cse.tgFileId,
+      sourcePdf: cse.sourcePdf,
+      page: cse.page,
+      questions,
+      answers: cse.currentAnswers,
+      archive: cse.archive,
+      fund: cse.fund,
+      opys: cse.opys,
+    };
   }
   const { getVerifCase } = await import('../_core/verifCases.js');
   const cse = await getVerifCase(caseId);
   if (!cse) return null;
   const answers = cse.currentAnswers.length ? cse.currentAnswers : cse.aiAnswers;
-  return { tgFileId: cse.tgFileId, sourcePdf: cse.sourcePdf, page: cse.page, questions: cse.questions, answers };
+  return {
+    tgFileId: cse.tgFileId,
+    sourcePdf: cse.sourcePdf,
+    page: cse.page,
+    questions: cse.questions,
+    answers,
+    archive: cse.archive,
+    fund: cse.fund,
+    opys: cse.opys,
+  };
 }
 
 // Той самий парсинг bot_meta.questions, що й у bot.ts/pendingPoints.ts/verifCases.ts
@@ -181,11 +202,28 @@ async function getGlobalQuestions(): Promise<QuestionLike[]> {
   }
 }
 
-// Одне повідомлення (заголовок + поля), потім голе фото — без дисклеймера про
-// якість/кнопки "Переглянути опис" (те, що доречно у флоу розпізнавання, тут зайве).
+function fmt(template: string, values: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (_, k) => String(values[k] ?? `{${k}}`));
+}
+
+// Одне повідомлення (заголовок + опис + поля), потім голе фото — без дисклеймера
+// про якість/кнопки "Переглянути опис" (те, що доречно у флоу розпізнавання, тут зайве).
 async function notifyUser(tgId: string, info: CaseRenderInfo): Promise<void> {
   const { buildFieldsList } = await import('./bot.js');
-  await sendMessage(tgId, `${T.keywordMatchHeader}\n\n${buildFieldsList(info.questions, info.answers)}`);
+  const opysLine = fmt(T.keywordMatchOpysLine, { opys: `${info.archive} ${info.fund}-${info.opys}`.trim() });
+  // «Коментар розпізнавача» — технічне поле для самого розпізнавача, тут зайве
+  // (сповіщення йде будь-кому з таким ключовим словом, не обов'язково розпізнавачу).
+  const visibleQuestions: QuestionLike[] = [];
+  const visibleAnswers: string[] = [];
+  info.questions.forEach((q, i) => {
+    if (isCommentField(q)) return;
+    visibleQuestions.push(q);
+    visibleAnswers.push(info.answers[i]);
+  });
+  await sendMessage(
+    tgId,
+    `${T.keywordMatchHeader}\n${opysLine}\n\n${buildFieldsList(visibleQuestions, visibleAnswers)}`
+  );
   if (info.tgFileId) await sendPhotoByFileId(tgId, info.tgFileId);
 }
 

@@ -675,6 +675,8 @@ export const telegramBotConfig: TelegramBotConfig = {
 
     // --- Ключові слова: сповіщення про збіги в підтверджених справах ---
     keywordMatchHeader: '🔔 <b>Знайдено справу за вашим ключовим словом!</b>',
+    // {opys} — «{archive} {fund}-{opys}» справи зі збігом.
+    keywordMatchOpysLine: '📋 Опис <b>{opys}</b>',
     keywordsButton: '🔑 Ключові слова',
     keywordsTitle:
       '🔑 <b>Ключові слова</b>\n\n' +
