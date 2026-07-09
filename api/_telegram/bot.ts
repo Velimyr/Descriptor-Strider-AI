@@ -2371,7 +2371,8 @@ function parseAiAnswers(raw: string, count: number): string[] | null {
         : null;
     if (!arr) return null;
     const out: string[] = [];
-    for (let i = 0; i < count; i++) out.push(String(arr[i] ?? '').trim());
+    // Та сама нормалізація пробілів, що й для ручних відповідей у processAnswer.
+    for (let i = 0; i < count; i++) out.push(String(arr[i] ?? '').trim().replace(/\s+/g, ' '));
     return out;
   } catch {
     return null;
@@ -2533,7 +2534,9 @@ async function processAnswer(chatId: number, tgId: string, session: BotSession, 
     return;
   }
 
-  answers[session.currentQ] = text.trim();
+  // Схлопуємо послідовні пробіли/переноси в один — відповіді це однорядкові
+  // значення полів, подвійні пробіли в них лише сміття від копіпасти.
+  answers[session.currentQ] = text.trim().replace(/\s+/g, ' ');
   const nextIndex = session.currentQ + 1;
 
   // Якщо це режим редагування одного поля — після відповіді одразу
