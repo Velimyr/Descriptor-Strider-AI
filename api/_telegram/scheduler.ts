@@ -140,7 +140,9 @@ function buildDescriptionOrder(
 export async function selectNextCaseForUser(
   tgId: string,
   // forceHard — примусово ЛИШЕ складні (коли юзер прийняв пропозицію «хочеш складну?»).
-  opts?: { forceHard?: boolean }
+  // excludeCaseId — не пропонувати цю справу: її сабміт ще в польоті, тож RPC-фільтр
+  // «не сабмітив» її ще не відсіює (гонитва «Підтвердити» ↔ «Нова справа»).
+  opts?: { forceHard?: boolean; excludeCaseId?: string }
 ): Promise<BotCase | null> {
   // Один SQL: тільки кандидати, які цьому юзеру можна показати.
   // Фільтри: status='open', не сабмітив/пропустив/торкався, не лочена іншим.
@@ -169,7 +171,10 @@ export async function selectNextCaseForUser(
       return getCandidateCasesForUser(tgId, hardMode);
     }
   };
-  const allCandidates = await fetchCandidates();
+  const fetched = await fetchCandidates();
+  const allCandidates = opts?.excludeCaseId
+    ? fetched.filter(c => c.caseId !== opts.excludeCaseId)
+    : fetched;
   // Фільтр «Які справи надсилати». Перевірка = collab із вже наявною версією
   // (confirmationsCount>0); решта (parallel або collab без версії) = розпізнавання.
   const isVerification = (c: CandidateCase) => c.mode === 'collaborative' && c.confirmationsCount > 0;

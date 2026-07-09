@@ -172,7 +172,10 @@ export interface BotSession {
   currentQ: number;
   startedAt: string;
   updatedAt: string;
-  state: 'asking' | 'confirming' | 'editing' | 'previewing';
+  // 'submitting' — сабміт уже в процесі (захист від гонитви «Підтвердити» ↔
+  // «Нова справа» та подвійного тапу по «Підтвердити»): така сесія вважається
+  // завершеною для cmdNext і не приймає жодних дій.
+  state: 'asking' | 'confirming' | 'editing' | 'previewing' | 'submitting';
   // Денормалізований режим справи цієї сесії — щоб автопродовження collab-локу
   // (у setSession) не вимагало окремого читання bot_cases на кожну відповідь.
   mode: 'parallel' | 'collaborative';
@@ -962,13 +965,49 @@ export async function setSession(s: Omit<BotSession, 'rowIndex'>, _existingRowIn
   }
 }
 
-export async function deleteSession(tgId: string): Promise<boolean> {
-  const { error, count } = await db()
-    .from(T.sessions)
-    .delete({ count: 'exact' })
-    .eq('tg_id', tgId);
+// caseId (опційно) — видалити сесію ЛИШЕ якщо вона досі про цю справу. Потрібно
+// шляхам завершення сабміту: поки він ішов, «Нова справа» могла перезаписати
+// рядок новою сесією — безумовний delete зніс би її.
+export async function deleteSession(tgId: string, caseId?: string): Promise<boolean> {
+  let q = db().from(T.sessions).delete({ count: 'exact' }).eq('tg_id', tgId);
+  if (caseId) q = q.eq('case_id', caseId);
+  const { error, count } = await q;
   if (error) throw error;
   return (count || 0) > 0;
+}
+
+// Атомарний «клейм» сесії під сабміт: переводить у 'submitting', якщо вона ще не
+// там. false → сабміт уже йде (подвійний тап) або сесії нема. Умовний UPDATE —
+// два конкурентні кліки «Підтвердити» не пройдуть обидва.
+export async function claimSessionForSubmit(tgId: string): Promise<boolean> {
+  const { error, count } = await db()
+    .from(T.sessions)
+    .update(
+      { state: 'submitting', updated_at: new Date().toISOString() },
+      { count: 'exact' }
+    )
+    .eq('tg_id', tgId)
+    .neq('state', 'submitting');
+  if (error) throw error;
+  return (count || 0) > 0;
+}
+
+// Відкат клейму при помилці сабміту: повертаємо стан, з якого клеймили (звичайний
+// 'confirming' або collab-'previewing'), щоб «Підтвердити» можна було натиснути
+// ще раз. Умови tg_id+case_id+state — не зачепити нову сесію, якщо рядок уже
+// перезаписано іншою справою.
+export async function releaseSessionSubmit(
+  tgId: string,
+  caseId: string,
+  revertTo: BotSession['state'] = 'confirming'
+): Promise<void> {
+  const { error } = await db()
+    .from(T.sessions)
+    .update({ state: revertTo, updated_at: new Date().toISOString() })
+    .eq('tg_id', tgId)
+    .eq('case_id', caseId)
+    .eq('state', 'submitting');
+  if (error) throw error;
 }
 
 export async function getAllSessions(): Promise<BotSession[]> {

@@ -714,6 +714,7 @@ export const telegramBotConfig: TelegramBotConfig = {
 
     // Швидкий фідбек
     savingNotice: '💾 Зберігаю...',
+    alreadySavingNotice: '⏳ Вже зберігаю цю справу — секунду. Щоб отримати наступну, натисніть «📥 Нова справа».',
     processingNotice: '⏳ Обробляю...',
 
     // --- Бейджі (досягнення) ---

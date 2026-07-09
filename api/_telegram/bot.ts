@@ -6,6 +6,8 @@ import {
   BotUser,
   BotCase,
   deleteSession,
+  claimSessionForSubmit,
+  releaseSessionSubmit,
   getCase,
   getMeta,
   setMeta,
@@ -1559,6 +1561,14 @@ async function handleCallback(cb: any) {
     return;
   }
 
+  // Сабміт цієї сесії вже в процесі (паралельний виклик) — жодну дію по ній
+  // виконувати не можна: повторний «Підтвердити» дав би дубль submission,
+  // «Змінити»/«Скасувати» посеред запису — неконсистентний стан.
+  if (session.state === 'submitting') {
+    await sendMessage(chatId, T.alreadySavingNotice);
+    return;
+  }
+
   const answers: string[] = JSON.parse(session.answersJson || '[]');
 
   if (data === 'cancel') {
@@ -1597,8 +1607,20 @@ async function handleCallback(cb: any) {
 
   if (data === 'collab:confirm') {
     if (!session.caseId) { await sendMessage(chatId, T.sessionExpired); return; }
+    // Той самий атомарний клейм, що й для 'confirm' — захист від подвійного тапу
+    // та гонитви з «Нова справа».
+    if (!(await claimSessionForSubmit(tgId))) {
+      await sendMessage(chatId, T.alreadySavingNotice);
+      return;
+    }
     const ack = await sendMessage(chatId, T.savingNotice);
-    await collabConfirm(chatId, tgId, session.caseId, ack?.message_id);
+    try {
+      await collabConfirm(chatId, tgId, session.caseId, ack?.message_id);
+    } catch (e) {
+      // Відкат у стан, з якого клеймили (для прев'ю це 'previewing').
+      await releaseSessionSubmit(tgId, session.caseId, session.state).catch(() => {});
+      throw e;
+    }
     return;
   }
 
@@ -1716,9 +1738,23 @@ async function handleCallback(cb: any) {
   }
 
   if (data === 'confirm') {
+    // Атомарний клейм (state → 'submitting'): два конкурентні кліки «Підтвердити»
+    // читають сесію паралельно й обидва проходять guard вище — а клейм пройде
+    // лише один. Другий отримує notice замість дубля submission.
+    if (!(await claimSessionForSubmit(tgId))) {
+      await sendMessage(chatId, T.alreadySavingNotice);
+      return;
+    }
     // Миттєвий фідбек — щоб користувач не натискав знову поки йдуть Sheets/Telegram запити.
     const ack = await sendMessage(chatId, T.savingNotice);
-    await confirmAndSubmit(chatId, tgId, session, questions, answers, ack?.message_id);
+    try {
+      await confirmAndSubmit(chatId, tgId, session, questions, answers, ack?.message_id);
+    } catch (e) {
+      // Сабміт упав — повертаємо стан, з якого клеймили, щоб «Підтвердити» можна
+      // було натиснути повторно, а сесія не зависла в 'submitting'.
+      await releaseSessionSubmit(tgId, session.caseId, session.state).catch(() => {});
+      throw e;
+    }
     return;
   }
 }
@@ -1730,7 +1766,11 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
   await sendMessage(chatId, T.processingNotice);
   console.log('[cmdNext]', { tgId, hasExisting: !!existing, state: existing?.state, currentQ: existing?.currentQ, caseId: existing?.caseId });
 
-  if (existing) {
+  // 'submitting' — попередня справа якраз зберігається (паралельний виклик).
+  // Це НЕ «відкрита справа»: не показуємо її знову, а одразу видаємо нову —
+  // dispatch перезапише рядок сесії, а хвіст сабміту його не зачепить
+  // (deleteSession там умовний, по case_id старої справи).
+  if (existing && existing.state !== 'submitting') {
     const questions = await getQuestions();
     if (existing.state === 'confirming') {
       const answers: string[] = JSON.parse(existing.answersJson || '[]');
@@ -1754,12 +1794,15 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
     }
     return;
   }
+  // Справа, чий сабміт ще летить: submission могла ще не записатись, тож фільтр
+  // «не сабмітив» у RPC кандидатів її не відсіє — виключаємо явно.
+  const excludeCaseId = existing?.state === 'submitting' ? existing.caseId : undefined;
   // Кожну 20-ту справу юзеру з «Ні» пропонуємо складну — але ЛИШЕ якщо складна справа
   // реально доступна цьому юзеру. Немає складних → не набридаємо, даємо звичайну
   // (лічильник не скидаємо — запропонуємо, щойно складна зʼявиться).
   const hardPref = await getUserHardPref(tgId);
   if (!hardPref.sendHardCases && hardPref.casesSinceHardOffer >= HARD_OFFER_EVERY) {
-    const hardAvailable = await selectNextCaseForUser(tgId, { forceHard: true });
+    const hardAvailable = await selectNextCaseForUser(tgId, { forceHard: true, excludeCaseId });
     if (hardAvailable) {
       await sendMessage(chatId, T.hardOfferPrompt, {
         reply_markup: {
@@ -1773,7 +1816,7 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
     }
   }
   // Ручне «Нова справа» — іґноруємо paused, бо опція розсилки тільки для авторозсилок.
-  await dispatchCaseToUser(tgId, true);
+  await dispatchCaseToUser(tgId, true, false, excludeCaseId);
 }
 
 // Кожну N-ту видану справу пропонуємо складну юзеру, який їх не отримує за замовч.
@@ -2205,12 +2248,15 @@ export async function dispatchCaseToUser(
   // Опція «Зупинити розсилку» — тільки для авторозсилок за розкладом.
   ignorePaused = false,
   // forceHard=true — примусово складна справа (юзер прийняв пропозицію «хочеш складну?»).
-  forceHard = false
+  forceHard = false,
+  // excludeCaseId — справа, чий сабміт ще в польоті: RPC-фільтр «не сабмітив» її
+  // ще не бачить, тож без явного виключення видали б її ж повторно.
+  excludeCaseId?: string
 ): Promise<boolean> {
   // Паралельні незалежні читання.
   const [user, next, questions] = await Promise.all([
     getUser(tgId),
-    selectNextCaseForUser(tgId, { forceHard }),
+    selectNextCaseForUser(tgId, { forceHard, excludeCaseId }),
     getQuestions(),
   ]);
   console.log('[dispatch]', { tgId, userStatus: user?.status, ignorePaused, hasNext: !!next, nextCaseId: next?.caseId, questions: questions.length });
@@ -2219,7 +2265,7 @@ export async function dispatchCaseToUser(
   if (!ignorePaused && user.status !== 'active') return false;
   if (!next) {
     // Просили складну, але її немає — фолбек на звичайну (без «справ немає»).
-    if (forceHard) return dispatchCaseToUser(tgId, ignorePaused, false);
+    if (forceHard) return dispatchCaseToUser(tgId, ignorePaused, false, excludeCaseId);
     await sendMessage(tgId, T.noCasesLeft);
     return false;
   }
@@ -2461,6 +2507,12 @@ async function askQuestion(
 }
 
 async function processAnswer(chatId: number, tgId: string, session: BotSession, text: string) {
+  // Сабміт у процесі — текст не є відповіддю на питання, інакше setSession нижче
+  // «воскресив» би сесію, яку сабміт от-от видалить.
+  if (session.state === 'submitting') {
+    await sendMessage(chatId, T.alreadySavingNotice);
+    return;
+  }
   if (session.state === 'confirming') {
     await sendMessage(chatId, 'Натисніть кнопку Підтвердити або Виправити.');
     return;
@@ -2545,7 +2597,7 @@ async function confirmAndSubmit(
   if (!user) return;
   if (!cse) {
     await sendMessage(chatId, 'Справу видалено. Скасовано.');
-    await deleteSession(tgId);
+    await deleteSession(tgId, session.caseId);
     return;
   }
 
@@ -2591,7 +2643,9 @@ async function confirmAndSubmit(
     page: cse.page,
   });
   const [, newCaseCount, todayCount, todayDone] = await Promise.all([
-    deleteSession(tgId),
+    // Умовно (по case_id): якщо юзер уже встиг узяти нову справу через «Нова
+    // справа», рядок сесії тепер про неї — його не чіпаємо.
+    deleteSession(tgId, session.caseId),
     recomputeCaseSubmissionCount(cse.caseId, cse.targetSubmissions),
     incDailyCount(tgId, today),
     getTodayProcessedCases(),
@@ -2682,9 +2736,14 @@ async function handleCaseStolenWhileAnswering(
   questions: TableColumn[]
 ) {
   if (cse.status === 'done') {
-    await Promise.all([deleteSession(tgId), sendMessage(chatId, T.caseStolenDone)]);
+    await Promise.all([deleteSession(tgId, cse.caseId), sendMessage(chatId, T.caseStolenDone)]);
     return;
   }
+  // Поки сабміт летів, юзер міг устигнути взяти нову справу («Нова справа» під час
+  // 'submitting') — тоді рядок сесії вже про неї, і setSession нижче перезаписав би
+  // її прев'ю старої. Юзер уже рухається далі — тихо виходимо.
+  const cur = await getSession(tgId);
+  if (cur && cur.caseId !== cse.caseId) return;
   const summary = buildSummary(questions, cse.currentAnswers);
   await Promise.all([
     // mode: 'collaborative' → setSession сам продовжить лок за юзером на цю справу.
@@ -2748,7 +2807,7 @@ async function collabSubmit(
   const action: MarathonAction = alreadyEdit ? 'verification' : 'recognition';
   // Розпізнавання/редагування — бали тримаємо як «непідтверджені» до закриття справи.
   await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase, action, /*held*/ true, cse.caseId);
-  await deleteSession(tgId);
+  await deleteSession(tgId, cse.caseId);
 }
 
 // Обробка натискання "Підтвердити" на preview.
@@ -2762,7 +2821,7 @@ async function collabConfirm(
   if (!user) return;
   if (!cse) {
     await sendMessage(chatId, 'Справу видалено. Скасовано.');
-    await deleteSession(tgId);
+    await deleteSession(tgId, caseId);
     return;
   }
   const min = await getMinConfirmations(cse.targetSubmissions);
@@ -2779,7 +2838,7 @@ async function collabConfirm(
       console.error('settleCaseAtClose (tg) failed', e);
     }
   }
-  await deleteSession(tgId);
+  await deleteSession(tgId, caseId);
   // Описовий пазл: зараховуємо слова (для розпізнавача). Чи на кожне підтвердження,
   // чи лише на повне закриття — вирішує config.puzzle.confirmMode.
   await onCollabCaseConfirmed(caseId, closed);
