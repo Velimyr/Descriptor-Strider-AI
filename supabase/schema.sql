@@ -161,7 +161,7 @@ create table if not exists bot_sessions (
 alter table bot_sessions drop constraint if exists bot_sessions_state_check;
 alter table bot_sessions
   add  constraint bot_sessions_state_check
-  check (state in ('asking','confirming','editing','previewing'));
+  check (state in ('asking','confirming','editing','previewing','submitting'));
 
 -- Денормалізований режим справи сесії (parallel/collaborative) — щоб автопродовження
 -- collab-локу (при кожній відповіді) не потребувало окремого читання bot_cases.

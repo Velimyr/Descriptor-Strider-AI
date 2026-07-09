@@ -42,7 +42,7 @@ router.post('/webhook', async (req, res) => {
     if (chatId) {
       try {
         const { sendMessage } = await import('./tg-api.js');
-        await sendMessage(chatId, '⚠ Бот тимчасово недоступний. Адміна вже сповіщено.');
+        await sendMessage(chatId, '⚠ Сталася помилка. Спробуйте ще раз за хвилину.');
       } catch {}
     }
   }

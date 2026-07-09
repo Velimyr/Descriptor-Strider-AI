@@ -133,7 +133,7 @@ create table if not exists botdev_sessions (
 alter table botdev_sessions drop constraint if exists botdev_sessions_state_check;
 alter table botdev_sessions
   add  constraint botdev_sessions_state_check
-  check (state in ('asking','confirming','editing','previewing'));
+  check (state in ('asking','confirming','editing','previewing','submitting'));
 
 -- Дзеркало bot_sessions.mode у schema.sql.
 alter table botdev_sessions add column if not exists mode text not null default 'parallel';
