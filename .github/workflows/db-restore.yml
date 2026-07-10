@@ -1,0 +1,117 @@
+name: DB Restore
+
+# Ручне відновлення продакшн-БД Supabase з артефакту DB Backup.
+# Запускається ТІЛЬКИ вручну і вимагає ввести RESTORE у поле confirm.
+# Повне відновлення перестворює всю схему public (--clean) — виконуйте
+# в години низького трафіку. Деталі — docs/BACKUP.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Введіть RESTORE, щоб підтвердити відновлення продакшн-БД"
+        required: true
+        default: ""
+      run_id:
+        description: "ID запуску DB Backup, з якого взяти артефакт (порожньо = останній успішний)"
+        required: false
+        default: ""
+      tables:
+        description: "Таблиці через кому для вибіркового відновлення даних (порожньо = повне відновлення схеми public)"
+        required: false
+        default: ""
+
+concurrency:
+  group: db-restore
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Перевірка підтвердження
+        if: inputs.confirm != 'RESTORE'
+        run: |
+          echo "::error::Відновлення не підтверджено — у полі confirm треба ввести RESTORE"
+          exit 1
+
+      - name: Встановити клієнт PostgreSQL 17
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Завантажити артефакт бекапу
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_ID="${{ inputs.run_id }}"
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list -R "$GITHUB_REPOSITORY" --workflow db-backup.yml \
+              --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          fi
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::Не знайдено жодного успішного запуску DB Backup"
+            exit 1
+          fi
+          echo "Беру артефакт із запуску $RUN_ID"
+          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" --pattern 'db-backup-*' --dir backup
+          ls -lhR backup
+
+      - name: Відновлення
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          TABLES: ${{ inputs.tables }}
+        run: |
+          set -euo pipefail
+          BIN=/usr/lib/postgresql/17/bin
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::error::Секрет SUPABASE_DB_URL не задано — див. docs/BACKUP.md"
+            exit 1
+          fi
+          DUMP=$(ls backup/*/*.dump | head -n 1)
+          echo "Відновлюю з $DUMP"
+
+          if [ -z "$TABLES" ]; then
+            # Повне відновлення: перестворює всі обʼєкти схеми public
+            # (таблиці, функції, RLS-політики) в одній транзакції.
+            "$BIN/pg_restore" \
+              --clean --if-exists --no-owner \
+              --schema=public --single-transaction \
+              -d "$SUPABASE_DB_URL" "$DUMP"
+          else
+            # Вибіркове відновлення даних: TRUNCATE (без CASCADE — якщо на таблицю
+            # посилаються невказані таблиці, крок впаде, і це навмисно: додайте
+            # залежні таблиці до списку) + заливка даних з дампа.
+            # У схемі проєкту немає тригерів-лічильників, тож додаткових
+            # перерахунків після заливки не потрібно.
+            RESTORE_ARGS=()
+            TRUNCATE_LIST=""
+            IFS=',' read -ra LIST <<< "$TABLES"
+            for t in "${LIST[@]}"; do
+              t=$(echo "$t" | xargs)
+              [ -n "$t" ] || continue
+              RESTORE_ARGS+=(-t "$t")
+              TRUNCATE_LIST="${TRUNCATE_LIST:+$TRUNCATE_LIST, }public.\"$t\""
+            done
+            echo "Очищую: $TRUNCATE_LIST"
+            "$BIN/psql" "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -c "truncate table $TRUNCATE_LIST"
+            "$BIN/pg_restore" \
+              --data-only --no-owner --single-transaction \
+              "${RESTORE_ARGS[@]}" \
+              -d "$SUPABASE_DB_URL" "$DUMP"
+          fi
+
+      - name: Підсумок після відновлення
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          /usr/lib/postgresql/17/bin/psql "$SUPABASE_DB_URL" -c \
+            "select relname as table, n_live_tup as approx_rows from pg_stat_user_tables where schemaname = 'public' order by relname;"

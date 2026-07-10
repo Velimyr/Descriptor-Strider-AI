@@ -1,0 +1,220 @@
+name: DB Backup
+
+# Нічний бекап усіх таблиць схеми public бази Supabase.
+# Дамп зберігається як артефакт GitHub Actions (ротація: 10 останніх) і
+# додатково надсилається документом у Telegram (якщо задані секрети).
+# Щонеділі (та при кожному ручному запуску) — тест відновлення в ефемерний
+# Postgres-контейнер: доводить, що бекап реально відновлюється, без egress Supabase.
+#
+# Секрети: SUPABASE_DB_URL (обовʼязковий), TELEGRAM_BACKUP_BOT_TOKEN + TELEGRAM_BACKUP_CHAT_ID
+# (опційні). Деталі — docs/BACKUP.md.
+
+on:
+  schedule:
+    - cron: "0 2 * * *" # щоночі 02:00 UTC (04:00/05:00 за Києвом)
+  workflow_dispatch: {}
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write # ротація: видалення старих артефактів db-backup-*
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact: ${{ steps.meta.outputs.artifact }}
+      dow: ${{ steps.meta.outputs.dow }}
+    steps:
+      - name: Метадані запуску
+        id: meta
+        run: |
+          echo "artifact=db-backup-$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          echo "dow=$(date -u +%u)" >> "$GITHUB_OUTPUT"
+
+      - name: Встановити клієнт PostgreSQL 17
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      # Єдине звернення до Supabase за ніч — мінімальний egress.
+      # Підключення ЛИШЕ через Session Pooler (порт 5432): direct-хост на Free-плані
+      # доступний тільки по IPv6, а runner'и GitHub — IPv4-only.
+      - name: Дамп бази (схема public, всі таблиці)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "::error::Секрет SUPABASE_DB_URL не задано — див. docs/BACKUP.md"
+            exit 1
+          fi
+          /usr/lib/postgresql/17/bin/pg_dump "$SUPABASE_DB_URL" \
+            --schema=public \
+            --format=custom \
+            --compress=9 \
+            --file="${{ steps.meta.outputs.artifact }}.dump"
+
+      # Перевірка цілісності та plain-SQL копія — з локального файлу, без egress.
+      - name: Перевірка дампа + plain-SQL копія
+        id: check
+        run: |
+          BIN=/usr/lib/postgresql/17/bin
+          DUMP="${{ steps.meta.outputs.artifact }}.dump"
+          TABLES=$("$BIN/pg_restore" --list "$DUMP" | grep -c 'TABLE DATA' || true)
+          echo "У дампі таблиць з даними: $TABLES"
+          if [ "$TABLES" -eq 0 ]; then
+            echo "::error::Дамп не містить жодної таблиці з даними"
+            exit 1
+          fi
+          echo "tables=$TABLES" >> "$GITHUB_OUTPUT"
+          "$BIN/pg_restore" --file=- "$DUMP" | gzip -9 > "${{ steps.meta.outputs.artifact }}.sql.gz"
+          ls -lh "$DUMP" "${{ steps.meta.outputs.artifact }}.sql.gz"
+
+      - name: Завантажити артефакт
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.artifact }}
+          path: |
+            *.dump
+            *.sql.gz
+          retention-days: 14
+          if-no-files-found: error
+
+      # Ротація: лишаємо 10 найновіших артефактів db-backup-*, старіші видаляємо.
+      # retention-days: 14 вище — запасний механізм, якщо ротація не спрацює.
+      - name: Ротація артефактів (лишити 10 останніх)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: "10"
+        run: |
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired | not) | select(.name | startswith("db-backup-")) | {id, name, created_at}' \
+            | jq -s 'sort_by(.created_at) | reverse | .['"$KEEP"':]' > stale.json
+          COUNT=$(jq 'length' stale.json)
+          echo "Артефактів на видалення: $COUNT"
+          jq -c '.[]' stale.json | while read -r row; do
+            ID=$(echo "$row" | jq -r '.id')
+            NAME=$(echo "$row" | jq -r '.name')
+            echo "Видаляю $NAME (id=$ID)"
+            gh api -X DELETE "/repos/$GITHUB_REPOSITORY/actions/artifacts/$ID"
+          done
+
+      # Копія дампа в Telegram (ліміт Bot API на файл — 50 МБ).
+      # Крок ПІСЛЯ upload-artifact, щоб збій Telegram не завадив збереженню артефакту,
+      # але без continue-on-error — збій завалює job і викликає notify-failure.
+      - name: Надіслати дамп у Telegram
+        env:
+          TELEGRAM_BACKUP_BOT_TOKEN: ${{ secrets.TELEGRAM_BACKUP_BOT_TOKEN }}
+          TELEGRAM_BACKUP_CHAT_ID: ${{ secrets.TELEGRAM_BACKUP_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BACKUP_BOT_TOKEN" ] || [ -z "$TELEGRAM_BACKUP_CHAT_ID" ]; then
+            echo "Telegram-секрети не задані — пропускаю надсилання дампа"
+            exit 0
+          fi
+          DUMP="${{ steps.meta.outputs.artifact }}.dump"
+          SIZE=$(stat -c%s "$DUMP")
+          if [ "$SIZE" -gt 49000000 ]; then
+            echo "::warning::Дамп ($SIZE байт) перевищує ліміт Telegram 50 МБ — беріть з артефактів GitHub"
+            exit 0
+          fi
+          SIZE_MB=$(awk "BEGIN { printf \"%.1f\", $SIZE / 1048576 }")
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BACKUP_BOT_TOKEN}/sendDocument" \
+            -F chat_id="$TELEGRAM_BACKUP_CHAT_ID" \
+            -F document=@"$DUMP" \
+            -F caption="✅ Описовий Блукач: нічний бекап БД створено — ${{ steps.check.outputs.tables }} таблиць, дамп ${SIZE_MB}M (артефакт ${{ steps.meta.outputs.artifact }})." \
+            -o /dev/null
+          echo "Дамп надіслано в Telegram"
+
+  # Тест відновлюваності в ефемерний Postgres — без жодного egress Supabase.
+  # Щонеділі (економія хвилин Actions) або при ручному запуску.
+  verify-restore:
+    needs: backup
+    if: github.event_name == 'workflow_dispatch' || needs.backup.outputs.dow == '7'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      LOCAL_DB: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: Встановити клієнт PostgreSQL 17
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+
+      - name: Завантажити дамп із поточного запуску
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.backup.outputs.artifact }}
+
+      # Ролі та auth-функції Supabase, на які посилаються GRANT'и і RLS-політики дампа.
+      # Схему public дропаємо: дамп Supabase містить власний CREATE SCHEMA public.
+      - name: Заглушки середовища Supabase
+        run: |
+          /usr/lib/postgresql/17/bin/psql "$LOCAL_DB" -v ON_ERROR_STOP=1 <<'SQL'
+          drop schema if exists public cascade;
+          create role anon nologin;
+          create role authenticated nologin;
+          create role service_role nologin;
+          create role supabase_admin nologin;
+          create schema if not exists extensions;
+          create extension if not exists pgcrypto with schema extensions;
+          create schema if not exists auth;
+          create function auth.jwt() returns jsonb language sql stable as $$ select '{}'::jsonb $$;
+          create function auth.uid() returns uuid language sql stable as $$ select null::uuid $$;
+          SQL
+
+      - name: Відновити дамп
+        run: |
+          /usr/lib/postgresql/17/bin/pg_restore --no-owner --exit-on-error \
+            -d "$LOCAL_DB" ./*.dump
+
+      - name: Смоук-перевірка
+        run: |
+          BIN=/usr/lib/postgresql/17/bin
+          EXPECTED=$("$BIN/pg_restore" --list ./*.dump | grep -c 'TABLE DATA' || true)
+          ACTUAL=$("$BIN/psql" "$LOCAL_DB" -tAc "select count(*) from pg_catalog.pg_tables where schemaname = 'public'")
+          echo "Таблиць у дампі: $EXPECTED, відновлено: $ACTUAL"
+          if [ "$EXPECTED" -eq 0 ] || [ "$ACTUAL" -ne "$EXPECTED" ]; then
+            echo "::error::Кількість відновлених таблиць не збігається з дампом"
+            exit 1
+          fi
+
+  notify-failure:
+    needs: [backup, verify-restore]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Сповіщення в Telegram
+        env:
+          TELEGRAM_BACKUP_BOT_TOKEN: ${{ secrets.TELEGRAM_BACKUP_BOT_TOKEN }}
+          TELEGRAM_BACKUP_CHAT_ID: ${{ secrets.TELEGRAM_BACKUP_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BACKUP_BOT_TOKEN" ] || [ -z "$TELEGRAM_BACKUP_CHAT_ID" ]; then
+            echo "Telegram-секрети не задані — пропускаю сповіщення"
+            exit 0
+          fi
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BACKUP_BOT_TOKEN}/sendMessage" \
+            -d chat_id="$TELEGRAM_BACKUP_CHAT_ID" \
+            --data-urlencode text="⚠️ Описовий Блукач: нічний бекап БД впав. ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
