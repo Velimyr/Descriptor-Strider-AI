@@ -2041,7 +2041,16 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
       const arr = (v as any[]) || [];
       restored[parseInt(k, 10)] = arr.map(b => {
         const id = b.id || newId();
-        return { x: b.x, y: b.y, w: b.w, h: b.h, id, groupId: b.groupId || id };
+        return {
+          x: b.x,
+          y: b.y,
+          w: b.w,
+          h: b.h,
+          id,
+          groupId: b.groupId || id,
+          ...(typeof b.groupOrder === 'number' ? { groupOrder: b.groupOrder } : {}),
+          ...(typeof b.rotation === 'number' && b.rotation ? { rotation: b.rotation } : {}),
+        };
       });
     });
     setPageBoxes(restored);
@@ -2151,7 +2160,16 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         // Backward-compat: старі сесії без id/groupId — генеруємо.
         restored[parseInt(k, 10)] = arr.map(b => {
           const id = b.id || newId();
-          return { x: b.x, y: b.y, w: b.w, h: b.h, id, groupId: b.groupId || id };
+          return {
+          x: b.x,
+          y: b.y,
+          w: b.w,
+          h: b.h,
+          id,
+          groupId: b.groupId || id,
+          ...(typeof b.groupOrder === 'number' ? { groupOrder: b.groupOrder } : {}),
+          ...(typeof b.rotation === 'number' && b.rotation ? { rotation: b.rotation } : {}),
+        };
         });
       });
       setPageBoxes(restored);
