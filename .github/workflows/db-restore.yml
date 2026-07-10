@@ -82,9 +82,14 @@ jobs:
           if [ -z "$TABLES" ]; then
             # Повне відновлення: перестворює всі обʼєкти схеми public
             # (таблиці, функції, RLS-політики) в одній транзакції.
+            # Запис SCHEMA public виключаємо з TOC-списку: --clean інакше спробує
+            # DROP SCHEMA public, а там живуть обʼєкти розширення pg_trgm, яких
+            # немає в дампі — дроп упаде (і зніс би розширення разом зі схемою).
+            "$BIN/pg_restore" -l "$DUMP" | grep -v ' SCHEMA - public ' > restore.list
             "$BIN/pg_restore" \
               --clean --if-exists --no-owner \
               --schema=public --single-transaction \
+              -L restore.list \
               -d "$SUPABASE_DB_URL" "$DUMP"
           else
             # Вибіркове відновлення даних: TRUNCATE (без CASCADE — якщо на таблицю

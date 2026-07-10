@@ -168,25 +168,32 @@ jobs:
           name: ${{ needs.backup.outputs.artifact }}
 
       # Ролі та auth-функції Supabase, на які посилаються GRANT'и і RLS-політики дампа.
-      # Схему public дропаємо: дамп Supabase містить власний CREATE SCHEMA public.
+      # pg_trgm ставимо в public заздалегідь: у проді воно живе в public
+      # (schema.sql: create extension pg_trgm), але pg_dump --schema=public
+      # НЕ дампить розширення — без нього падає CREATE INDEX ... gin_trgm_ops.
       - name: Заглушки середовища Supabase
         run: |
           /usr/lib/postgresql/17/bin/psql "$LOCAL_DB" -v ON_ERROR_STOP=1 <<'SQL'
-          drop schema if exists public cascade;
           create role anon nologin;
           create role authenticated nologin;
           create role service_role nologin;
           create role supabase_admin nologin;
           create schema if not exists extensions;
           create extension if not exists pgcrypto with schema extensions;
+          create extension if not exists pg_trgm with schema public;
           create schema if not exists auth;
           create function auth.jwt() returns jsonb language sql stable as $$ select '{}'::jsonb $$;
           create function auth.uid() returns uuid language sql stable as $$ select null::uuid $$;
           SQL
 
+      # CREATE SCHEMA public з дампа виключаємо через TOC-список: схема в контейнері
+      # вже існує (і містить pg_trgm), а «CREATE SCHEMA public; already exists»
+      # з --exit-on-error завалив би відновлення.
       - name: Відновити дамп
         run: |
-          /usr/lib/postgresql/17/bin/pg_restore --no-owner --exit-on-error \
+          BIN=/usr/lib/postgresql/17/bin
+          "$BIN/pg_restore" -l ./*.dump | grep -v ' SCHEMA - public ' > restore.list
+          "$BIN/pg_restore" --no-owner --exit-on-error -L restore.list \
             -d "$LOCAL_DB" ./*.dump
 
       - name: Смоук-перевірка
