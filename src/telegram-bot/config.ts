@@ -273,6 +273,15 @@ export const telegramBotConfig: TelegramBotConfig = {
          actions: ['verification'],
          env: 'prod',
        },
+
+       {
+         name: 'Архівна інквізиція',
+         start: '2026-07-15 00:00',
+         end: '2026-07-20 00:00',
+         coefficient: 2,
+         actions: ['verification'],
+         env: 'prod',
+       },
   ],
 
   sheets: {
