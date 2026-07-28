@@ -2202,12 +2202,12 @@ router.post('/admin/quiz/stop', async (req, res) => {
   }
 });
 
-// Обнулити бали вікторини (стрічку відповідей не чіпає).
-router.post('/admin/quiz/reset-scores', async (req, res) => {
+// Повне скидання: бали + усі відповіді + стан (вікторина зупиняється).
+router.post('/admin/quiz/reset', async (req, res) => {
   if (!requireAdminSecret(req, res)) return;
   try {
-    const { resetQuizScores } = await import('./storage.js');
-    await resetQuizScores();
+    const { resetQuiz } = await import('./storage.js');
+    await resetQuiz();
     res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'internal' });

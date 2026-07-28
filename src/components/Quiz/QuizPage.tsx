@@ -190,15 +190,15 @@ export function QuizPage() {
         </button>
         <button
           onClick={() => {
-            if (confirm('Обнулити ВСІ бали вікторини? Це неможливо скасувати.')) {
-              act(() => tgApi.quizResetScores());
+            if (confirm('Скинути вікторину: обнулити ВСІ бали й стерти всі відповіді? Це неможливо скасувати.')) {
+              act(() => tgApi.quizReset());
             }
           }}
           disabled={busy}
-          title="Обнулити бали вікторини"
+          title="Обнулити бали, стерти відповіді й зупинити вікторину"
           className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-red-900/60 text-slate-400 hover:text-red-300 text-xs font-bold"
         >
-          Обнулити бали
+          Скинути все
         </button>
         <button
           onClick={() => {

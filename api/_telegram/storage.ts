@@ -2664,8 +2664,16 @@ export async function getQuizPoints(tgId: string): Promise<number> {
   return data?.points ?? 0;
 }
 
-// Обнулення балів вікторини (кнопка в адмінці). Стрічку відповідей не чіпаємо.
-export async function resetQuizScores(): Promise<void> {
-  const { error } = await db().from(T.quizScores).delete().neq('tg_id', '');
-  if (error) throw error;
+// Повне скидання вікторини (кнопка в адмінці): бали + стрічка відповідей + стан.
+// Стан обовʼязково скидаємо разом із відповідями — інакше в уже розіграному
+// питанні зник би переможець і бал за нього можна було б отримати вдруге.
+export async function resetQuiz(): Promise<void> {
+  const client = db();
+  const [scores, answers] = await Promise.all([
+    client.from(T.quizScores).delete().neq('tg_id', ''),
+    client.from(T.quizAnswers).delete().gt('id', 0),
+  ]);
+  if (scores.error) throw scores.error;
+  if (answers.error) throw answers.error;
+  await setQuizState({ sessionId: '', status: 'idle', qIndex: 0, startedAt: '', endsAt: '' });
 }

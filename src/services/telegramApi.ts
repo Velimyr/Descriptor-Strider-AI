@@ -364,8 +364,8 @@ export const tgApi = {
   quizRestartTimer: () =>
     call('/admin/quiz/restart-timer', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
   quizStop: () => call('/admin/quiz/stop', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
-  quizResetScores: () =>
-    call('/admin/quiz/reset-scores', { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
+  // Скидає все: бали, стрічку відповідей і стан сесії.
+  quizReset: () => call('/admin/quiz/reset', { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
 };
 
 export interface QuizState {
