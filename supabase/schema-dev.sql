@@ -922,3 +922,95 @@ language sql security definer as $$
   cross join lateral jsonb_array_elements_text(b.variants) as v(value);
 $$;
 revoke all on function botdev_keyword_variant_status(text) from public, anon, authenticated;
+
+-- ===== Вікторина (стрімова гра) =====
+-- Ведучий керує зі сторінки /quiz (адмін-логін), учасники відповідають у боті.
+-- Бали вікторини — ОКРЕМІ від балів застосунку (bot_users.total_points не чіпаємо).
+
+-- Стан поточної сесії. Рівно один рядок (id = 1). Окрема таблиця, а не bot_meta,
+-- бо getMeta кешує значення на 60 с — для секундного таймера це неприйнятно.
+create table if not exists botdev_quiz_state (
+  id          int         primary key default 1 check (id = 1),
+  session_id  text        not null default '',
+  status      text        not null default 'idle' check (status in ('idle', 'running', 'finished')),
+  q_index     int         not null default 0,
+  started_at  timestamptz,
+  ends_at     timestamptz,
+  updated_at  timestamptz not null default now()
+);
+insert into botdev_quiz_state (id) values (1) on conflict (id) do nothing;
+
+-- Усі відповіді всіх учасників (і правильні, і ні) — стрічка на сторінці стріму.
+create table if not exists botdev_quiz_answers (
+  id           bigserial   primary key,
+  session_id   text        not null,
+  q_index      int         not null,
+  tg_id        text        not null,
+  display_name text        not null default '',
+  answer       text        not null default '',
+  is_correct   boolean     not null default false,
+  is_winner    boolean     not null default false,
+  created_at   timestamptz not null default now()
+);
+create index if not exists idx_dev_quiz_answers_feed on botdev_quiz_answers(session_id, id);
+-- Страховка від гонки: максимум один переможець на питання сесії.
+create unique index if not exists uq_dev_quiz_winner on botdev_quiz_answers(session_id, q_index) where is_winner;
+
+-- Накопичувальні бали вікторини (за весь час, поки не обнулити з адмінки).
+create table if not exists botdev_quiz_scores (
+  tg_id        text primary key,
+  display_name text        not null default '',
+  points       int         not null default 0,
+  wins         int         not null default 0,
+  updated_at   timestamptz not null default now()
+);
+create index if not exists idx_dev_quiz_scores_points on botdev_quiz_scores(points desc);
+
+alter table botdev_quiz_state   enable row level security;
+alter table botdev_quiz_answers enable row level security;
+alter table botdev_quiz_scores  enable row level security;
+
+-- Атомарний прийом відповіді: пише рядок у стрічку і, якщо відповідь правильна
+-- й переможця цього питання ще немає, робить її переможною + нараховує бали.
+-- Advisory-lock на (сесія, питання) серіалізує одночасні виклики.
+create or replace function botdev_quiz_answer(
+  p_session text,
+  p_q_index int,
+  p_tg_id   text,
+  p_name    text,
+  p_answer  text,
+  p_correct boolean,
+  p_points  int
+) returns table(won boolean, total int)
+language plpgsql security definer as $$
+declare
+  v_id     bigint;
+  v_won    boolean := false;
+  v_total  int;
+begin
+  insert into botdev_quiz_answers(session_id, q_index, tg_id, display_name, answer, is_correct)
+    values (p_session, p_q_index, p_tg_id, p_name, p_answer, p_correct)
+    returning id into v_id;
+
+  if p_correct then
+    perform pg_advisory_xact_lock(hashtext('botdev_quiz:' || p_session || ':' || p_q_index));
+    if not exists (
+      select 1 from botdev_quiz_answers a
+       where a.session_id = p_session and a.q_index = p_q_index and a.is_winner
+    ) then
+      update botdev_quiz_answers set is_winner = true where id = v_id;
+      insert into botdev_quiz_scores(tg_id, display_name, points, wins, updated_at)
+        values (p_tg_id, p_name, p_points, 1, now())
+        on conflict (tg_id) do update
+          set points       = botdev_quiz_scores.points + p_points,
+              wins         = botdev_quiz_scores.wins + 1,
+              display_name = excluded.display_name,
+              updated_at   = now();
+      v_won := true;
+    end if;
+  end if;
+
+  select s.points into v_total from botdev_quiz_scores s where s.tg_id = p_tg_id;
+  return query select v_won, coalesce(v_total, 0);
+end $$;
+revoke all on function botdev_quiz_answer(text, int, text, text, text, boolean, int) from public, anon, authenticated;

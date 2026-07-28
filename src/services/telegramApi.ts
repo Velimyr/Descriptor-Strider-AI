@@ -353,7 +353,64 @@ export const tgApi = {
     }>,
   cancelBroadcast: (id: number) =>
     call(`/admin/broadcast/${id}/cancel`, { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
+
+  // --- Вікторина (сторінка /quiz) ---
+  quizLive: (since: number) =>
+    call(`/admin/quiz/live?since=${since}`) as Promise<QuizLive>,
+  quizQuestions: () =>
+    call('/admin/quiz/questions') as Promise<{ questions: QuizQuestionPreview[] }>,
+  quizStart: () => call('/admin/quiz/start', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
+  quizNext: () => call('/admin/quiz/next', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
+  quizRestartTimer: () =>
+    call('/admin/quiz/restart-timer', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
+  quizStop: () => call('/admin/quiz/stop', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
+  quizResetScores: () =>
+    call('/admin/quiz/reset-scores', { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
 };
+
+export interface QuizState {
+  status: 'idle' | 'running' | 'finished';
+  sessionId: string;
+  qIndex: number;
+  total: number;
+  secondsLeft: number;
+  endsAt: string;
+  open: boolean;
+}
+
+export interface QuizQuestionPreview {
+  index: number;
+  text: string;
+  answer: string;
+  note: string;
+}
+
+export interface QuizAnswer {
+  id: number;
+  qIndex: number;
+  tgId: string;
+  displayName: string;
+  answer: string;
+  isCorrect: boolean;
+  isWinner: boolean;
+  createdAt: string;
+}
+
+export interface QuizScore {
+  tgId: string;
+  displayName: string;
+  points: number;
+  wins: number;
+}
+
+export interface QuizLive {
+  state: QuizState;
+  question: { index: number; text: string; answer: string; note: string } | null;
+  answers: QuizAnswer[];
+  // null — рейтинг не змінювався з минулого опитування (сторінка лишає попередній).
+  leaderboard: QuizScore[] | null;
+  config: { answerSeconds: number; pointsPerWin: number; total: number };
+}
 
 export interface BroadcastRow {
   id: number;

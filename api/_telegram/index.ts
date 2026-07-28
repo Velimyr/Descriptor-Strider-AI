@@ -2106,4 +2106,112 @@ router.delete('/admin/partners/:id', async (req, res) => {
   }
 });
 
+// ----------- Вікторина (стрімова гра) -----------
+// Керування зі сторінки /quiz (адмін-логін). Питання — з конфігу; у Telegram
+// вони НЕ надсилаються, бот лише приймає відповіді учасників.
+
+// Живий стан для сторінки ведучого. `since` — курсор по id відповідей, щоб
+// щосекундний polling добирав лише нові рядки (а не всю стрічку).
+router.get('/admin/quiz/live', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const since = Number(req.query.since || 0) || 0;
+  try {
+    const { getQuizState, listQuizAnswers, getQuizLeaderboard } = await import('./storage.js');
+    const { publicState, quizQuestions } = await import('./quiz.js');
+    const state = await getQuizState();
+    const pub = publicState(state);
+    const questions = quizQuestions();
+    const q = pub.status === 'idle' ? undefined : questions[state.qIndex];
+    const answers = state.sessionId ? await listQuizAnswers(state.sessionId, since) : [];
+    // Рейтинг тягнемо лише коли він міг змінитись (перше завантаження або
+    // зʼявився новий переможець) — інакше null і сторінка лишає попередній.
+    // Це знімає ~3600 зайвих запитів за годину стріму (polling 1/с).
+    const needScores = since === 0 || answers.some(a => a.isWinner);
+    const leaderboard = needScores ? await getQuizLeaderboard(15) : null;
+    res.json({
+      state: pub,
+      // Сторінка адмінська, тож еталонну відповідь віддаємо ведучому.
+      question: q
+        ? { index: state.qIndex, text: q.text, answer: (q.answers || [])[0] || '', note: q.note || '' }
+        : null,
+      answers,
+      leaderboard,
+      config: {
+        answerSeconds: telegramBotConfig.quiz.answerSeconds,
+        pointsPerWin: telegramBotConfig.quiz.pointsPerWin,
+        total: questions.length,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Перелік питань (для попереднього перегляду сценарію стріму).
+router.get('/admin/quiz/questions', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { quizQuestions } = await import('./quiz.js');
+  res.json({
+    questions: quizQuestions().map((q, i) => ({
+      index: i,
+      text: q.text,
+      answer: (q.answers || [])[0] || '',
+      note: q.note || '',
+    })),
+  });
+});
+
+router.post('/admin/quiz/start', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { startQuiz, publicState } = await import('./quiz.js');
+    res.json({ ok: true, state: publicState(await startQuiz()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/quiz/next', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { nextQuestion, publicState } = await import('./quiz.js');
+    res.json({ ok: true, state: publicState(await nextQuestion()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Перезапустити таймер поточного питання (дати учасникам ще часу).
+router.post('/admin/quiz/restart-timer', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { restartTimer, publicState } = await import('./quiz.js');
+    res.json({ ok: true, state: publicState(await restartTimer()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/quiz/stop', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { stopQuiz, publicState } = await import('./quiz.js');
+    res.json({ ok: true, state: publicState(await stopQuiz()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Обнулити бали вікторини (стрічку відповідей не чіпає).
+router.post('/admin/quiz/reset-scores', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { resetQuizScores } = await import('./storage.js');
+    await resetQuizScores();
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
 export default router;

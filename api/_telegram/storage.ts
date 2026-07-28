@@ -28,6 +28,9 @@ export const T = {
   broadcastRecipients: `${PREFIX}broadcast_recipients`,
   keywordBlocks:     `${PREFIX}keyword_blocks`,
   keywordMatches:    `${PREFIX}keyword_matches`,
+  quizState:         `${PREFIX}quiz_state`,
+  quizAnswers:       `${PREFIX}quiz_answers`,
+  quizScores:        `${PREFIX}quiz_scores`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
@@ -49,6 +52,7 @@ const RPC_BROADCAST_CLAIM_BATCH = `${PREFIX}broadcast_claim_batch`;
 const RPC_BROADCAST_REAP = `${PREFIX}broadcast_reap`;
 const RPC_BROADCAST_INC = `${PREFIX}broadcast_inc`;
 const RPC_BROADCAST_CLICK = `${PREFIX}broadcast_click`;
+const RPC_QUIZ_ANSWER = `${PREFIX}quiz_answer`;
 const RPC_KEYWORD_BACKFILL_SCAN = `${PREFIX}keyword_backfill_scan`;
 const RPC_KEYWORD_VARIANT_STATUS = `${PREFIX}keyword_variant_status`;
 
@@ -86,7 +90,9 @@ export interface BotUser {
     | 'edit_photo'
     | 'edit_contact'
     | 'add_gemini_key'
-    | 'add_keyword_block';
+    | 'add_keyword_block'
+    // Режим «Вікторина»: будь-який звичайний текст — це відповідь на активне питання.
+    | 'quiz';
   createdAt: string;
   introShownAt: string; // ISO або '' якщо ще не показували
   // Час "засіву" бейджів. '' (NULL у БД) = ще не засівали: на першій перевірці
@@ -2506,3 +2512,160 @@ export async function recordBroadcastClick(
   return data === true;
 }
 
+
+// ---------- ВІКТОРИНА (стрімова гра) ----------
+// Стан сесії — окремий рядок (id=1), а НЕ bot_meta: getMeta кешує на 60 с,
+// а тут потрібна свіжість до секунди (таймер на 60 с).
+
+export interface QuizStateRow {
+  sessionId: string;
+  status: 'idle' | 'running' | 'finished';
+  qIndex: number;
+  startedAt: string; // ISO або ''
+  endsAt: string;    // ISO або ''
+}
+
+const EMPTY_QUIZ_STATE: QuizStateRow = {
+  sessionId: '',
+  status: 'idle',
+  qIndex: 0,
+  startedAt: '',
+  endsAt: '',
+};
+
+export async function getQuizState(): Promise<QuizStateRow> {
+  const { data, error } = await db()
+    .from(T.quizState)
+    .select('session_id, status, q_index, started_at, ends_at')
+    .eq('id', 1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return { ...EMPTY_QUIZ_STATE };
+  return {
+    sessionId: data.session_id || '',
+    status: (data.status as QuizStateRow['status']) || 'idle',
+    qIndex: data.q_index ?? 0,
+    startedAt: data.started_at || '',
+    endsAt: data.ends_at || '',
+  };
+}
+
+export async function setQuizState(state: QuizStateRow): Promise<void> {
+  const { error } = await db()
+    .from(T.quizState)
+    .upsert(
+      {
+        id: 1,
+        session_id: state.sessionId,
+        status: state.status,
+        q_index: state.qIndex,
+        started_at: state.startedAt || null,
+        ends_at: state.endsAt || null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+  if (error) throw error;
+}
+
+// Атомарний прийом відповіді: пише в стрічку і, якщо правильна й переможця ще
+// немає, робить її переможною + нараховує бали (див. SQL bot_quiz_answer).
+export async function recordQuizAnswer(params: {
+  sessionId: string;
+  qIndex: number;
+  tgId: string;
+  displayName: string;
+  answer: string;
+  correct: boolean;
+  points: number;
+}): Promise<{ won: boolean; total: number }> {
+  const { data, error } = await db().rpc(RPC_QUIZ_ANSWER, {
+    p_session: params.sessionId,
+    p_q_index: params.qIndex,
+    p_tg_id: params.tgId,
+    p_name: params.displayName,
+    p_answer: params.answer,
+    p_correct: params.correct,
+    p_points: params.points,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return { won: !!row?.won, total: row?.total ?? 0 };
+}
+
+export interface QuizAnswerRow {
+  id: number;
+  qIndex: number;
+  tgId: string;
+  displayName: string;
+  answer: string;
+  isCorrect: boolean;
+  isWinner: boolean;
+  createdAt: string;
+}
+
+// Стрічка відповідей сесії. sinceId — курсор (0 = з початку), щоб сторінка
+// ведучого добирала лише нові рядки і не качала всю історію щосекунди.
+export async function listQuizAnswers(
+  sessionId: string,
+  sinceId = 0,
+  limit = 200
+): Promise<QuizAnswerRow[]> {
+  const { data, error } = await db()
+    .from(T.quizAnswers)
+    .select('id, q_index, tg_id, display_name, answer, is_correct, is_winner, created_at')
+    .eq('session_id', sessionId)
+    .gt('id', sinceId)
+    .order('id', { ascending: true })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map((r: any) => ({
+    id: r.id,
+    qIndex: r.q_index,
+    tgId: r.tg_id,
+    displayName: r.display_name || '',
+    answer: r.answer || '',
+    isCorrect: !!r.is_correct,
+    isWinner: !!r.is_winner,
+    createdAt: r.created_at,
+  }));
+}
+
+export interface QuizScoreRow {
+  tgId: string;
+  displayName: string;
+  points: number;
+  wins: number;
+}
+
+export async function getQuizLeaderboard(limit = 15): Promise<QuizScoreRow[]> {
+  const { data, error } = await db()
+    .from(T.quizScores)
+    .select('tg_id, display_name, points, wins')
+    .gt('points', 0)
+    .order('points', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map((r: any) => ({
+    tgId: r.tg_id,
+    displayName: r.display_name || '',
+    points: r.points ?? 0,
+    wins: r.wins ?? 0,
+  }));
+}
+
+export async function getQuizPoints(tgId: string): Promise<number> {
+  const { data, error } = await db()
+    .from(T.quizScores)
+    .select('points')
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.points ?? 0;
+}
+
+// Обнулення балів вікторини (кнопка в адмінці). Стрічку відповідей не чіпаємо.
+export async function resetQuizScores(): Promise<void> {
+  const { error } = await db().from(T.quizScores).delete().neq('tg_id', '');
+  if (error) throw error;
+}

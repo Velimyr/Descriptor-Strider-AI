@@ -484,9 +484,12 @@ function mainMenuKeyboard(user: BotUser | null): any {
     user?.status === 'paused'
       ? [{ text: T.menuResume }]
       : [{ text: T.menuPause }];
+  // Кнопка «Вікторина» — лише коли гра увімкнена в конфігу (стрімовий період).
+  const quizRow = telegramBotConfig.quiz.enabled ? [[{ text: T.menuQuiz }]] : [];
   return {
     keyboard: [
       [{ text: T.menuNext }],
+      ...quizRow,
       [{ text: T.menuStats }, { text: T.menuProgress }],
       [{ text: T.menuLeaderboard }, { text: T.menuHallOfFame }],
       [{ text: T.menuHelp }, { text: T.menuSettings }],
@@ -735,6 +738,7 @@ function normalizeCommand(text: string): string {
   if (trimmed === T.menuHallOfFame) return '/halloffame';
   if (trimmed === T.menuHelp) return '/help';
   if (trimmed === T.menuSettings) return '/settings';
+  if (trimmed === T.menuQuiz) return '/quiz';
   if (trimmed === T.menuPause) return '/stop';
   if (trimmed === T.menuResume) return '/resume';
   return trimmed;
@@ -990,7 +994,7 @@ async function handleMessage(msg: any) {
     // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
     const menuTexts = new Set([
       T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard, T.menuHallOfFame,
-      T.menuPause, T.menuResume, T.menuHelp, T.menuSettings,
+      T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuQuiz,
     ]);
     if (menuTexts.has(rawText.trim())) {
       await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid);
@@ -1122,6 +1126,18 @@ async function handleMessage(msg: any) {
     user.pendingAction = '';
   }
 
+  // Режим вікторини: будь-який звичайний текст — відповідь на активне питання
+  // (відповідати можна скільки завгодно разів). Кнопка меню — вихід із режиму.
+  if (user.pendingAction === 'quiz') {
+    if (!text.startsWith('/')) {
+      await processQuizAnswer(chatId, user, rawText);
+      return;
+    }
+    await patchUser(tgId, { pendingAction: '' });
+    user.pendingAction = '';
+  }
+
+  if (text === '/quiz') return void (await cmdQuiz(chatId, user));
   if (text === '/stats') return void (await cmdStats(chatId, tgId, user));
   if (text === '/progress') return void (await cmdProgress(chatId, user));
   if (text === '/leaderboard') return void (await cmdLeaderboard(chatId, tgId, user));
@@ -1978,6 +1994,81 @@ async function cmdHallOfFame(chatId: number) {
   await sendMessage(chatId, T.hallOfFamePick, { reply_markup: { inline_keyboard: rows } });
 }
 
+// ---------- ВІКТОРИНА ----------
+// Питання в Telegram НЕ надсилаються — їх видно лише на екрані стріму. Тут лише
+// статус («питання №N активне, лишилось X с») і прийом відповідей.
+
+async function quizLeaderboardText(tgId: string): Promise<string> {
+  const { getQuizLeaderboard, getQuizPoints } = await import('./storage.js');
+  const [top, mine] = await Promise.all([getQuizLeaderboard(10), getQuizPoints(tgId)]);
+  const lines = [T.quizScoreHeader];
+  if (top.length === 0) {
+    lines.push(T.quizScoreEmpty);
+  } else {
+    top.forEach((r, i) => {
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+      lines.push(`${medal} ${escapeHtml(r.displayName || '—')} — ${r.points}`);
+    });
+  }
+  lines.push(fmt(T.quizScoreYou, { points: mine }));
+  return lines.join('\n');
+}
+
+async function cmdQuiz(chatId: number, user: BotUser) {
+  const { getQuizState } = await import('./storage.js');
+  const { publicState } = await import('./quiz.js');
+  const state = await getQuizState();
+  const pub = publicState(state);
+  const scores = await quizLeaderboardText(user.tgId);
+
+  if (pub.status === 'running') {
+    // Тримаємо режим «квіз» навіть коли час поточного питання вийшов — щоб на
+    // наступне питання можна було відповідати одразу, без повторного кліку.
+    if (user.pendingAction !== 'quiz') {
+      await patchUser(user.tgId, { pendingAction: 'quiz' });
+      user.pendingAction = 'quiz';
+    }
+    const head = pub.open
+      ? fmt(T.quizActive, { index: pub.qIndex + 1, total: pub.total, seconds: pub.secondsLeft })
+      : T.quizClosed;
+    await sendMessage(chatId, `${head}\n\n${scores}`, { reply_markup: mainMenuKeyboard(user) });
+    return;
+  }
+
+  if (user.pendingAction === 'quiz') {
+    await patchUser(user.tgId, { pendingAction: '' });
+    user.pendingAction = '';
+  }
+  const head = pub.status === 'finished' ? T.quizFinished : T.quizIdle;
+  await sendMessage(chatId, `${head}\n\n${scores}`, { reply_markup: mainMenuKeyboard(user) });
+}
+
+async function processQuizAnswer(chatId: number, user: BotUser, rawText: string) {
+  const { submitQuizAnswer } = await import('./quiz.js');
+  const result = await submitQuizAnswer(user.tgId, user.displayName, rawText);
+  switch (result.kind) {
+    case 'win':
+      await sendMessage(chatId, fmt(T.quizWin, { points: result.points, total: result.total }));
+      return;
+    case 'correct_late':
+      await sendMessage(chatId, T.quizCorrectLate);
+      return;
+    case 'wrong':
+      await sendMessage(chatId, T.quizWrong);
+      return;
+    case 'too_late':
+      await sendMessage(chatId, T.quizTooLate);
+      return;
+    case 'not_running':
+    default:
+      // Вікторина скінчилась (або ще не почалась) — виходимо з режиму, щоб текст
+      // користувача знову йшов у звичайний потік (відповіді на справу тощо).
+      await patchUser(user.tgId, { pendingAction: '' });
+      user.pendingAction = '';
+      await sendMessage(chatId, T.quizIdle, { reply_markup: mainMenuKeyboard(user) });
+  }
+}
+
 async function cmdSettings(chatId: number, user: BotUser) {
   await sendMessage(chatId, fmt(T.settingsHeader, { name: escapeHtml(user.displayName || '—') }), {
     reply_markup: settingsMenuKeyboard(),
@@ -1995,7 +2086,7 @@ async function processRenameInput(chatId: number, user: BotUser, rawText: string
   // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
   const menuTexts = new Set([
     T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard,
-    T.menuPause, T.menuResume, T.menuHelp, T.menuSettings,
+    T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuQuiz,
   ]);
   if (menuTexts.has(rawText.trim())) {
     await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid, {
