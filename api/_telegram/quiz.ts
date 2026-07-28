@@ -12,8 +12,33 @@ import {
   getQuizPoints,
 } from './storage.js';
 import type { QuizStateRow } from './storage.js';
+import { kyivWallString, normalizeWall, formatWallLocal } from './marathon.js';
 
 const CFG = telegramBotConfig.quiz;
+
+// ---------- Вікно стріму ----------
+// Дата/час стріму задані в конфігу за київським настінним часом (як марафони):
+// порівнюємо рядки 'YYYY-MM-DD HH:mm', тож DST рахувати не треба.
+
+export type StreamPhase = 'before' | 'during' | 'after';
+
+export interface StreamWindow {
+  phase: StreamPhase;
+  // Початок стріму для показу: 'ДД.ММ.РРРР' і 'ГГ:ХХ'.
+  startDate: string;
+  startTime: string;
+}
+
+export function streamWindow(now: Date = new Date()): StreamWindow {
+  const start = normalizeWall(CFG.streamStart);
+  const end = normalizeWall(CFG.streamEnd);
+  const [startDate, startTime] = (formatWallLocal(start) || ' ').split(' ');
+  const nowWall = kyivWallString(now);
+  let phase: StreamPhase = 'during';
+  if (start && nowWall < start) phase = 'before';
+  else if (end && nowWall >= end) phase = 'after';
+  return { phase, startDate: startDate || '', startTime: startTime || '' };
+}
 
 export function quizQuestions(): QuizQuestion[] {
   return CFG.questions || [];
@@ -132,7 +157,7 @@ export async function stopQuiz(): Promise<QuizStateRow> {
 
 export type QuizSubmitResult =
   | { kind: 'not_running' }
-  | { kind: 'too_late' }
+  | { kind: 'too_late'; qIndex: number }
   | { kind: 'wrong' }
   | { kind: 'correct_late' }
   | { kind: 'win'; points: number; total: number };
@@ -147,7 +172,7 @@ export async function submitQuizAnswer(
   const state = await getQuizState();
   const pub = publicState(state);
   if (pub.status !== 'running' || !state.sessionId) return { kind: 'not_running' };
-  if (!pub.open) return { kind: 'too_late' };
+  if (!pub.open) return { kind: 'too_late', qIndex: state.qIndex };
 
   const q = quizQuestions()[state.qIndex];
   const correct = isCorrectAnswer(q, rawText);

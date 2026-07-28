@@ -2014,6 +2014,17 @@ async function quizLeaderboardText(tgId: string): Promise<string> {
   return lines.join('\n');
 }
 
+// Текст для випадку «вікторина зараз не йде»: залежить від дати стріму в конфігу.
+async function quizOffAirText(status: 'idle' | 'finished'): Promise<string> {
+  const { streamWindow } = await import('./quiz.js');
+  const w = streamWindow();
+  if (w.phase === 'before') {
+    return fmt(T.quizBeforeStream, { date: w.startDate, time: w.startTime });
+  }
+  if (w.phase === 'after') return T.quizAfterStream;
+  return status === 'finished' ? T.quizFinished : T.quizIdle;
+}
+
 async function cmdQuiz(chatId: number, user: BotUser) {
   const { getQuizState } = await import('./storage.js');
   const { publicState } = await import('./quiz.js');
@@ -2030,7 +2041,7 @@ async function cmdQuiz(chatId: number, user: BotUser) {
     }
     const head = pub.open
       ? fmt(T.quizActive, { index: pub.qIndex + 1, total: pub.total, seconds: pub.secondsLeft })
-      : T.quizClosed;
+      : fmt(T.quizClosed, { index: pub.qIndex + 1 });
     await sendMessage(chatId, `${head}\n\n${scores}`, { reply_markup: mainMenuKeyboard(user) });
     return;
   }
@@ -2039,7 +2050,7 @@ async function cmdQuiz(chatId: number, user: BotUser) {
     await patchUser(user.tgId, { pendingAction: '' });
     user.pendingAction = '';
   }
-  const head = pub.status === 'finished' ? T.quizFinished : T.quizIdle;
+  const head = await quizOffAirText(pub.status === 'finished' ? 'finished' : 'idle');
   await sendMessage(chatId, `${head}\n\n${scores}`, { reply_markup: mainMenuKeyboard(user) });
 }
 
@@ -2057,15 +2068,17 @@ async function processQuizAnswer(chatId: number, user: BotUser, rawText: string)
       await sendMessage(chatId, T.quizWrong);
       return;
     case 'too_late':
-      await sendMessage(chatId, T.quizTooLate);
+      await sendMessage(chatId, fmt(T.quizTooLate, { index: result.qIndex + 1 }));
       return;
     case 'not_running':
-    default:
+    default: {
       // Вікторина скінчилась (або ще не почалась) — виходимо з режиму, щоб текст
       // користувача знову йшов у звичайний потік (відповіді на справу тощо).
       await patchUser(user.tgId, { pendingAction: '' });
       user.pendingAction = '';
-      await sendMessage(chatId, T.quizIdle, { reply_markup: mainMenuKeyboard(user) });
+      const head = await quizOffAirText('idle');
+      await sendMessage(chatId, head, { reply_markup: mainMenuKeyboard(user) });
+    }
   }
 }
 

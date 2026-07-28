@@ -33,7 +33,7 @@ const LoginGate: React.FC<{ onDone: () => void }> = ({ onDone }) => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-100">
       <form onSubmit={submit} className="w-full max-w-sm space-y-4 p-8 bg-slate-900 rounded-2xl border border-slate-800">
-        <h1 className="text-2xl font-bold text-center">🎯 Вікторина</h1>
+        <h1 className="text-2xl font-bold text-center">🎙 Вікторина</h1>
         <p className="text-sm text-slate-400 text-center">Вхід для ведучого</p>
         <input
           value={login}
@@ -147,20 +147,24 @@ export function QuizPage() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       {/* Шапка: статус, таймер, керування */}
       <header className="flex items-center gap-4 px-6 py-3 border-b border-slate-800 bg-slate-900/60">
-        <div className="text-xl font-black tracking-tight">🎯 Вікторина</div>
+        <div className="text-xl font-black tracking-tight">🎙 Вікторина</div>
         {state && state.status !== 'idle' && (
           <div className="text-sm font-semibold text-slate-400">
             Питання {state.qIndex + 1} з {state.total}
           </div>
         )}
         <div className="flex-1" />
-        <button
-          onClick={() => act(() => tgApi.quizStart())}
-          disabled={busy}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold disabled:opacity-50"
-        >
-          <Play size={16} /> Запустити вікторину
-        </button>
+        {/* «Запустити» — лише поки вікторина не йде. Під час гри лишається
+            «Наступне питання», щоб не запустити все з нуля випадковим кліком. */}
+        {(!state || state.status !== 'running') && (
+          <button
+            onClick={() => act(() => tgApi.quizStart())}
+            disabled={busy}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-semibold disabled:opacity-50"
+          >
+            <Play size={16} /> {state?.status === 'finished' ? 'Почати заново' : 'Запустити вікторину'}
+          </button>
+        )}
         <button
           onClick={() => act(() => tgApi.quizNext())}
           disabled={busy || !state || state.status !== 'running'}
