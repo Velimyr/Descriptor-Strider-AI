@@ -486,10 +486,12 @@ function mainMenuKeyboard(user: BotUser | null): any {
       : [{ text: T.menuPause }];
   // Кнопка «Вікторина» — лише коли гра увімкнена в конфігу (стрімовий період).
   const quizRow = telegramBotConfig.quiz.enabled ? [[{ text: T.menuQuiz }]] : [];
+  const standupRow = telegramBotConfig.standup.enabled ? [[{ text: T.menuStandup }]] : [];
   return {
     keyboard: [
       [{ text: T.menuNext }],
       ...quizRow,
+      ...standupRow,
       [{ text: T.menuStats }, { text: T.menuProgress }],
       [{ text: T.menuLeaderboard }, { text: T.menuHallOfFame }],
       [{ text: T.menuHelp }, { text: T.menuSettings }],
@@ -739,6 +741,7 @@ function normalizeCommand(text: string): string {
   if (trimmed === T.menuHelp) return '/help';
   if (trimmed === T.menuSettings) return '/settings';
   if (trimmed === T.menuQuiz) return '/quiz';
+  if (trimmed === T.menuStandup) return '/standup';
   if (trimmed === T.menuPause) return '/stop';
   if (trimmed === T.menuResume) return '/resume';
   return trimmed;
@@ -994,7 +997,7 @@ async function handleMessage(msg: any) {
     // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
     const menuTexts = new Set([
       T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard, T.menuHallOfFame,
-      T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuQuiz,
+      T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuQuiz, T.menuStandup,
     ]);
     if (menuTexts.has(rawText.trim())) {
       await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid);
@@ -1138,6 +1141,7 @@ async function handleMessage(msg: any) {
   }
 
   if (text === '/quiz') return void (await cmdQuiz(chatId, user));
+  if (text === '/standup') return void (await cmdStandup(chatId, user));
   if (text === '/stats') return void (await cmdStats(chatId, tgId, user));
   if (text === '/progress') return void (await cmdProgress(chatId, user));
   if (text === '/leaderboard') return void (await cmdLeaderboard(chatId, tgId, user));
@@ -1183,6 +1187,16 @@ async function handleCallback(cb: any) {
   if (data !== 'intro:ack' && cbUser) {
     Promise.resolve(maybeShowIntro(chatId, cbUser))
       .catch(e => console.error('maybeShowIntro (callback) failed', e));
+  }
+
+  // Кнопки стендапу: запис у чергу / лайк / оновити картку виступу.
+  if (data.startsWith('su:')) {
+    if (!cbUser) {
+      await answerCallbackQuery(cb.id);
+      return;
+    }
+    await handleStandupCallback(cb, cbUser, data);
+    return;
   }
 
   // Клік по кнопці адмін-розсилки: `bc:<id>:<action>`. Логуємо клік (для звіту в
@@ -2082,6 +2096,117 @@ async function processQuizAnswer(chatId: number, user: BotUser, rawText: string)
   }
 }
 
+// ---------- АРХІВНИЙ СТЕНДАП ----------
+// Тема — на екрані стріму. У боті лише дві дії: записатися в чергу на виступ
+// і лайкнути того, хто зараз на сцені. Бали спільні з вікториною.
+
+function standupKeyboard(opts: { canSignUp: boolean; canLike: boolean }): any {
+  const rows: any[] = [];
+  if (opts.canSignUp) rows.push([{ text: T.standupReadyButton, callback_data: 'su:ready' }]);
+  if (opts.canLike) rows.push([{ text: T.standupLikeButton, callback_data: 'su:like' }]);
+  rows.push([{ text: T.standupRefreshButton, callback_data: 'su:refresh' }]);
+  return { inline_keyboard: rows };
+}
+
+// Текст+inline-кнопки поточного стану стендапу для конкретного користувача.
+// Markup завжди inline (нижнє reply-меню persistent — його чіпати не треба,
+// інакше editMessageText не зможе перемалювати повідомлення).
+async function standupView(user: BotUser): Promise<{ text: string; markup: any }> {
+  const tgId = user.tgId;
+  const { getStandupState, listStandupSignups, countStandupVotes } = await import('./storage.js');
+  const { publicState } = await import('./standup.js');
+  const { streamWindow } = await import('./quiz.js');
+  const state = await getStandupState();
+  const pub = publicState(state);
+
+  if (pub.status !== 'running') {
+    const w = streamWindow();
+    let head: string;
+    if (w.phase === 'before') head = fmt(T.standupBeforeStream, { date: w.startDate, time: w.startTime });
+    else if (w.phase === 'after') head = T.standupAfterStream;
+    else head = pub.status === 'finished' ? T.standupFinished : T.standupIdle;
+    const scores = await quizLeaderboardText(tgId);
+    return { text: `${head}\n\n${scores}`, markup: { inline_keyboard: [] } };
+  }
+
+  const mine = await getStandupSignupSafe(state.sessionId, state.qIndex, tgId);
+  const canSignUp = pub.signupOpen && !mine;
+
+  if (pub.phase === 'performing' && pub.performerTgId) {
+    const [signups, votes] = await Promise.all([
+      listStandupSignups(state.sessionId, state.qIndex),
+      countStandupVotes(state.sessionId, state.qIndex),
+    ]);
+    const performer = signups.find(s => s.tgId === pub.performerTgId);
+    const text = fmt(T.standupOnStage, {
+      name: escapeHtml(performer?.displayName || '—'),
+      index: pub.qIndex + 1,
+      likes: votes[pub.performerTgId] || 0,
+    });
+    const canLike = pub.voteOpen && pub.performerTgId !== tgId;
+    return { text, markup: standupKeyboard({ canSignUp, canLike }) };
+  }
+
+  const text = fmt(T.standupThinking, {
+    index: pub.qIndex + 1,
+    total: pub.total,
+    seconds: pub.secondsLeft,
+  });
+  const tail = mine ? `\n\n${T.standupSignedUp}` : '';
+  return { text: text + tail, markup: standupKeyboard({ canSignUp, canLike: false }) };
+}
+
+async function getStandupSignupSafe(sessionId: string, qIndex: number, tgId: string) {
+  if (!sessionId) return null;
+  const { getStandupSignup } = await import('./storage.js');
+  return getStandupSignup(sessionId, qIndex, tgId);
+}
+
+async function cmdStandup(chatId: number, user: BotUser) {
+  const view = await standupView(user);
+  await sendMessage(chatId, view.text, { reply_markup: view.markup });
+}
+
+// Обробка inline-кнопок стендапу: su:ready | su:like | su:refresh.
+async function handleStandupCallback(cb: any, user: BotUser, data: string) {
+  const chatId = cb.message.chat.id;
+  const messageId = cb.message?.message_id;
+  const { signUp, vote } = await import('./standup.js');
+
+  let notice = '';
+  if (data === 'su:ready') {
+    const res = await signUp(user.tgId, user.displayName, !!user.photoFileId);
+    notice =
+      res.kind === 'ok'
+        ? 'Ти в черзі!'
+        : res.kind === 'already'
+          ? 'Ти вже в черзі'
+          : res.kind === 'performed'
+            ? 'Ти вже виступав у цьому раунді'
+            : 'Зараз записатися не можна';
+  } else if (data === 'su:like') {
+    const res = await vote(user.tgId);
+    notice =
+      res.kind === 'ok'
+        ? 'Зараховано! 😂'
+        : res.kind === 'duplicate'
+          ? 'Ти вже лайкнув цей виступ'
+          : res.kind === 'self'
+            ? 'Себе лайкати не можна 🙂'
+            : 'Голосування закрито';
+  }
+  await answerCallbackQuery(cb.id, notice || undefined);
+
+  // Перемальовуємо повідомлення актуальним станом (нова кількість лайків,
+  // інший виступаючий тощо). Telegram ігнорує edit з ідентичним текстом — не біда.
+  const view = await standupView(user);
+  try {
+    await editMessageText(chatId, messageId, view.text, { reply_markup: view.markup });
+  } catch {
+    await sendMessage(chatId, view.text, { reply_markup: view.markup });
+  }
+}
+
 async function cmdSettings(chatId: number, user: BotUser) {
   await sendMessage(chatId, fmt(T.settingsHeader, { name: escapeHtml(user.displayName || '—') }), {
     reply_markup: settingsMenuKeyboard(),
@@ -2099,7 +2224,7 @@ async function processRenameInput(chatId: number, user: BotUser, rawText: string
   // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
   const menuTexts = new Set([
     T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard,
-    T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuQuiz,
+    T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuQuiz, T.menuStandup,
   ]);
   if (menuTexts.has(rawText.trim())) {
     await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid, {

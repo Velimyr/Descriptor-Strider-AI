@@ -2214,4 +2214,125 @@ router.post('/admin/quiz/reset', async (req, res) => {
   }
 });
 
+// ----------- Архівний стендап -----------
+// Друга вкладка сторінки /quiz. Бали спільні з вікториною (bot_quiz_scores).
+
+router.get('/admin/standup/live', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { getStandupState, listStandupSignups, countStandupVotes, listStandupRounds, getQuizLeaderboard } =
+      await import('./storage.js');
+    const { publicState, standupQuestions } = await import('./standup.js');
+    const state = await getStandupState();
+    const pub = publicState(state);
+    const questions = standupQuestions();
+    const q = pub.status === 'idle' ? undefined : questions[state.qIndex];
+
+    const [signups, votes, rounds, leaderboard] = await Promise.all([
+      state.sessionId ? listStandupSignups(state.sessionId, state.qIndex) : Promise.resolve([]),
+      state.sessionId ? countStandupVotes(state.sessionId, state.qIndex) : Promise.resolve({}),
+      state.sessionId ? listStandupRounds(state.sessionId) : Promise.resolve([]),
+      getQuizLeaderboard(15),
+    ]);
+
+    res.json({
+      state: pub,
+      question: q ? { index: state.qIndex, text: q.text, note: q.note || '' } : null,
+      // Черга з лічильником лайків — картки на сторінці ведучого.
+      signups: signups.map(s => ({ ...s, likes: (votes as Record<string, number>)[s.tgId] || 0 })),
+      rounds,
+      leaderboard,
+      config: {
+        thinkSeconds: telegramBotConfig.standup.thinkSeconds,
+        voteSeconds: telegramBotConfig.standup.voteSeconds,
+        pointsPerWin: telegramBotConfig.standup.pointsPerWin,
+        total: questions.length,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/standup/start', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { startStandup, publicState } = await import('./standup.js');
+    res.json({ ok: true, state: publicState(await startStandup()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Викликати учасника на сцену (клік по картці в черзі).
+router.post('/admin/standup/call', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const tgId = String((req.body || {}).tg_id || '').trim();
+  if (!tgId) return res.status(400).json({ error: 'tg_id required' });
+  try {
+    const { callPerformer, publicState } = await import('./standup.js');
+    res.json({ ok: true, state: publicState(await callPerformer(tgId)) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Запустити хвилинний лічильник голосування за поточний виступ.
+router.post('/admin/standup/vote-timer', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { startVoteTimer, publicState } = await import('./standup.js');
+    res.json({ ok: true, state: publicState(await startVoteTimer()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Повернутись до фази обдумування (перезапустити хвилину на жарт).
+router.post('/admin/standup/restart-thinking', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { restartThinking, publicState } = await import('./standup.js');
+    res.json({ ok: true, state: publicState(await restartThinking()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Наступна тема: закриває раунд (нарахування переможцям) і йде далі.
+router.post('/admin/standup/next', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { nextRound, publicState } = await import('./standup.js');
+    const { state, winners } = await nextRound();
+    res.json({ ok: true, state: publicState(state), winners });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/standup/stop', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { stopStandup, publicState } = await import('./standup.js');
+    const { state, winners } = await stopStandup();
+    res.json({ ok: true, state: publicState(state), winners });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Скидання стендапу: черги, лайки, підсумки раундів. Бали не чіпає — вони
+// спільні з вікториною (для них окрема кнопка на вкладці «Вікторина»).
+router.post('/admin/standup/reset', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { resetStandup } = await import('./storage.js');
+    await resetStandup();
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
 export default router;

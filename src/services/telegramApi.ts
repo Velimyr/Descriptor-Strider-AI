@@ -366,7 +366,77 @@ export const tgApi = {
   quizStop: () => call('/admin/quiz/stop', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
   // Скидає все: бали, стрічку відповідей і стан сесії.
   quizReset: () => call('/admin/quiz/reset', { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
+
+  // --- Архівний стендап (друга вкладка /quiz) ---
+  standupLive: () => call('/admin/standup/live') as Promise<StandupLive>,
+  standupStart: () =>
+    call('/admin/standup/start', { method: 'POST', body: '{}' }) as Promise<{ state: StandupState }>,
+  standupCall: (tgId: string) =>
+    call('/admin/standup/call', { method: 'POST', body: JSON.stringify({ tg_id: tgId }) }) as Promise<{
+      state: StandupState;
+    }>,
+  standupVoteTimer: () =>
+    call('/admin/standup/vote-timer', { method: 'POST', body: '{}' }) as Promise<{ state: StandupState }>,
+  standupRestartThinking: () =>
+    call('/admin/standup/restart-thinking', { method: 'POST', body: '{}' }) as Promise<{
+      state: StandupState;
+    }>,
+  standupNext: () =>
+    call('/admin/standup/next', { method: 'POST', body: '{}' }) as Promise<{
+      state: StandupState;
+      winners: StandupWinner[];
+    }>,
+  standupStop: () =>
+    call('/admin/standup/stop', { method: 'POST', body: '{}' }) as Promise<{
+      state: StandupState;
+      winners: StandupWinner[];
+    }>,
+  standupReset: () =>
+    call('/admin/standup/reset', { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
 };
+
+// URL фото учасника для <img> (адмін-ендпоінт приймає секрет у query).
+export const userPhotoUrl = (tgId: string): string =>
+  `/api/telegram/admin/user-photo/${encodeURIComponent(tgId)}?secret=${encodeURIComponent(getAdminSecret())}`;
+
+export interface StandupState {
+  status: 'idle' | 'running' | 'finished';
+  sessionId: string;
+  qIndex: number;
+  total: number;
+  phase: 'thinking' | 'performing' | 'results';
+  performerTgId: string;
+  secondsLeft: number;
+  endsAt: string;
+  hasTimer: boolean;
+  signupOpen: boolean;
+  voteOpen: boolean;
+}
+
+export interface StandupSignup {
+  tgId: string;
+  displayName: string;
+  hasPhoto: boolean;
+  performed: boolean;
+  createdAt: string;
+  performedAt: string;
+  likes: number;
+}
+
+export interface StandupWinner {
+  tgId: string;
+  displayName: string;
+  likes: number;
+}
+
+export interface StandupLive {
+  state: StandupState;
+  question: { index: number; text: string; note: string } | null;
+  signups: StandupSignup[];
+  rounds: Array<{ qIndex: number; winners: StandupWinner[] }>;
+  leaderboard: QuizScore[];
+  config: { thinkSeconds: number; voteSeconds: number; pointsPerWin: number; total: number };
+}
 
 export interface QuizState {
   status: 'idle' | 'running' | 'finished';
