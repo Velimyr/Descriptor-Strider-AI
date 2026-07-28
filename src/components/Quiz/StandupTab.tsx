@@ -134,7 +134,7 @@ export function StandupTab() {
               <div className="text-4xl font-black text-center py-12">🎤 Стендап завершено!</div>
             ) : onStage && performer ? (
               <div className="flex items-center gap-8">
-                <PerformerPhoto signup={performer} />
+                <PerformerPhoto key={performer.tgId} signup={performer} />
                 <div className="flex-1 min-w-0">
                   <div className="text-2xl xl:text-3xl font-bold text-slate-300 leading-snug">
                     {question?.text}
@@ -216,10 +216,12 @@ export function StandupTab() {
   );
 }
 
-// Фото учасника з TG-профілю; якщо фото немає — ініціал.
+// Фото учасника: спершу з профілю бота, далі — аватар Telegram (це вирішує
+// сервер). Прапорець hasPhoto навмисно не перевіряємо: він фіксується в мить
+// запису й нічого не знає про аватар — просто пробуємо завантажити.
 const PerformerPhoto: React.FC<{ signup: StandupSignup }> = ({ signup }) => {
   const [failed, setFailed] = useState(false);
-  if (!signup.hasPhoto || failed) {
+  if (failed) {
     return (
       <div className="shrink-0 w-40 h-40 rounded-3xl bg-slate-800 flex items-center justify-center text-6xl font-black text-slate-600">
         {(signup.displayName || '?').trim().charAt(0).toUpperCase()}

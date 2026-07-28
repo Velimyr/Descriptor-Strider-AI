@@ -1643,9 +1643,21 @@ router.get('/admin/user-photo/:tgId', async (req, res) => {
   try {
     const { getUser } = await import('./storage.js');
     const u = await getUser(req.params.tgId);
-    if (!u || !u.photoFileId) return res.status(404).send('no photo');
     const { tg } = await import('./tg-api.js');
-    const info = await tg('getFile', { file_id: u.photoFileId });
+    // Пріоритет — фото, завантажене в профіль бота. Якщо його немає, беремо
+    // аватар з Telegram (для стендапу важливо показати бодай якесь обличчя).
+    let fileId = u?.photoFileId || '';
+    if (!fileId) {
+      try {
+        const photos = await tg('getUserProfilePhotos', { user_id: req.params.tgId, limit: 1 });
+        const sizes = photos?.photos?.[0];
+        if (Array.isArray(sizes) && sizes.length) fileId = sizes[sizes.length - 1]?.file_id || '';
+      } catch (e: any) {
+        console.error('getUserProfilePhotos failed', e?.message || e);
+      }
+    }
+    if (!fileId) return res.status(404).send('no photo');
+    const info = await tg('getFile', { file_id: fileId });
     const filePath = info?.file_path;
     if (!filePath) return res.status(410).send('telegram file expired');
     const botToken = process.env[telegramBotConfig.tg.botTokenEnv];

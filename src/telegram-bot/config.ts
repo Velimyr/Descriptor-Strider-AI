@@ -640,6 +640,8 @@ export const telegramBotConfig: TelegramBotConfig = {
       'Наразі лайків: <b>{likes}</b>',
     standupNobodyOnStage:
       '🎤 Зараз на сцені нікого. Щойно ведучий когось викличе — тисни «Хто зараз на сцені».',
+    standupYouOnStage:
+      '🎤 <b>Ти на сцені!</b> Розкажи свій жарт у прямому ефірі — глядачі оцінюють тебе в боті.',
     standupLiked: '😂 Зараховано! Твій лайк для <b>{name}</b> враховано.',
     standupLikeDuplicate: 'Ти вже лайкнув цей виступ — по одному лайку на людину.',
     standupLikeSelf: 'Себе лайкати не можна 🙂',

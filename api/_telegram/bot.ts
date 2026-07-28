@@ -2132,18 +2132,26 @@ async function standupView(user: BotUser): Promise<{ text: string; markup: any }
   const mine = await getStandupSignupSafe(state.sessionId, state.qIndex, tgId);
   const canSignUp = pub.signupOpen && !mine;
 
+  // Кнопку лайку тримаємо в меню весь час, поки стендап іде, а не лише коли
+  // хтось на сцені: повідомлення в чаті статичне і встигає застаріти (ведучий
+  // викликає людину вже після того, як бот намалював екран). Чи зарахувати лайк —
+  // вирішує сервер у момент кліку, тож фальшивих голосів це не додає.
+  const canLike = pub.performerTgId !== tgId;
+
   if (pub.phase === 'performing' && pub.performerTgId) {
     const [signups, votes] = await Promise.all([
       listStandupSignups(state.sessionId, state.qIndex),
       countStandupVotes(state.sessionId, state.qIndex),
     ]);
     const performer = signups.find(s => s.tgId === pub.performerTgId);
-    const text = fmt(T.standupOnStage, {
-      name: escapeHtml(performer?.displayName || '—'),
-      index: pub.qIndex + 1,
-      likes: votes[pub.performerTgId] || 0,
-    });
-    const canLike = pub.voteOpen && pub.performerTgId !== tgId;
+    const onStageIsMe = pub.performerTgId === tgId;
+    const text = onStageIsMe
+      ? T.standupYouOnStage
+      : fmt(T.standupOnStage, {
+          name: escapeHtml(performer?.displayName || '—'),
+          index: pub.qIndex + 1,
+          likes: votes[pub.performerTgId] || 0,
+        });
     return { text, markup: standupKeyboard({ canSignUp, canLike }) };
   }
 
@@ -2153,7 +2161,7 @@ async function standupView(user: BotUser): Promise<{ text: string; markup: any }
     seconds: pub.secondsLeft,
   });
   const tail = mine ? `\n\n${T.standupSignedUp}` : '';
-  return { text: text + tail, markup: standupKeyboard({ canSignUp, canLike: false }) };
+  return { text: text + tail, markup: standupKeyboard({ canSignUp, canLike }) };
 }
 
 async function getStandupSignupSafe(sessionId: string, qIndex: number, tgId: string) {
@@ -2193,7 +2201,9 @@ async function handleStandupCallback(cb: any, user: BotUser, data: string) {
           ? 'Ти вже лайкнув цей виступ'
           : res.kind === 'self'
             ? 'Себе лайкати не можна 🙂'
-            : 'Голосування закрито';
+            : res.kind === 'nobody'
+              ? 'Зараз на сцені нікого — почекай'
+              : 'Голосування за цей виступ закрито';
   }
   await answerCallbackQuery(cb.id, notice || undefined);
 

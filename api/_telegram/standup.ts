@@ -229,6 +229,7 @@ export type VoteResult =
   | { kind: 'ok'; performerTgId: string }
   | { kind: 'duplicate' }
   | { kind: 'self' }
+  | { kind: 'nobody' }
   | { kind: 'closed' };
 
 // Лайк тому, хто зараз на сцені. performerTgId у callback-у не довіряємо —
@@ -236,8 +237,11 @@ export type VoteResult =
 export async function vote(voterTgId: string): Promise<VoteResult> {
   const state = await getStandupState();
   const pub = publicState(state);
-  if (!pub.voteOpen) return { kind: 'closed' };
+  // Кнопка лайку в боті видима завжди, поки триває стендап, тож тут розрізняємо
+  // «ще нікого не викликали» і «голосування за виступ закрито» — різні тости.
+  if (!state.performerTgId || state.phase !== 'performing') return { kind: 'nobody' };
   if (state.performerTgId === voterTgId) return { kind: 'self' };
+  if (!pub.voteOpen) return { kind: 'closed' };
   const ok = await addStandupVote({
     sessionId: state.sessionId,
     qIndex: state.qIndex,
