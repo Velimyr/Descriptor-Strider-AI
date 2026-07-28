@@ -110,12 +110,12 @@ export const Timer: React.FC<{ secondsLeft: number; total: number; label?: strin
   );
 };
 
-// Рейтинг шоу — спільний для вікторини й стендапу.
+// Рейтинг — спільний для вікторини й стендапу.
 export const Leaderboard: React.FC<{ scores: QuizScore[] }> = ({ scores }) => (
   <aside className="border-l border-slate-800 bg-slate-900/40 flex flex-col min-h-0">
     <div className="px-5 py-4 border-b border-slate-800 flex items-center gap-2 font-bold">
       <Trophy size={18} className="text-amber-400" />
-      Рейтинг шоу
+      Рейтинг
     </div>
     <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
       {scores.length === 0 ? (

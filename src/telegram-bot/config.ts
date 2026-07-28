@@ -607,9 +607,9 @@ export const telegramBotConfig: TelegramBotConfig = {
     // {points} — скільки нараховано, {total} — всього балів вікторини.
     quizWin: '🥇 <b>Правильно, і ти перший!</b> +{points} бал(ів) вікторини. Всього: <b>{total}</b>.',
     // Рейтинг спільний для вікторини й стендапу.
-    quizScoreHeader: '🏆 <b>Рейтинг шоу</b> (вікторина + стендап)',
-    quizScoreEmpty: 'Балів шоу ще ні в кого немає — усе попереду.',
-    quizScoreYou: '\nТвої бали шоу: <b>{points}</b>',
+    quizScoreHeader: '🏆 <b>Рейтинг</b>',
+    quizScoreEmpty: 'Балів ще ні в кого немає — усе попереду.',
+    quizScoreYou: '\nТвої бали: <b>{points}</b>',
 
     // --- Архівний стендап ---
     menuStandup: '🎤 Стендап',
@@ -645,7 +645,7 @@ export const telegramBotConfig: TelegramBotConfig = {
     standupLikeSelf: 'Себе лайкати не можна 🙂',
     standupLikeClosed: 'Голосування за цей виступ уже закрито.',
     // Підсумок раунду в боті (після нарахування). {winners} — список імен.
-    standupRoundWinner: '🏆 Найсмішніший у раунді: <b>{winners}</b> (+{points} балів шоу)',
+    standupRoundWinner: '🏆 Найсмішніший у раунді: <b>{winners}</b> (+{points} балів)',
 
     backButton: '⬅ Назад',
     cancelButton: '❌ Скасувати',

@@ -1243,8 +1243,13 @@ alter table bot_standup_rounds  enable row level security;
 -- Нарахування за раунд: усі, хто набрав максимум лайків, отримують p_points у
 -- спільний рейтинг (bot_quiz_scores). Ідемпотентно: повторний виклик повертає
 -- збережених переможців і нічого не нараховує.
+-- Дроп перед створенням: create or replace не вміє міняти імена OUT-колонок,
+-- а вони змінилися (tg_id → w_tg_id). Для чистої установки — no-op.
+drop function if exists bot_standup_award_round(text, int, int);
 create or replace function bot_standup_award_round(p_session text, p_q_index int, p_points int)
-returns table(tg_id text, display_name text, likes int)
+-- OUT-параметри навмисно з префіксом w_: без нього ім'я tg_id стає змінною
+-- plpgsql і ламає `on conflict (tg_id)` помилкою "column reference is ambiguous".
+returns table(w_tg_id text, w_name text, w_likes int)
 language plpgsql security definer as $$
 declare
   v_max     int;

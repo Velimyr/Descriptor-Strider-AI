@@ -2887,10 +2887,12 @@ export async function awardStandupRound(
     p_points: points,
   });
   if (error) throw error;
+  // Колонки з префіксом w_ — див. коментар у SQL: без нього tg_id як OUT-параметр
+  // конфліктує з посиланням на колонку всередині функції.
   return (data || []).map((r: any) => ({
-    tgId: r.tg_id,
-    displayName: r.display_name || '',
-    likes: r.likes ?? 0,
+    tgId: r.w_tg_id,
+    displayName: r.w_name || '',
+    likes: r.w_likes ?? 0,
   }));
 }
 
