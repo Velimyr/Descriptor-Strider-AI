@@ -2152,7 +2152,9 @@ async function standupView(user: BotUser): Promise<{ text: string; markup: any }
           index: pub.qIndex + 1,
           likes: votes[pub.performerTgId] || 0,
         });
-    return { text, markup: standupKeyboard({ canSignUp, canLike }) };
+    // Не записаним пояснюємо, чому кнопки «Готовий жартувати» вже немає.
+    const note = !mine && !onStageIsMe ? `\n\n${T.standupSignupClosed}` : '';
+    return { text: text + note, markup: standupKeyboard({ canSignUp, canLike }) };
   }
 
   const text = fmt(T.standupThinking, {
@@ -2191,7 +2193,9 @@ async function handleStandupCallback(cb: any, user: BotUser, data: string) {
           ? 'Ти вже в черзі'
           : res.kind === 'performed'
             ? 'Ти вже виступав у цьому раунді'
-            : 'Зараз записатися не можна';
+            : res.kind === 'late'
+              ? 'Запізнився — виступи вже почались'
+              : 'Зараз записатися не можна';
   } else if (data === 'su:like') {
     const res = await vote(user.tgId);
     notice =

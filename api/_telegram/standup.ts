@@ -77,8 +77,10 @@ export function publicState(state: StandupStateRow, now = Date.now()): StandupPu
     secondsLeft,
     endsAt: state.endsAt,
     hasTimer: !!endsMs,
-    // Записатися можна і поки думають, і поки хтось виступає (жарт міг дозріти пізніше).
-    signupOpen: running && (state.phase === 'thinking' || state.phase === 'performing'),
+    // Записатися можна лише до виходу першого учасника на сцену: щойно почались
+    // виступи, черга раунду закрита (інакше можна було б підслухати чужий жарт
+    // і записатися вже після нього). Наступна тема відкриває новий запис.
+    signupOpen: running && state.phase === 'thinking',
     // Голосування відкрите з моменту виклику на сцену; закривається, коли
     // вичерпано лічильник, який запустив ведучий.
     voteOpen:
@@ -202,6 +204,8 @@ export type SignupResult =
   | { kind: 'ok'; qIndex: number }
   | { kind: 'already' }
   | { kind: 'performed' }
+  // late — раунд іде, але виступи вже почались; closed — стендапу зараз немає.
+  | { kind: 'late' }
   | { kind: 'closed' };
 
 export async function signUp(
@@ -211,7 +215,7 @@ export async function signUp(
 ): Promise<SignupResult> {
   const state = await getStandupState();
   const pub = publicState(state);
-  if (!pub.signupOpen) return { kind: 'closed' };
+  if (!pub.signupOpen) return { kind: pub.status === 'running' ? 'late' : 'closed' };
   const existing = await getStandupSignup(state.sessionId, state.qIndex, tgId);
   if (existing?.performed) return { kind: 'performed' };
   if (existing) return { kind: 'already' };
