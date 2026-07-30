@@ -2142,9 +2142,10 @@ router.get('/admin/quiz/live', async (req, res) => {
     const leaderboard = needScores ? await getQuizLeaderboard(15) : null;
     res.json({
       state: pub,
-      // Сторінка адмінська, тож еталонну відповідь віддаємо ведучому.
+      // Еталонну відповідь віддаємо: сторінка показує її на екрані, коли час вийшов.
+      // note з конфігу НЕ віддаємо — /quiz бачать усі глядачі стріму.
       question: q
-        ? { index: state.qIndex, text: q.text, answer: (q.answers || [])[0] || '', note: q.note || '' }
+        ? { index: state.qIndex, text: q.text, answer: (q.answers || [])[0] || '' }
         : null,
       answers,
       leaderboard,
@@ -2168,7 +2169,6 @@ router.get('/admin/quiz/questions', async (req, res) => {
       index: i,
       text: q.text,
       answer: (q.answers || [])[0] || '',
-      note: q.note || '',
     })),
   });
 });
@@ -2249,7 +2249,7 @@ router.get('/admin/standup/live', async (req, res) => {
 
     res.json({
       state: pub,
-      question: q ? { index: state.qIndex, text: q.text, note: q.note || '' } : null,
+      question: q ? { index: state.qIndex, text: q.text } : null,
       // Черга з лічильником лайків — картки на сторінці ведучого.
       signups: signups.map(s => ({ ...s, likes: (votes as Record<string, number>)[s.tgId] || 0 })),
       rounds,

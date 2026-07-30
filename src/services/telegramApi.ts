@@ -431,7 +431,7 @@ export interface StandupWinner {
 
 export interface StandupLive {
   state: StandupState;
-  question: { index: number; text: string; note: string } | null;
+  question: { index: number; text: string } | null;
   signups: StandupSignup[];
   rounds: Array<{ qIndex: number; winners: StandupWinner[] }>;
   leaderboard: QuizScore[];
@@ -452,7 +452,6 @@ export interface QuizQuestionPreview {
   index: number;
   text: string;
   answer: string;
-  note: string;
 }
 
 export interface QuizAnswer {
@@ -475,7 +474,7 @@ export interface QuizScore {
 
 export interface QuizLive {
   state: QuizState;
-  question: { index: number; text: string; answer: string; note: string } | null;
+  question: { index: number; text: string; answer: string } | null;
   answers: QuizAnswer[];
   // null — рейтинг не змінювався з минулого опитування (сторінка лишає попередній).
   leaderboard: QuizScore[] | null;

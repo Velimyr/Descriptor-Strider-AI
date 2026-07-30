@@ -5,7 +5,7 @@ import { Play, SkipForward, RotateCcw, Square, Check, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { tgApi } from '../../services/telegramApi';
 import type { QuizAnswer, QuizLive, QuizScore } from '../../services/telegramApi';
-import { Leaderboard, Timer, useNow, secondsUntil } from './shared';
+import { ConfirmButton, Leaderboard, Timer, useNow, secondsUntil } from './shared';
 
 const POLL_MS = 1000;
 
@@ -134,18 +134,13 @@ export function QuizTab() {
         >
           <Square size={16} />
         </button>
-        <button
-          onClick={() => {
-            if (confirm('Скинути вікторину: обнулити ВСІ бали й стерти всі відповіді? Це неможливо скасувати.')) {
-              act(() => tgApi.quizReset());
-            }
-          }}
-          disabled={busy}
+        <ConfirmButton
+          label="Скинути все"
+          armedLabel="Точно скинути?"
           title="Обнулити бали, стерти відповіді й зупинити вікторину"
-          className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-red-900/60 text-slate-400 hover:text-red-300 text-xs font-bold"
-        >
-          Скинути все
-        </button>
+          disabled={busy}
+          onConfirm={() => act(() => tgApi.quizReset())}
+        />
       </header>
 
       {err && <div className="px-6 py-2 bg-red-950/60 text-red-300 text-sm">{err}</div>}

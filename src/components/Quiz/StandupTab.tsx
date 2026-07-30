@@ -6,7 +6,7 @@ import { Play, SkipForward, RotateCcw, Square, Timer as TimerIcon, Users } from 
 import { cn } from '../../lib/utils';
 import { tgApi, userPhotoUrl } from '../../services/telegramApi';
 import type { StandupLive, StandupSignup } from '../../services/telegramApi';
-import { Leaderboard, Timer, useNow, secondsUntil } from './shared';
+import { ConfirmButton, Leaderboard, Timer, useNow, secondsUntil } from './shared';
 
 const POLL_MS = 1000;
 
@@ -106,18 +106,13 @@ export function StandupTab() {
         >
           <Square size={16} />
         </button>
-        <button
-          onClick={() => {
-            if (confirm('Скинути стендап: стерти черги, лайки й підсумки раундів? Бали залишаться.')) {
-              act(() => tgApi.standupReset());
-            }
-          }}
-          disabled={busy}
+        <ConfirmButton
+          label="Скинути стендап"
+          armedLabel="Точно скинути?"
           title="Стерти черги, лайки й підсумки раундів (бали не чіпає)"
-          className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-red-900/60 text-slate-400 hover:text-red-300 text-xs font-bold"
-        >
-          Скинути стендап
-        </button>
+          disabled={busy}
+          onConfirm={() => act(() => tgApi.standupReset())}
+        />
       </header>
 
       {err && <div className="px-6 py-2 bg-red-950/60 text-red-300 text-sm">{err}</div>}

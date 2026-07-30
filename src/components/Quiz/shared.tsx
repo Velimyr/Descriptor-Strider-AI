@@ -110,6 +110,53 @@ export const Timer: React.FC<{ secondsLeft: number; total: number; label?: strin
   );
 };
 
+// Кнопка небезпечної дії з підтвердженням у два кліки. Навмисно без window.confirm:
+// той блокує головний потік на весь час, поки діалог відкритий (браузер рахує це
+// як «обробник заблокував UI» в INP), та ще й виглядає як системне вікно посеред
+// стріму. Перший клік «зводить» кнопку, другий виконує; через ARM_MS сама скидається.
+const ARM_MS = 4000;
+
+export const ConfirmButton: React.FC<{
+  label: string;
+  armedLabel: string;
+  title?: string;
+  disabled?: boolean;
+  className?: string;
+  onConfirm: () => void;
+}> = ({ label, armedLabel, title, disabled, className, onConfirm }) => {
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    if (!armed) return;
+    const id = setTimeout(() => setArmed(false), ARM_MS);
+    return () => clearTimeout(id);
+  }, [armed]);
+
+  return (
+    <button
+      onClick={() => {
+        if (!armed) {
+          setArmed(true);
+          return;
+        }
+        setArmed(false);
+        onConfirm();
+      }}
+      disabled={disabled}
+      title={title}
+      className={cn(
+        'px-3 py-2 rounded-lg text-xs font-bold transition-colors disabled:opacity-50',
+        armed
+          ? 'bg-red-600 text-white hover:bg-red-500'
+          : 'bg-slate-800 text-slate-400 hover:bg-red-900/60 hover:text-red-300',
+        className
+      )}
+    >
+      {armed ? armedLabel : label}
+    </button>
+  );
+};
+
 // Рейтинг — спільний для вікторини й стендапу.
 export const Leaderboard: React.FC<{ scores: QuizScore[] }> = ({ scores }) => (
   <aside className="border-l border-slate-800 bg-slate-900/40 flex flex-col min-h-0">
