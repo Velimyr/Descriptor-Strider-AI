@@ -484,14 +484,12 @@ function mainMenuKeyboard(user: BotUser | null): any {
     user?.status === 'paused'
       ? [{ text: T.menuResume }]
       : [{ text: T.menuPause }];
-  // Кнопка «Вікторина» — лише коли гра увімкнена в конфігу (стрімовий період).
-  const quizRow = telegramBotConfig.quiz.enabled ? [[{ text: T.menuQuiz }]] : [];
-  const standupRow = telegramBotConfig.standup.enabled ? [[{ text: T.menuStandup }]] : [];
+  // Кнопка «Розваги» — одна на всі стрімові ігри, ховається перемикачем у конфігу.
+  const funRow = telegramBotConfig.fun.enabled ? [[{ text: T.menuFun }]] : [];
   return {
     keyboard: [
       [{ text: T.menuNext }],
-      ...quizRow,
-      ...standupRow,
+      ...funRow,
       [{ text: T.menuStats }, { text: T.menuProgress }],
       [{ text: T.menuLeaderboard }, { text: T.menuHallOfFame }],
       [{ text: T.menuHelp }, { text: T.menuSettings }],
@@ -740,6 +738,8 @@ function normalizeCommand(text: string): string {
   if (trimmed === T.menuHallOfFame) return '/halloffame';
   if (trimmed === T.menuHelp) return '/help';
   if (trimmed === T.menuSettings) return '/settings';
+  if (trimmed === T.menuFun) return '/fun';
+  // Підписи ігор лишаються командами: вони й далі доступні напряму й з підменю.
   if (trimmed === T.menuQuiz) return '/quiz';
   if (trimmed === T.menuStandup) return '/standup';
   if (trimmed === T.menuPause) return '/stop';
@@ -997,7 +997,7 @@ async function handleMessage(msg: any) {
     // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
     const menuTexts = new Set([
       T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard, T.menuHallOfFame,
-      T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuQuiz, T.menuStandup,
+      T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuFun, T.menuQuiz, T.menuStandup,
     ]);
     if (menuTexts.has(rawText.trim())) {
       await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid);
@@ -1140,6 +1140,7 @@ async function handleMessage(msg: any) {
     user.pendingAction = '';
   }
 
+  if (text === '/fun') return void (await cmdFun(chatId));
   if (text === '/quiz') return void (await cmdQuiz(chatId, user));
   if (text === '/standup') return void (await cmdStandup(chatId, user));
   if (text === '/stats') return void (await cmdStats(chatId, tgId, user));
@@ -1187,6 +1188,17 @@ async function handleCallback(cb: any) {
   if (data !== 'intro:ack' && cbUser) {
     Promise.resolve(maybeShowIntro(chatId, cbUser))
       .catch(e => console.error('maybeShowIntro (callback) failed', e));
+  }
+
+  // Підменю «Розваги»: перехід у гру або видача посилання на зустріч.
+  if (data.startsWith('fun:')) {
+    await answerCallbackQuery(cb.id);
+    if (!cbUser) return;
+    const action = data.slice(4);
+    if (action === 'quiz') await cmdQuiz(chatId, cbUser);
+    else if (action === 'standup') await cmdStandup(chatId, cbUser);
+    else if (action === 'meet') await sendMeetLink(chatId, cbUser);
+    return;
   }
 
   // Кнопки стендапу: запис у чергу / лайк / оновити картку виступу.
@@ -2008,6 +2020,35 @@ async function cmdHallOfFame(chatId: number) {
   await sendMessage(chatId, T.hallOfFamePick, { reply_markup: { inline_keyboard: rows } });
 }
 
+// ---------- РОЗВАГИ (спільне меню стрімових ігор) ----------
+// Одна кнопка меню → inline-підменю: вікторина, стендап, посилання на зустріч.
+// Ігри всередині показуються за власними перемикачами quiz/standup.enabled.
+
+function funMenuKeyboard(): any {
+  const rows: any[] = [];
+  if (telegramBotConfig.quiz.enabled) rows.push([{ text: T.menuQuiz, callback_data: 'fun:quiz' }]);
+  if (telegramBotConfig.standup.enabled) rows.push([{ text: T.menuStandup, callback_data: 'fun:standup' }]);
+  rows.push([{ text: T.funMeetButton, callback_data: 'fun:meet' }]);
+  return { inline_keyboard: rows };
+}
+
+async function cmdFun(chatId: number) {
+  await sendMessage(chatId, T.funMenuHeader, { reply_markup: funMenuKeyboard() });
+}
+
+// Посилання на зустріч — лише активним учасникам (бали застосунку за весь час).
+// Поріг включний: рівно meetMinPoints балів уже дає доступ.
+// Бали вікторини/стендапу тут не рахуються: вони лежать в окремій таблиці.
+async function sendMeetLink(chatId: number, user: BotUser) {
+  const min = telegramBotConfig.fun.meetMinPoints;
+  const points = pts2(user.totalPoints || 0);
+  if (points >= min) {
+    await sendMessage(chatId, fmt(T.funMeetGranted, { url: telegramBotConfig.fun.meetUrl }));
+    return;
+  }
+  await sendMessage(chatId, fmt(T.funMeetDenied, { min, points }));
+}
+
 // ---------- ВІКТОРИНА ----------
 // Питання в Telegram НЕ надсилаються — їх видно лише на екрані стріму. Тут лише
 // статус («питання №N активне, лишилось X с») і прийом відповідей.
@@ -2238,7 +2279,7 @@ async function processRenameInput(chatId: number, user: BotUser, rawText: string
   // Захист від випадкового кліку по кнопці меню — її текст не може бути імʼям.
   const menuTexts = new Set([
     T.menuNext, T.menuStats, T.menuProgress, T.menuLeaderboard,
-    T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuQuiz, T.menuStandup,
+    T.menuPause, T.menuResume, T.menuHelp, T.menuSettings, T.menuFun, T.menuQuiz, T.menuStandup,
   ]);
   if (menuTexts.has(rawText.trim())) {
     await sendMessage(chatId, T.nameIsMenuButton || T.namePromptInvalid, {
