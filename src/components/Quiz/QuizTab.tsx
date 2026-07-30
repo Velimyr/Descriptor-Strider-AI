@@ -93,6 +93,9 @@ export function QuizTab() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
+      {/* Кнопки керування блокуються лише на час запиту (busy). За станом гри їх
+          НЕ гасимо: у прямому ефірі мертва кнопка — гірше за зайвий клік, а сервер
+          усе одно валідує (nextQuestion при зупиненій грі просто стартує нову). */}
       <header className="flex items-center gap-3 px-6 py-3 border-b border-slate-800 bg-slate-900/60">
         {state && state.status !== 'idle' && (
           <div className="text-sm font-semibold text-slate-400">
@@ -113,14 +116,14 @@ export function QuizTab() {
         )}
         <button
           onClick={() => act(() => tgApi.quizNext())}
-          disabled={busy || !state || state.status !== 'running'}
+          disabled={busy}
           className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-semibold disabled:opacity-40"
         >
           <SkipForward size={16} /> Наступне питання
         </button>
         <button
           onClick={() => act(() => tgApi.quizRestartTimer())}
-          disabled={busy || !state || state.status === 'idle'}
+          disabled={busy}
           title="Перезапустити таймер поточного питання"
           className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40"
         >
@@ -128,7 +131,7 @@ export function QuizTab() {
         </button>
         <button
           onClick={() => act(() => tgApi.quizStop())}
-          disabled={busy || !state || state.status !== 'running'}
+          disabled={busy}
           title="Завершити вікторину"
           className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40"
         >

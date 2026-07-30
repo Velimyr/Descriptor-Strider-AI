@@ -84,7 +84,7 @@ export function StandupTab() {
         )}
         <button
           onClick={() => act(() => tgApi.standupNext())}
-          disabled={busy || !running}
+          disabled={busy}
           title="Закрити раунд (нарахувати бали) і перейти до наступної теми"
           className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-semibold disabled:opacity-40"
         >
@@ -92,7 +92,7 @@ export function StandupTab() {
         </button>
         <button
           onClick={() => act(() => tgApi.standupRestartThinking())}
-          disabled={busy || !running}
+          disabled={busy}
           title="Повернутись до хвилини на вигадування"
           className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40"
         >
@@ -100,7 +100,7 @@ export function StandupTab() {
         </button>
         <button
           onClick={() => act(() => tgApi.standupStop())}
-          disabled={busy || !running}
+          disabled={busy}
           title="Завершити стендап (з нарахуванням за поточний раунд)"
           className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40"
         >
