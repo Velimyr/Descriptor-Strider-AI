@@ -484,8 +484,11 @@ function mainMenuKeyboard(user: BotUser | null): any {
     user?.status === 'paused'
       ? [{ text: T.menuResume }]
       : [{ text: T.menuPause }];
-  // Кнопка «Розваги» — одна на всі стрімові ігри, ховається перемикачем у конфігу.
-  const funRow = telegramBotConfig.fun.enabled ? [[{ text: T.menuFun }]] : [];
+  // Кнопка «Розваги» — одна на всі стрімові ігри. Ховається перемикачем у конфігу
+  // і поки користувач не набрав fun.minPoints балів (щоб не дражнити закритим
+  // розділом). Клавіатура оновлюється на кожній підтвердженій справі, тож кнопка
+  // зʼявиться сама, щойно поріг буде пройдено.
+  const funRow = telegramBotConfig.fun.enabled && hasFunAccess(user) ? [[{ text: T.menuFun }]] : [];
   return {
     keyboard: [
       [{ text: T.menuNext }],
@@ -1140,7 +1143,7 @@ async function handleMessage(msg: any) {
     user.pendingAction = '';
   }
 
-  if (text === '/fun') return void (await cmdFun(chatId));
+  if (text === '/fun') return void (await cmdFun(chatId, user));
   if (text === '/quiz') return void (await cmdQuiz(chatId, user));
   if (text === '/standup') return void (await cmdStandup(chatId, user));
   if (text === '/stats') return void (await cmdStats(chatId, tgId, user));
@@ -2030,6 +2033,22 @@ async function cmdHallOfFame(chatId: number) {
 // Одна кнопка меню → inline-підменю: вікторина, стендап, посилання на зустріч.
 // Ігри всередині показуються за власними перемикачами quiz/standup.enabled.
 
+// Доступ до розділу «Розваги»: бали застосунку за весь час >= fun.minPoints.
+// Бали вікторини/стендапу не рахуються — вони в окремій таблиці.
+function hasFunAccess(user: BotUser | null): boolean {
+  if (!user) return false;
+  return pts2(user.totalPoints || 0) >= telegramBotConfig.fun.minPoints;
+}
+
+// Відмова з поясненням, скільки лишилось добрати. Спільна для всіх точок входу.
+async function sendFunLocked(chatId: number, user: BotUser) {
+  await sendMessage(
+    chatId,
+    fmt(T.funLocked, { min: telegramBotConfig.fun.minPoints, points: pts2(user.totalPoints || 0) }),
+    { reply_markup: mainMenuKeyboard(user) }
+  );
+}
+
 function funMenuKeyboard(): any {
   const rows: any[] = [];
   if (telegramBotConfig.quiz.enabled) rows.push([{ text: T.menuQuiz, callback_data: 'fun:quiz' }]);
@@ -2038,7 +2057,8 @@ function funMenuKeyboard(): any {
   return { inline_keyboard: rows };
 }
 
-async function cmdFun(chatId: number) {
+async function cmdFun(chatId: number, user: BotUser) {
+  if (!hasFunAccess(user)) return void (await sendFunLocked(chatId, user));
   await sendMessage(chatId, T.funMenuHeader, { reply_markup: funMenuKeyboard() });
 }
 
@@ -2046,7 +2066,7 @@ async function cmdFun(chatId: number) {
 // Поріг включний: рівно meetMinPoints балів уже дає доступ.
 // Бали вікторини/стендапу тут не рахуються: вони лежать в окремій таблиці.
 async function sendMeetLink(chatId: number, user: BotUser) {
-  const min = telegramBotConfig.fun.meetMinPoints;
+  const min = telegramBotConfig.fun.minPoints;
   const points = pts2(user.totalPoints || 0);
   if (points >= min) {
     await sendMessage(chatId, fmt(T.funMeetGranted, { url: telegramBotConfig.fun.meetUrl }));
@@ -2087,6 +2107,7 @@ async function quizOffAirText(status: 'idle' | 'finished'): Promise<string> {
 }
 
 async function cmdQuiz(chatId: number, user: BotUser) {
+  if (!hasFunAccess(user)) return void (await sendFunLocked(chatId, user));
   const { getQuizState } = await import('./storage.js');
   const { publicState } = await import('./quiz.js');
   const state = await getQuizState();
@@ -2116,6 +2137,11 @@ async function cmdQuiz(chatId: number, user: BotUser) {
 }
 
 async function processQuizAnswer(chatId: number, user: BotUser, rawText: string) {
+  if (!hasFunAccess(user)) {
+    await patchUser(user.tgId, { pendingAction: '' });
+    user.pendingAction = '';
+    return void (await sendFunLocked(chatId, user));
+  }
   const { submitQuizAnswer } = await import('./quiz.js');
   const result = await submitQuizAnswer(user.tgId, user.displayName, rawText);
   switch (result.kind) {
@@ -2220,6 +2246,7 @@ async function getStandupSignupSafe(sessionId: string, qIndex: number, tgId: str
 }
 
 async function cmdStandup(chatId: number, user: BotUser) {
+  if (!hasFunAccess(user)) return void (await sendFunLocked(chatId, user));
   const view = await standupView(user);
   await sendMessage(chatId, view.text, { reply_markup: view.markup });
 }
@@ -2227,6 +2254,12 @@ async function cmdStandup(chatId: number, user: BotUser) {
 // Обробка inline-кнопок стендапу: su:ready | su:like | su:refresh.
 async function handleStandupCallback(cb: any, user: BotUser, data: string) {
   const chatId = cb.message.chat.id;
+  // Кнопки могли лишитись у старому повідомленні — перевіряємо поріг і тут.
+  if (!hasFunAccess(user)) {
+    await answerCallbackQuery(cb.id, 'Розділ ще закритий');
+    await sendFunLocked(chatId, user);
+    return;
+  }
   const messageId = cb.message?.message_id;
   const { signUp, vote } = await import('./standup.js');
 
