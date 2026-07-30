@@ -1162,7 +1162,7 @@ export const telegramBotConfig: TelegramBotConfig = {
     enabled: true,
     // Київський час. Перед стрімом постав свої дату/час — бот сам скаже учасникам,
     // коли починаємо, а після завершення покаже підсумковий рейтинг.
-    streamStart: '2026-07-30 14:00',
+    streamStart: '2026-08-02 14:00',
     streamEnd: '2026-08-02 16:00',
     answerSeconds: 60,
     pointsPerWin: 1,
