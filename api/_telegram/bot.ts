@@ -484,11 +484,10 @@ function mainMenuKeyboard(user: BotUser | null): any {
     user?.status === 'paused'
       ? [{ text: T.menuResume }]
       : [{ text: T.menuPause }];
-  // Кнопка «Розваги» — одна на всі стрімові ігри. Ховається перемикачем у конфігу
-  // і поки користувач не набрав fun.minPoints балів (щоб не дражнити закритим
-  // розділом). Клавіатура оновлюється на кожній підтвердженій справі, тож кнопка
-  // зʼявиться сама, щойно поріг буде пройдено.
-  const funRow = telegramBotConfig.fun.enabled && hasFunAccess(user) ? [[{ text: T.menuFun }]] : [];
+  // Кнопка «Розваги» — одна на всі стрімові ігри, ховається лише перемикачем у
+  // конфігу. Показуємо її ВСІМ, навіть кому ще не вистачає балів: клік дає текст
+  // із поточним балансом і порогом — це видима мотивація дотягнутися до 100.
+  const funRow = telegramBotConfig.fun.enabled ? [[{ text: T.menuFun }]] : [];
   return {
     keyboard: [
       [{ text: T.menuNext }],

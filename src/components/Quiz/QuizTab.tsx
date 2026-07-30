@@ -19,18 +19,31 @@ export function QuizTab() {
   const now = useNow();
   const sinceRef = useRef(0);
   const sessionRef = useRef('');
+  // Захист від паралельних опитувань: інтервал раз на секунду може накластися на
+  // повільний запит (холодний старт функції) або на poll() після дії ведучого.
+  // Обидва пішли б з тим самим since і принесли б ті самі рядки двічі.
+  const inFlightRef = useRef(false);
 
   const poll = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       const since = sinceRef.current;
       const data = await tgApi.quizLive(since);
       // since === 0 (перше завантаження чи дія ведучого) — сервер віддав усю
-      // стрічку сесії, тож замінюємо; інакше добираємо лише нові рядки.
-      if (since === 0 || data.state.sessionId !== sessionRef.current) {
-        sessionRef.current = data.state.sessionId;
-        setAnswers(data.answers);
-      } else if (data.answers.length) {
-        setAnswers(prev => [...prev, ...data.answers]);
+      // стрічку сесії, тож починаємо з чистого; інакше доливаємо в наявну.
+      const reset = since === 0 || data.state.sessionId !== sessionRef.current;
+      sessionRef.current = data.state.sessionId;
+      if (reset || data.answers.length) {
+        // Зливаємо за id: навіть якщо ті самі рядки прилетять повторно, у стрічці
+        // вони залишаться в однині.
+        setAnswers(prev => {
+          const byId = new Map<number, QuizAnswer>(
+            (reset ? [] : prev).map(a => [a.id, a] as const)
+          );
+          for (const a of data.answers) byId.set(a.id, a);
+          return [...byId.values()].sort((a, b) => a.id - b.id);
+        });
       }
       if (data.answers.length) {
         sinceRef.current = Math.max(sinceRef.current, ...data.answers.map(a => a.id));
@@ -40,6 +53,8 @@ export function QuizTab() {
       setErr('');
     } catch (e: any) {
       setErr(e?.message || 'Немає зв’язку з сервером');
+    } finally {
+      inFlightRef.current = false;
     }
   }, []);
 
