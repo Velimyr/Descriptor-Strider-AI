@@ -1637,7 +1637,11 @@ async function handleCallback(cb: any) {
 
   if (data === 'collab:confirm') {
     if (!session.caseId) { await sendMessage(chatId, T.sessionExpired); return; }
-    const ack = await sendMessage(chatId, T.savingNotice);
+    // Ack-повідомлення несе нижнє меню: це єдина точка потоку справи, де
+    // reply_markup вільний (фото й питання зайняті inline-кнопками). Так меню
+    // оновлюється саме — на кожній підтвердженій справі, без зайвих повідомлень
+    // і без жодного додаткового запиту в БД (cbUser уже завантажений вище).
+    const ack = await sendMessage(chatId, T.savingNotice, { reply_markup: mainMenuKeyboard(cbUser) });
     await collabConfirm(chatId, tgId, session.caseId, ack?.message_id);
     return;
   }
@@ -1757,7 +1761,9 @@ async function handleCallback(cb: any) {
 
   if (data === 'confirm') {
     // Миттєвий фідбек — щоб користувач не натискав знову поки йдуть Sheets/Telegram запити.
-    const ack = await sendMessage(chatId, T.savingNotice);
+    // Тут же прокидаємо нижнє меню (див. коментар у collab:confirm) — заразом
+    // оновлюємо клавіатуру після змін у наборі кнопок.
+    const ack = await sendMessage(chatId, T.savingNotice, { reply_markup: mainMenuKeyboard(cbUser) });
     await confirmAndSubmit(chatId, tgId, session, questions, answers, ack?.message_id);
     return;
   }
