@@ -1554,9 +1554,21 @@ router.get('/admin/user-photo/:tgId', async (req, res) => {
   try {
     const { getUser } = await import('./storage.js');
     const u = await getUser(req.params.tgId);
-    if (!u || !u.photoFileId) return res.status(404).send('no photo');
     const { tg } = await import('./tg-api.js');
-    const info = await tg('getFile', { file_id: u.photoFileId });
+    // Пріоритет — фото, завантажене в профіль бота. Якщо його немає, беремо
+    // аватар з Telegram (для стендапу важливо показати бодай якесь обличчя).
+    let fileId = u?.photoFileId || '';
+    if (!fileId) {
+      try {
+        const photos = await tg('getUserProfilePhotos', { user_id: req.params.tgId, limit: 1 });
+        const sizes = photos?.photos?.[0];
+        if (Array.isArray(sizes) && sizes.length) fileId = sizes[sizes.length - 1]?.file_id || '';
+      } catch (e: any) {
+        console.error('getUserProfilePhotos failed', e?.message || e);
+      }
+    }
+    if (!fileId) return res.status(404).send('no photo');
+    const info = await tg('getFile', { file_id: fileId });
     const filePath = info?.file_path;
     if (!filePath) return res.status(410).send('telegram file expired');
     const botToken = process.env[telegramBotConfig.tg.botTokenEnv];
@@ -2011,6 +2023,235 @@ router.delete('/admin/partners/:id', async (req, res) => {
   try {
     const { deletePartner } = await import('../_core/partners.js');
     await deletePartner(req.params.id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// ----------- Вікторина (стрімова гра) -----------
+// Керування зі сторінки /quiz (адмін-логін). Питання — з конфігу; у Telegram
+// вони НЕ надсилаються, бот лише приймає відповіді учасників.
+
+// Живий стан для сторінки ведучого. `since` — курсор по id відповідей, щоб
+// щосекундний polling добирав лише нові рядки (а не всю стрічку).
+router.get('/admin/quiz/live', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const since = Number(req.query.since || 0) || 0;
+  try {
+    const { getQuizState, listQuizAnswers, getQuizLeaderboard } = await import('./storage.js');
+    const { publicState, quizQuestions } = await import('./quiz.js');
+    const state = await getQuizState();
+    const pub = publicState(state);
+    const questions = quizQuestions();
+    const q = pub.status === 'idle' ? undefined : questions[state.qIndex];
+    const answers = state.sessionId ? await listQuizAnswers(state.sessionId, since) : [];
+    // Рейтинг тягнемо лише коли він міг змінитись (перше завантаження або
+    // зʼявився новий переможець) — інакше null і сторінка лишає попередній.
+    // Це знімає ~3600 зайвих запитів за годину стріму (polling 1/с).
+    const needScores = since === 0 || answers.some(a => a.isWinner);
+    const leaderboard = needScores ? await getQuizLeaderboard(15) : null;
+    res.json({
+      state: pub,
+      // Еталонну відповідь віддаємо: сторінка показує її на екрані, коли час вийшов.
+      // note з конфігу НЕ віддаємо — /quiz бачать усі глядачі стріму.
+      question: q
+        ? { index: state.qIndex, text: q.text, answer: (q.answers || [])[0] || '' }
+        : null,
+      answers,
+      leaderboard,
+      config: {
+        answerSeconds: telegramBotConfig.quiz.answerSeconds,
+        pointsPerWin: telegramBotConfig.quiz.pointsPerWin,
+        total: questions.length,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Перелік питань (для попереднього перегляду сценарію стріму).
+router.get('/admin/quiz/questions', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const { quizQuestions } = await import('./quiz.js');
+  res.json({
+    questions: quizQuestions().map((q, i) => ({
+      index: i,
+      text: q.text,
+      answer: (q.answers || [])[0] || '',
+    })),
+  });
+});
+
+router.post('/admin/quiz/start', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { startQuiz, publicState } = await import('./quiz.js');
+    res.json({ ok: true, state: publicState(await startQuiz()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/quiz/next', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { nextQuestion, publicState } = await import('./quiz.js');
+    res.json({ ok: true, state: publicState(await nextQuestion()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Перезапустити таймер поточного питання (дати учасникам ще часу).
+router.post('/admin/quiz/restart-timer', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { restartTimer, publicState } = await import('./quiz.js');
+    res.json({ ok: true, state: publicState(await restartTimer()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/quiz/stop', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { stopQuiz, publicState } = await import('./quiz.js');
+    res.json({ ok: true, state: publicState(await stopQuiz()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Повне скидання: бали + усі відповіді + стан (вікторина зупиняється).
+router.post('/admin/quiz/reset', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { resetQuiz } = await import('./storage.js');
+    await resetQuiz();
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// ----------- Архівний стендап -----------
+// Друга вкладка сторінки /quiz. Бали спільні з вікториною (bot_quiz_scores).
+
+router.get('/admin/standup/live', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { getStandupState, listStandupSignups, countStandupVotes, listStandupRounds, getQuizLeaderboard } =
+      await import('./storage.js');
+    const { publicState, standupQuestions } = await import('./standup.js');
+    const state = await getStandupState();
+    const pub = publicState(state);
+    const questions = standupQuestions();
+    const q = pub.status === 'idle' ? undefined : questions[state.qIndex];
+
+    const [signups, votes, rounds, leaderboard] = await Promise.all([
+      state.sessionId ? listStandupSignups(state.sessionId, state.qIndex) : Promise.resolve([]),
+      state.sessionId ? countStandupVotes(state.sessionId, state.qIndex) : Promise.resolve({}),
+      state.sessionId ? listStandupRounds(state.sessionId) : Promise.resolve([]),
+      getQuizLeaderboard(15),
+    ]);
+
+    res.json({
+      state: pub,
+      question: q ? { index: state.qIndex, text: q.text } : null,
+      // Черга з лічильником лайків — картки на сторінці ведучого.
+      signups: signups.map(s => ({ ...s, likes: (votes as Record<string, number>)[s.tgId] || 0 })),
+      rounds,
+      leaderboard,
+      config: {
+        thinkSeconds: telegramBotConfig.standup.thinkSeconds,
+        voteSeconds: telegramBotConfig.standup.voteSeconds,
+        pointsPerWin: telegramBotConfig.standup.pointsPerWin,
+        total: questions.length,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/standup/start', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { startStandup, publicState } = await import('./standup.js');
+    res.json({ ok: true, state: publicState(await startStandup()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Викликати учасника на сцену (клік по картці в черзі).
+router.post('/admin/standup/call', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  const tgId = String((req.body || {}).tg_id || '').trim();
+  if (!tgId) return res.status(400).json({ error: 'tg_id required' });
+  try {
+    const { callPerformer, publicState } = await import('./standup.js');
+    res.json({ ok: true, state: publicState(await callPerformer(tgId)) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Запустити хвилинний лічильник голосування за поточний виступ.
+router.post('/admin/standup/vote-timer', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { startVoteTimer, publicState } = await import('./standup.js');
+    res.json({ ok: true, state: publicState(await startVoteTimer()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Повернутись до фази обдумування (перезапустити хвилину на жарт).
+router.post('/admin/standup/restart-thinking', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { restartThinking, publicState } = await import('./standup.js');
+    res.json({ ok: true, state: publicState(await restartThinking()) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Наступна тема: закриває раунд (нарахування переможцям) і йде далі.
+router.post('/admin/standup/next', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { nextRound, publicState } = await import('./standup.js');
+    const { state, winners } = await nextRound();
+    res.json({ ok: true, state: publicState(state), winners });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/standup/stop', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { stopStandup, publicState } = await import('./standup.js');
+    const { state, winners } = await stopStandup();
+    res.json({ ok: true, state: publicState(state), winners });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Скидання стендапу: черги, лайки, підсумки раундів. Бали не чіпає — вони
+// спільні з вікториною (для них окрема кнопка на вкладці «Вікторина»).
+router.post('/admin/standup/reset', async (req, res) => {
+  if (!requireAdminSecret(req, res)) return;
+  try {
+    const { resetStandup } = await import('./storage.js');
+    await resetStandup();
     res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'internal' });

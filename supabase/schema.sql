@@ -1090,3 +1090,223 @@ language sql security definer as $$
   cross join lateral jsonb_array_elements_text(b.variants) as v(value);
 $$;
 revoke all on function bot_keyword_variant_status(text) from public, anon, authenticated;
+
+-- ===== Вікторина (стрімова гра) =====
+-- Ведучий керує зі сторінки /quiz (адмін-логін), учасники відповідають у боті.
+-- Бали вікторини — ОКРЕМІ від балів застосунку (bot_users.total_points не чіпаємо).
+
+-- Стан поточної сесії. Рівно один рядок (id = 1). Окрема таблиця, а не bot_meta,
+-- бо getMeta кешує значення на 60 с — для секундного таймера це неприйнятно.
+create table if not exists bot_quiz_state (
+  id          int         primary key default 1 check (id = 1),
+  session_id  text        not null default '',
+  status      text        not null default 'idle' check (status in ('idle', 'running', 'finished')),
+  q_index     int         not null default 0,
+  started_at  timestamptz,
+  ends_at     timestamptz,
+  updated_at  timestamptz not null default now()
+);
+insert into bot_quiz_state (id) values (1) on conflict (id) do nothing;
+
+-- Усі відповіді всіх учасників (і правильні, і ні) — стрічка на сторінці стріму.
+create table if not exists bot_quiz_answers (
+  id           bigserial   primary key,
+  session_id   text        not null,
+  q_index      int         not null,
+  tg_id        text        not null,
+  display_name text        not null default '',
+  answer       text        not null default '',
+  is_correct   boolean     not null default false,
+  is_winner    boolean     not null default false,
+  created_at   timestamptz not null default now()
+);
+create index if not exists idx_quiz_answers_feed on bot_quiz_answers(session_id, id);
+-- Страховка від гонки: максимум один переможець на питання сесії.
+create unique index if not exists uq_quiz_winner on bot_quiz_answers(session_id, q_index) where is_winner;
+
+-- Накопичувальні бали вікторини (за весь час, поки не обнулити з адмінки).
+create table if not exists bot_quiz_scores (
+  tg_id        text primary key,
+  display_name text        not null default '',
+  points       int         not null default 0,
+  wins         int         not null default 0,
+  updated_at   timestamptz not null default now()
+);
+create index if not exists idx_quiz_scores_points on bot_quiz_scores(points desc);
+
+alter table bot_quiz_state   enable row level security;
+alter table bot_quiz_answers enable row level security;
+alter table bot_quiz_scores  enable row level security;
+
+-- Атомарний прийом відповіді: пише рядок у стрічку і, якщо відповідь правильна
+-- й переможця цього питання ще немає, робить її переможною + нараховує бали.
+-- Advisory-lock на (сесія, питання) серіалізує одночасні виклики.
+create or replace function bot_quiz_answer(
+  p_session text,
+  p_q_index int,
+  p_tg_id   text,
+  p_name    text,
+  p_answer  text,
+  p_correct boolean,
+  p_points  int
+) returns table(won boolean, total int)
+language plpgsql security definer as $$
+declare
+  v_id     bigint;
+  v_won    boolean := false;
+  v_total  int;
+begin
+  insert into bot_quiz_answers(session_id, q_index, tg_id, display_name, answer, is_correct)
+    values (p_session, p_q_index, p_tg_id, p_name, p_answer, p_correct)
+    returning id into v_id;
+
+  if p_correct then
+    perform pg_advisory_xact_lock(hashtext('bot_quiz:' || p_session || ':' || p_q_index));
+    if not exists (
+      select 1 from bot_quiz_answers a
+       where a.session_id = p_session and a.q_index = p_q_index and a.is_winner
+    ) then
+      update bot_quiz_answers set is_winner = true where id = v_id;
+      insert into bot_quiz_scores(tg_id, display_name, points, wins, updated_at)
+        values (p_tg_id, p_name, p_points, 1, now())
+        on conflict (tg_id) do update
+          set points       = bot_quiz_scores.points + p_points,
+              wins         = bot_quiz_scores.wins + 1,
+              display_name = excluded.display_name,
+              updated_at   = now();
+      v_won := true;
+    end if;
+  end if;
+
+  select s.points into v_total from bot_quiz_scores s where s.tg_id = p_tg_id;
+  return query select v_won, coalesce(v_total, 0);
+end $$;
+revoke all on function bot_quiz_answer(text, int, text, text, text, boolean, int) from public, anon, authenticated;
+
+-- ===== Архівний стендап (стрімова гра) =====
+-- Друга вкладка сторінки /quiz. Ведучий показує питання, учасники хвилину
+-- вигадують смішну відповідь і «записуються» в боті; ведучий по черзі викликає
+-- їх на сцену, глядачі лайкають у боті. Найбільше лайків у раунді → +5 балів.
+-- Бали СПІЛЬНІ з вікториною — та сама таблиця bot_quiz_scores.
+
+create table if not exists bot_standup_state (
+  id              int         primary key default 1 check (id = 1),
+  session_id      text        not null default '',
+  status          text        not null default 'idle' check (status in ('idle', 'running', 'finished')),
+  q_index         int         not null default 0,
+  -- thinking — хвилина на вигадування + запис; performing — хтось на сцені,
+  -- голосування відкрите; results — раунд/стендап завершено.
+  phase           text        not null default 'thinking' check (phase in ('thinking', 'performing', 'results')),
+  performer_tg_id text        not null default '',
+  ends_at         timestamptz,
+  updated_at      timestamptz not null default now()
+);
+insert into bot_standup_state (id) values (1) on conflict (id) do nothing;
+
+-- Запис на виступ. Своя черга на кожне питання (нове питання — новий запис).
+-- display_name/has_photo денормалізовані, щоб сторінка малювала картки без join.
+create table if not exists bot_standup_signups (
+  session_id   text        not null,
+  q_index      int         not null,
+  tg_id        text        not null,
+  display_name text        not null default '',
+  has_photo    boolean     not null default false,
+  performed    boolean     not null default false,
+  created_at   timestamptz not null default now(),
+  performed_at timestamptz,
+  primary key (session_id, q_index, tg_id)
+);
+create index if not exists idx_standup_signups_round on bot_standup_signups(session_id, q_index, created_at);
+
+-- Лайки. PK = один лайк від глядача конкретному виступаючому в конкретному раунді.
+create table if not exists bot_standup_votes (
+  session_id      text        not null,
+  q_index         int         not null,
+  performer_tg_id text        not null,
+  voter_tg_id     text        not null,
+  created_at      timestamptz not null default now(),
+  primary key (session_id, q_index, performer_tg_id, voter_tg_id)
+);
+create index if not exists idx_standup_votes_round on bot_standup_votes(session_id, q_index);
+
+-- Підсумок раунду. Наявність рядка = бали вже нараховано (захист від подвійного
+-- нарахування, якщо ведучий двічі тицьне «Наступне питання»).
+create table if not exists bot_standup_rounds (
+  session_id text        not null,
+  q_index    int         not null,
+  winners    jsonb       not null default '[]',
+  awarded_at timestamptz not null default now(),
+  primary key (session_id, q_index)
+);
+
+alter table bot_standup_state   enable row level security;
+alter table bot_standup_signups enable row level security;
+alter table bot_standup_votes   enable row level security;
+alter table bot_standup_rounds  enable row level security;
+
+-- Нарахування за раунд: усі, хто набрав максимум лайків, отримують p_points у
+-- спільний рейтинг (bot_quiz_scores). Ідемпотентно: повторний виклик повертає
+-- збережених переможців і нічого не нараховує.
+-- Дроп перед створенням: create or replace не вміє міняти імена OUT-колонок,
+-- а вони змінилися (tg_id → w_tg_id). Для чистої установки — no-op.
+drop function if exists bot_standup_award_round(text, int, int);
+create or replace function bot_standup_award_round(p_session text, p_q_index int, p_points int)
+-- OUT-параметри навмисно з префіксом w_: без нього ім'я tg_id стає змінною
+-- plpgsql і ламає `on conflict (tg_id)` помилкою "column reference is ambiguous".
+returns table(w_tg_id text, w_name text, w_likes int)
+language plpgsql security definer as $$
+declare
+  v_max     int;
+  v_winners jsonb;
+begin
+  perform pg_advisory_xact_lock(hashtext('bot_standup:' || p_session || ':' || p_q_index));
+
+  select r.winners into v_winners
+    from bot_standup_rounds r
+   where r.session_id = p_session and r.q_index = p_q_index;
+
+  if v_winners is null then
+    select max(c.cnt) into v_max from (
+      select count(*)::int as cnt
+        from bot_standup_votes v
+       where v.session_id = p_session and v.q_index = p_q_index
+       group by v.performer_tg_id
+    ) c;
+
+    if v_max is null or v_max = 0 then
+      v_winners := '[]'::jsonb;
+    else
+      select coalesce(jsonb_agg(jsonb_build_object(
+               'tg_id', t.performer_tg_id,
+               'display_name', coalesce(s.display_name, ''),
+               'likes', t.cnt)), '[]'::jsonb)
+        into v_winners
+      from (
+        select v.performer_tg_id, count(*)::int as cnt
+          from bot_standup_votes v
+         where v.session_id = p_session and v.q_index = p_q_index
+         group by v.performer_tg_id
+      ) t
+      left join bot_standup_signups s
+        on s.session_id = p_session and s.q_index = p_q_index and s.tg_id = t.performer_tg_id
+      where t.cnt = v_max;
+
+      insert into bot_quiz_scores(tg_id, display_name, points, wins, updated_at)
+      select w.tg_id, w.display_name, p_points, 1, now()
+        from jsonb_to_recordset(v_winners) as w(tg_id text, display_name text, likes int)
+      on conflict (tg_id) do update
+        set points       = bot_quiz_scores.points + p_points,
+            wins         = bot_quiz_scores.wins + 1,
+            display_name = coalesce(nullif(excluded.display_name, ''), bot_quiz_scores.display_name),
+            updated_at   = now();
+    end if;
+
+    insert into bot_standup_rounds(session_id, q_index, winners)
+      values (p_session, p_q_index, v_winners)
+      on conflict (session_id, q_index) do nothing;
+  end if;
+
+  return query select w.tg_id, w.display_name, w.likes
+    from jsonb_to_recordset(v_winners) as w(tg_id text, display_name text, likes int);
+end $$;
+revoke all on function bot_standup_award_round(text, int, int) from public, anon, authenticated;

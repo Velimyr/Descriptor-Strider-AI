@@ -31,7 +31,7 @@ const KYIV_WALL_FMT = new Intl.DateTimeFormat('en-CA', {
 });
 
 // 'now' у київському настінному часі як 'YYYY-MM-DD HH:mm'.
-function kyivWallString(d: Date): string {
+export function kyivWallString(d: Date): string {
   const p: Record<string, string> = {};
   for (const part of KYIV_WALL_FMT.formatToParts(d)) p[part.type] = part.value;
   // Node інколи віддає '24' для опівночі — нормалізуємо до '00'.
@@ -42,7 +42,7 @@ function kyivWallString(d: Date): string {
 // Нормалізуємо рядок із конфігу до канонічного 'YYYY-MM-DD HH:mm'.
 // Приймаємо 'YYYY-MM-DD', 'YYYY-MM-DD HH:mm' і 'YYYY-MM-DDTHH:mm'. Без часу → 00:00.
 // Повертає '' для непридатного рядка (такий марафон ігнорується).
-function normalizeWall(raw: string | undefined): string {
+export function normalizeWall(raw: string | undefined): string {
   if (!raw) return '';
   const m = String(raw).trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
   if (!m) return '';
@@ -51,7 +51,7 @@ function normalizeWall(raw: string | undefined): string {
 }
 
 // 'YYYY-MM-DD HH:mm' → 'ДД.ММ.РРРР ГГ:ХХ' (просто перестановка, без часових поясів).
-function formatWallLocal(wall: string): string {
+export function formatWallLocal(wall: string): string {
   const m = wall.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
   if (!m) return wall;
   const [, y, mo, d, h, mi] = m;

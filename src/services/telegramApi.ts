@@ -353,7 +353,133 @@ export const tgApi = {
     }>,
   cancelBroadcast: (id: number) =>
     call(`/admin/broadcast/${id}/cancel`, { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
+
+  // --- Вікторина (сторінка /quiz) ---
+  quizLive: (since: number) =>
+    call(`/admin/quiz/live?since=${since}`) as Promise<QuizLive>,
+  quizQuestions: () =>
+    call('/admin/quiz/questions') as Promise<{ questions: QuizQuestionPreview[] }>,
+  quizStart: () => call('/admin/quiz/start', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
+  quizNext: () => call('/admin/quiz/next', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
+  quizRestartTimer: () =>
+    call('/admin/quiz/restart-timer', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
+  quizStop: () => call('/admin/quiz/stop', { method: 'POST', body: '{}' }) as Promise<{ state: QuizState }>,
+  // Скидає все: бали, стрічку відповідей і стан сесії.
+  quizReset: () => call('/admin/quiz/reset', { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
+
+  // --- Архівний стендап (друга вкладка /quiz) ---
+  standupLive: () => call('/admin/standup/live') as Promise<StandupLive>,
+  standupStart: () =>
+    call('/admin/standup/start', { method: 'POST', body: '{}' }) as Promise<{ state: StandupState }>,
+  standupCall: (tgId: string) =>
+    call('/admin/standup/call', { method: 'POST', body: JSON.stringify({ tg_id: tgId }) }) as Promise<{
+      state: StandupState;
+    }>,
+  standupVoteTimer: () =>
+    call('/admin/standup/vote-timer', { method: 'POST', body: '{}' }) as Promise<{ state: StandupState }>,
+  standupRestartThinking: () =>
+    call('/admin/standup/restart-thinking', { method: 'POST', body: '{}' }) as Promise<{
+      state: StandupState;
+    }>,
+  standupNext: () =>
+    call('/admin/standup/next', { method: 'POST', body: '{}' }) as Promise<{
+      state: StandupState;
+      winners: StandupWinner[];
+    }>,
+  standupStop: () =>
+    call('/admin/standup/stop', { method: 'POST', body: '{}' }) as Promise<{
+      state: StandupState;
+      winners: StandupWinner[];
+    }>,
+  standupReset: () =>
+    call('/admin/standup/reset', { method: 'POST', body: '{}' }) as Promise<{ ok: boolean }>,
 };
+
+// URL фото учасника для <img> (адмін-ендпоінт приймає секрет у query).
+export const userPhotoUrl = (tgId: string): string =>
+  `/api/telegram/admin/user-photo/${encodeURIComponent(tgId)}?secret=${encodeURIComponent(getAdminSecret())}`;
+
+export interface StandupState {
+  status: 'idle' | 'running' | 'finished';
+  sessionId: string;
+  qIndex: number;
+  total: number;
+  phase: 'thinking' | 'performing' | 'results';
+  performerTgId: string;
+  secondsLeft: number;
+  endsAt: string;
+  hasTimer: boolean;
+  signupOpen: boolean;
+  voteOpen: boolean;
+}
+
+export interface StandupSignup {
+  tgId: string;
+  displayName: string;
+  hasPhoto: boolean;
+  performed: boolean;
+  createdAt: string;
+  performedAt: string;
+  likes: number;
+}
+
+export interface StandupWinner {
+  tgId: string;
+  displayName: string;
+  likes: number;
+}
+
+export interface StandupLive {
+  state: StandupState;
+  question: { index: number; text: string } | null;
+  signups: StandupSignup[];
+  rounds: Array<{ qIndex: number; winners: StandupWinner[] }>;
+  leaderboard: QuizScore[];
+  config: { thinkSeconds: number; voteSeconds: number; pointsPerWin: number; total: number };
+}
+
+export interface QuizState {
+  status: 'idle' | 'running' | 'finished';
+  sessionId: string;
+  qIndex: number;
+  total: number;
+  secondsLeft: number;
+  endsAt: string;
+  open: boolean;
+}
+
+export interface QuizQuestionPreview {
+  index: number;
+  text: string;
+  answer: string;
+}
+
+export interface QuizAnswer {
+  id: number;
+  qIndex: number;
+  tgId: string;
+  displayName: string;
+  answer: string;
+  isCorrect: boolean;
+  isWinner: boolean;
+  createdAt: string;
+}
+
+export interface QuizScore {
+  tgId: string;
+  displayName: string;
+  points: number;
+  wins: number;
+}
+
+export interface QuizLive {
+  state: QuizState;
+  question: { index: number; text: string; answer: string } | null;
+  answers: QuizAnswer[];
+  // null — рейтинг не змінювався з минулого опитування (сторінка лишає попередній).
+  leaderboard: QuizScore[] | null;
+  config: { answerSeconds: number; pointsPerWin: number; total: number };
+}
 
 export interface BroadcastRow {
   id: number;

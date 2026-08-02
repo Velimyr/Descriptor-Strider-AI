@@ -28,6 +28,13 @@ export const T = {
   broadcastRecipients: `${PREFIX}broadcast_recipients`,
   keywordBlocks:     `${PREFIX}keyword_blocks`,
   keywordMatches:    `${PREFIX}keyword_matches`,
+  quizState:         `${PREFIX}quiz_state`,
+  standupState:      `${PREFIX}standup_state`,
+  standupSignups:    `${PREFIX}standup_signups`,
+  standupVotes:      `${PREFIX}standup_votes`,
+  standupRounds:     `${PREFIX}standup_rounds`,
+  quizAnswers:       `${PREFIX}quiz_answers`,
+  quizScores:        `${PREFIX}quiz_scores`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;
@@ -49,6 +56,8 @@ const RPC_BROADCAST_CLAIM_BATCH = `${PREFIX}broadcast_claim_batch`;
 const RPC_BROADCAST_REAP = `${PREFIX}broadcast_reap`;
 const RPC_BROADCAST_INC = `${PREFIX}broadcast_inc`;
 const RPC_BROADCAST_CLICK = `${PREFIX}broadcast_click`;
+const RPC_QUIZ_ANSWER = `${PREFIX}quiz_answer`;
+const RPC_STANDUP_AWARD_ROUND = `${PREFIX}standup_award_round`;
 const RPC_KEYWORD_BACKFILL_SCAN = `${PREFIX}keyword_backfill_scan`;
 const RPC_KEYWORD_VARIANT_STATUS = `${PREFIX}keyword_variant_status`;
 
@@ -86,7 +95,9 @@ export interface BotUser {
     | 'edit_photo'
     | 'edit_contact'
     | 'add_gemini_key'
-    | 'add_keyword_block';
+    | 'add_keyword_block'
+    // Режим «Вікторина»: будь-який звичайний текст — це відповідь на активне питання.
+    | 'quiz';
   createdAt: string;
   introShownAt: string; // ISO або '' якщо ще не показували
   // Час "засіву" бейджів. '' (NULL у БД) = ще не засівали: на першій перевірці
@@ -2621,3 +2632,416 @@ export async function recordBroadcastClick(
   return data === true;
 }
 
+
+// ---------- ВІКТОРИНА (стрімова гра) ----------
+// Стан сесії — окремий рядок (id=1), а НЕ bot_meta: getMeta кешує на 60 с,
+// а тут потрібна свіжість до секунди (таймер на 60 с).
+
+export interface QuizStateRow {
+  sessionId: string;
+  status: 'idle' | 'running' | 'finished';
+  qIndex: number;
+  startedAt: string; // ISO або ''
+  endsAt: string;    // ISO або ''
+}
+
+const EMPTY_QUIZ_STATE: QuizStateRow = {
+  sessionId: '',
+  status: 'idle',
+  qIndex: 0,
+  startedAt: '',
+  endsAt: '',
+};
+
+export async function getQuizState(): Promise<QuizStateRow> {
+  const { data, error } = await db()
+    .from(T.quizState)
+    .select('session_id, status, q_index, started_at, ends_at')
+    .eq('id', 1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return { ...EMPTY_QUIZ_STATE };
+  return {
+    sessionId: data.session_id || '',
+    status: (data.status as QuizStateRow['status']) || 'idle',
+    qIndex: data.q_index ?? 0,
+    startedAt: data.started_at || '',
+    endsAt: data.ends_at || '',
+  };
+}
+
+export async function setQuizState(state: QuizStateRow): Promise<void> {
+  const { error } = await db()
+    .from(T.quizState)
+    .upsert(
+      {
+        id: 1,
+        session_id: state.sessionId,
+        status: state.status,
+        q_index: state.qIndex,
+        started_at: state.startedAt || null,
+        ends_at: state.endsAt || null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+  if (error) throw error;
+}
+
+// Атомарний прийом відповіді: пише в стрічку і, якщо правильна й переможця ще
+// немає, робить її переможною + нараховує бали (див. SQL bot_quiz_answer).
+export async function recordQuizAnswer(params: {
+  sessionId: string;
+  qIndex: number;
+  tgId: string;
+  displayName: string;
+  answer: string;
+  correct: boolean;
+  points: number;
+}): Promise<{ won: boolean; total: number }> {
+  const { data, error } = await db().rpc(RPC_QUIZ_ANSWER, {
+    p_session: params.sessionId,
+    p_q_index: params.qIndex,
+    p_tg_id: params.tgId,
+    p_name: params.displayName,
+    p_answer: params.answer,
+    p_correct: params.correct,
+    p_points: params.points,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return { won: !!row?.won, total: row?.total ?? 0 };
+}
+
+export interface QuizAnswerRow {
+  id: number;
+  qIndex: number;
+  tgId: string;
+  displayName: string;
+  answer: string;
+  isCorrect: boolean;
+  isWinner: boolean;
+  createdAt: string;
+}
+
+// Стрічка відповідей сесії. sinceId — курсор (0 = з початку), щоб сторінка
+// ведучого добирала лише нові рядки і не качала всю історію щосекунди.
+export async function listQuizAnswers(
+  sessionId: string,
+  sinceId = 0,
+  limit = 200
+): Promise<QuizAnswerRow[]> {
+  const { data, error } = await db()
+    .from(T.quizAnswers)
+    .select('id, q_index, tg_id, display_name, answer, is_correct, is_winner, created_at')
+    .eq('session_id', sessionId)
+    .gt('id', sinceId)
+    .order('id', { ascending: true })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map((r: any) => ({
+    id: r.id,
+    qIndex: r.q_index,
+    tgId: r.tg_id,
+    displayName: r.display_name || '',
+    answer: r.answer || '',
+    isCorrect: !!r.is_correct,
+    isWinner: !!r.is_winner,
+    createdAt: r.created_at,
+  }));
+}
+
+export interface QuizScoreRow {
+  tgId: string;
+  displayName: string;
+  points: number;
+  wins: number;
+}
+
+export async function getQuizLeaderboard(limit = 15): Promise<QuizScoreRow[]> {
+  const { data, error } = await db()
+    .from(T.quizScores)
+    .select('tg_id, display_name, points, wins')
+    .gt('points', 0)
+    .order('points', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map((r: any) => ({
+    tgId: r.tg_id,
+    displayName: r.display_name || '',
+    points: r.points ?? 0,
+    wins: r.wins ?? 0,
+  }));
+}
+
+export async function getQuizPoints(tgId: string): Promise<number> {
+  const { data, error } = await db()
+    .from(T.quizScores)
+    .select('points')
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.points ?? 0;
+}
+
+// Повне скидання вікторини (кнопка в адмінці): бали + стрічка відповідей + стан.
+// Стан обовʼязково скидаємо разом із відповідями — інакше в уже розіграному
+// питанні зник би переможець і бал за нього можна було б отримати вдруге.
+export async function resetQuiz(): Promise<void> {
+  const client = db();
+  const [scores, answers] = await Promise.all([
+    client.from(T.quizScores).delete().neq('tg_id', ''),
+    client.from(T.quizAnswers).delete().gt('id', 0),
+  ]);
+  if (scores.error) throw scores.error;
+  if (answers.error) throw answers.error;
+  await setQuizState({ sessionId: '', status: 'idle', qIndex: 0, startedAt: '', endsAt: '' });
+}
+
+// ---------- АРХІВНИЙ СТЕНДАП ----------
+// Бали спільні з вікториною (T.quizScores) — окремої таблиці рейтингу немає.
+
+export interface StandupStateRow {
+  sessionId: string;
+  status: 'idle' | 'running' | 'finished';
+  qIndex: number;
+  phase: 'thinking' | 'performing' | 'results';
+  performerTgId: string;
+  endsAt: string; // ISO або '' (у фазі performing '' = лічильник ще не запущено)
+}
+
+const EMPTY_STANDUP_STATE: StandupStateRow = {
+  sessionId: '',
+  status: 'idle',
+  qIndex: 0,
+  phase: 'thinking',
+  performerTgId: '',
+  endsAt: '',
+};
+
+export async function getStandupState(): Promise<StandupStateRow> {
+  const { data, error } = await db()
+    .from(T.standupState)
+    .select('session_id, status, q_index, phase, performer_tg_id, ends_at')
+    .eq('id', 1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return { ...EMPTY_STANDUP_STATE };
+  return {
+    sessionId: data.session_id || '',
+    status: (data.status as StandupStateRow['status']) || 'idle',
+    qIndex: data.q_index ?? 0,
+    phase: (data.phase as StandupStateRow['phase']) || 'thinking',
+    performerTgId: data.performer_tg_id || '',
+    endsAt: data.ends_at || '',
+  };
+}
+
+export async function setStandupState(state: StandupStateRow): Promise<void> {
+  const { error } = await db()
+    .from(T.standupState)
+    .upsert(
+      {
+        id: 1,
+        session_id: state.sessionId,
+        status: state.status,
+        q_index: state.qIndex,
+        phase: state.phase,
+        performer_tg_id: state.performerTgId,
+        ends_at: state.endsAt || null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+  if (error) throw error;
+}
+
+export interface StandupSignupRow {
+  tgId: string;
+  displayName: string;
+  hasPhoto: boolean;
+  performed: boolean;
+  createdAt: string;
+  performedAt: string;
+}
+
+// Запис на виступ. Повторний виклик — no-op (PK), тож кнопку можна тиснути двічі.
+export async function addStandupSignup(params: {
+  sessionId: string;
+  qIndex: number;
+  tgId: string;
+  displayName: string;
+  hasPhoto: boolean;
+}): Promise<void> {
+  const { error } = await db()
+    .from(T.standupSignups)
+    .upsert(
+      {
+        session_id: params.sessionId,
+        q_index: params.qIndex,
+        tg_id: params.tgId,
+        display_name: params.displayName,
+        has_photo: params.hasPhoto,
+      },
+      { onConflict: 'session_id,q_index,tg_id', ignoreDuplicates: true }
+    );
+  if (error) throw error;
+}
+
+export async function listStandupSignups(
+  sessionId: string,
+  qIndex: number
+): Promise<StandupSignupRow[]> {
+  const { data, error } = await db()
+    .from(T.standupSignups)
+    .select('tg_id, display_name, has_photo, performed, created_at, performed_at')
+    .eq('session_id', sessionId)
+    .eq('q_index', qIndex)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((r: any) => ({
+    tgId: r.tg_id,
+    displayName: r.display_name || '',
+    hasPhoto: !!r.has_photo,
+    performed: !!r.performed,
+    createdAt: r.created_at,
+    performedAt: r.performed_at || '',
+  }));
+}
+
+export async function getStandupSignup(
+  sessionId: string,
+  qIndex: number,
+  tgId: string
+): Promise<StandupSignupRow | null> {
+  const { data, error } = await db()
+    .from(T.standupSignups)
+    .select('tg_id, display_name, has_photo, performed, created_at, performed_at')
+    .eq('session_id', sessionId)
+    .eq('q_index', qIndex)
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return {
+    tgId: data.tg_id,
+    displayName: data.display_name || '',
+    hasPhoto: !!data.has_photo,
+    performed: !!data.performed,
+    createdAt: data.created_at,
+    performedAt: data.performed_at || '',
+  };
+}
+
+export async function markStandupPerformed(
+  sessionId: string,
+  qIndex: number,
+  tgId: string
+): Promise<void> {
+  const { error } = await db()
+    .from(T.standupSignups)
+    .update({ performed: true, performed_at: new Date().toISOString() })
+    .eq('session_id', sessionId)
+    .eq('q_index', qIndex)
+    .eq('tg_id', tgId);
+  if (error) throw error;
+}
+
+// Лайк виступаючому. false = такий лайк уже був (PK-конфлікт).
+export async function addStandupVote(params: {
+  sessionId: string;
+  qIndex: number;
+  performerTgId: string;
+  voterTgId: string;
+}): Promise<boolean> {
+  const { error } = await db().from(T.standupVotes).insert({
+    session_id: params.sessionId,
+    q_index: params.qIndex,
+    performer_tg_id: params.performerTgId,
+    voter_tg_id: params.voterTgId,
+  });
+  if (error) {
+    if ((error as any).code === '23505') return false; // duplicate key
+    throw error;
+  }
+  return true;
+}
+
+// Лайки раунду, згруповані по виступаючих. Рядків мало (учасники стендапу),
+// тож рахуємо на боці Node — окрема RPC заради цього не виправдана.
+export async function countStandupVotes(
+  sessionId: string,
+  qIndex: number
+): Promise<Record<string, number>> {
+  const { data, error } = await db()
+    .from(T.standupVotes)
+    .select('performer_tg_id')
+    .eq('session_id', sessionId)
+    .eq('q_index', qIndex);
+  if (error) throw error;
+  const out: Record<string, number> = {};
+  for (const r of data || []) out[(r as any).performer_tg_id] = (out[(r as any).performer_tg_id] || 0) + 1;
+  return out;
+}
+
+export interface StandupWinner {
+  tgId: string;
+  displayName: string;
+  likes: number;
+}
+
+// Нарахування переможцям раунду (ідемпотентне, див. SQL bot_standup_award_round).
+export async function awardStandupRound(
+  sessionId: string,
+  qIndex: number,
+  points: number
+): Promise<StandupWinner[]> {
+  const { data, error } = await db().rpc(RPC_STANDUP_AWARD_ROUND, {
+    p_session: sessionId,
+    p_q_index: qIndex,
+    p_points: points,
+  });
+  if (error) throw error;
+  // Колонки з префіксом w_ — див. коментар у SQL: без нього tg_id як OUT-параметр
+  // конфліктує з посиланням на колонку всередині функції.
+  return (data || []).map((r: any) => ({
+    tgId: r.w_tg_id,
+    displayName: r.w_name || '',
+    likes: r.w_likes ?? 0,
+  }));
+}
+
+// Підсумки вже нарахованих раундів сесії (для таблиці на сторінці).
+export async function listStandupRounds(
+  sessionId: string
+): Promise<Array<{ qIndex: number; winners: StandupWinner[] }>> {
+  const { data, error } = await db()
+    .from(T.standupRounds)
+    .select('q_index, winners')
+    .eq('session_id', sessionId)
+    .order('q_index', { ascending: true });
+  if (error) throw error;
+  return (data || []).map((r: any) => ({
+    qIndex: r.q_index,
+    winners: (Array.isArray(r.winners) ? r.winners : []).map((w: any) => ({
+      tgId: w.tg_id,
+      displayName: w.display_name || '',
+      likes: w.likes ?? 0,
+    })),
+  }));
+}
+
+// Повне скидання стендапу: черги, лайки, підсумки раундів і стан.
+// Бали НЕ чіпаємо — вони спільні з вікториною (для них є resetQuiz).
+export async function resetStandup(): Promise<void> {
+  const client = db();
+  const [signups, votes, rounds] = await Promise.all([
+    client.from(T.standupSignups).delete().neq('session_id', ''),
+    client.from(T.standupVotes).delete().neq('session_id', ''),
+    client.from(T.standupRounds).delete().neq('session_id', ''),
+  ]);
+  if (signups.error) throw signups.error;
+  if (votes.error) throw votes.error;
+  if (rounds.error) throw rounds.error;
+  await setStandupState({ ...EMPTY_STANDUP_STATE });
+}
