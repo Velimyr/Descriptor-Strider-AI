@@ -1339,6 +1339,19 @@ export async function recordSkippedCase(tgId: string, caseId: string): Promise<v
   if (error) throw error;
 }
 
+// Скільки справ користувач пропустив від початку поточної київської доби.
+// Рахуємо head-запитом (без витягання рядків) — це гарячий шлях: викликається
+// на кожен пропуск і перед видачею призів пазла.
+export async function countSkipsSince(tgId: string, sinceIso: string): Promise<number> {
+  const { count, error } = await db()
+    .from(T.skipped)
+    .select('case_id', { count: 'exact', head: true })
+    .eq('tg_id', tgId)
+    .gte('skipped_at', sinceIso);
+  if (error) throw error;
+  return count || 0;
+}
+
 export async function getSkippedForUser(tgId: string): Promise<string[]> {
   const { data, error } = await db().from(T.skipped).select('case_id').eq('tg_id', tgId);
   if (error) throw error;

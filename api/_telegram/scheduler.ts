@@ -95,6 +95,13 @@ const KYIV_MONTH_FMT = new Intl.DateTimeFormat('en-CA', {
   year: 'numeric',
   month: '2-digit',
 });
+// Година/хвилина в Києві — потрібні, щоб дізнатися зсув поясу на конкретну дату.
+const KYIV_TIME_FMT = new Intl.DateTimeFormat('en-GB', {
+  timeZone: cfg.dispatch.timezone || 'Europe/Kyiv',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
 const KYIV_UA_DATE_FMT = new Intl.DateTimeFormat('uk-UA', {
   timeZone: cfg.dispatch.timezone || 'Europe/Kyiv',
   day: '2-digit',
@@ -105,6 +112,19 @@ const KYIV_UA_DATE_FMT = new Intl.DateTimeFormat('uk-UA', {
 export function kyivDateString(date: Date = new Date()): string {
   // YYYY-MM-DD у Europe/Kyiv
   return KYIV_DATE_FMT.format(date);
+}
+
+// Момент початку поточної київської доби в UTC (ISO) — для запитів по
+// timestamptz-колонках, де немає окремої date_kyiv. Зсув беремо з самого Intl,
+// тож перехід на літній час враховується автоматично.
+export function kyivDayStartIso(date: Date = new Date()): string {
+  const day = kyivDateString(date);            // 'YYYY-MM-DD' у Києві
+  const utcMidnight = new Date(`${day}T00:00:00Z`);
+  const parts = KYIV_TIME_FMT.formatToParts(utcMidnight);
+  const hh = Number(parts.find(p => p.type === 'hour')?.value ?? '0');
+  const mm = Number(parts.find(p => p.type === 'minute')?.value ?? '0');
+  // О UTC-опівночі в Києві вже hh:mm — рівно на стільки київська доба почалася раніше.
+  return new Date(utcMidnight.getTime() - (hh * 60 + mm) * 60_000).toISOString();
 }
 
 // 'YYYY-MM' у Europe/Kyiv (ключ місяця для рейтингу).

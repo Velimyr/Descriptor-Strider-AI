@@ -13,8 +13,9 @@ import {
   getUser,
   patchUser,
   incMonthlyPoints,
+  countSkipsSince,
 } from './storage.js';
-import { kyivDateString, kyivMonthString } from './scheduler.js';
+import { kyivDateString, kyivMonthString, kyivDayStartIso } from './scheduler.js';
 import { sendMessage } from './tg-api.js';
 import {
   collectibleWords,
@@ -35,6 +36,40 @@ export {
 } from './puzzleWords.js';
 
 const T = telegramBotConfig.texts;
+
+// --------- Ліміт пропусків ---------
+// Хто сьогодні пропустив забагато справ, той не отримує призових балів пазла:
+// збирати слова й далі можна, але приз за фразу цього дня вже не дадуть.
+
+// Скільки пропусків у користувача від початку київської доби.
+export async function skipsToday(tgId: string): Promise<number> {
+  return countSkipsSince(tgId, kyivDayStartIso());
+}
+
+export async function isPuzzleBlockedBySkips(tgId: string): Promise<boolean> {
+  const limit = telegramBotConfig.puzzle.dailySkipLimit;
+  if (!(limit > 0)) return false;
+  try {
+    return (await skipsToday(tgId)) >= limit;
+  } catch (e) {
+    // Помилка читання не має карати користувача — вважаємо, що не заблоковано.
+    console.error('isPuzzleBlockedBySkips failed', e);
+    return false;
+  }
+}
+
+// Викликається одразу після запису пропуску. Рівно в мить досягнення ліміту
+// шлемо попередження — один раз за добу, а не на кожен наступний пропуск.
+export async function onCaseSkipped(chatId: number | string, tgId: string): Promise<void> {
+  const limit = telegramBotConfig.puzzle.dailySkipLimit;
+  if (!(limit > 0)) return;
+  try {
+    if ((await skipsToday(tgId)) !== limit) return;
+    await sendMessage(chatId, T.puzzleSkipLimitNotice);
+  } catch (e) {
+    console.error('onCaseSkipped notice failed', e);
+  }
+}
 
 // --------- Рушій гри (БД + нарахування + сповіщення) ---------
 // Усе — best-effort: помилки логуються, але НЕ ламають основний flow справи.
@@ -111,6 +146,13 @@ async function checkPuzzleCompletion(tgId: string, dateKyiv: string): Promise<vo
   const progress = await getPuzzleProgressForUser(dateKyiv, tgId);
   const confirmed = new Set(progress.filter(p => p.status === 'confirmed').map(p => p.word));
   if (!mustCollect.every(w => confirmed.has(w))) return;
+
+  // Забагато пропусків за сьогодні — фразу зібрано, але приз не нараховуємо.
+  // Попередження користувач уже отримав у мить досягнення ліміту.
+  if (await isPuzzleBlockedBySkips(tgId)) {
+    console.log('puzzle prize skipped (daily skip limit)', tgId, dateKyiv);
+    return;
+  }
 
   const award = await awardPuzzleWinner(dateKyiv, tgId);
   if (!award) {

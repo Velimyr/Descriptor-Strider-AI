@@ -1059,6 +1059,9 @@ async function handleMessage(msg: any) {
     if (session?.caseId) {
       try {
         await recordSkippedCase(tgId, session.caseId);
+        // Забагато пропусків за добу — попереджаємо про втрату призів пазла.
+        const { onCaseSkipped } = await import('./puzzle.js');
+        await onCaseSkipped(chatId, tgId);
       } catch (e) {
         console.error('recordSkippedCase failed', e);
       }
@@ -1620,6 +1623,8 @@ async function handleCallback(cb: any) {
     if (session.caseId) {
       try {
         await recordSkippedCase(tgId, session.caseId);
+        const { onCaseSkipped } = await import('./puzzle.js');
+        await onCaseSkipped(chatId, tgId);
       } catch (e) {
         console.error('recordSkippedCase failed', e);
       }
@@ -1641,7 +1646,11 @@ async function handleCallback(cb: any) {
   // ----- Collaborative mode preview buttons -----
   if (data === 'collab:cancel') {
     if (session.caseId) {
-      try { await recordSkippedCase(tgId, session.caseId); } catch (e) { console.error(e); }
+      try {
+        await recordSkippedCase(tgId, session.caseId);
+        const { onCaseSkipped } = await import('./puzzle.js');
+        await onCaseSkipped(chatId, tgId);
+      } catch (e) { console.error(e); }
       try { await unlockCase(session.caseId); } catch (e) { console.error(e); }
     }
     await deleteSession(tgId);
