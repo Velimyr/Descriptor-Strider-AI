@@ -1,4 +1,5 @@
 import express from 'express';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 import {
   appendCases,
@@ -12,6 +13,25 @@ import {
   getCaseSettingsByDescription,
   updateCaseSettingsByDescription,
 } from './storage.js';
+import { adminGuard } from './adminGuard.js';
+import { ADMIN_SCOPES } from '../../src/telegram-bot/adminScopes.js';
+import {
+  ADMIN_TTL_REMEMBER_SECONDS,
+  ADMIN_TTL_SECONDS,
+  issueAdminToken,
+} from '../_core/adminToken.js';
+import {
+  ENV_ADMIN_ID,
+  createAdmin,
+  deleteAdmin,
+  getAdminByLogin,
+  listAdmins,
+  normalizeLogin,
+  resetAdminPassword,
+  touchLastLogin,
+  updateAdmin,
+  verifyPassword,
+} from '../_core/admins.js';
 import { handleUpdate } from './bot.js';
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
 import { detectCaseBoxes } from './slicer.js';
@@ -335,44 +355,154 @@ router.get('/cron/karma-ingest', async (req, res) => {
   }
 });
 
-// ----------- Admin endpoints (захищені тим же CRON_SECRET; для веб-UI) -----------
+// ----------- Admin endpoints (сесійний токен зі скоупами; для веб-UI) -----------
+// Авторизація — один guard на все піддерево /admin (adminGuard.ts). Ніяких
+// перевірок у самих хендлерах: шлях, відсутній у таблиці ADMIN_ROUTES, отримує 403.
+router.use('/admin', adminGuard);
 
-function requireAdminSecret(req: express.Request, res: express.Response): boolean {
-  const expected = process.env[telegramBotConfig.cronSecretEnv];
-  const got = (req.query.secret as string) || req.header('x-admin-secret');
-  if (!expected) {
-    res.status(500).json({ error: 'Server missing CRON_SECRET' });
-    return false;
-  }
-  if (got !== expected) {
-    res.status(403).json({ error: 'forbidden' });
-    return false;
-  }
-  return true;
+// Порівняння рядків за сталий час (env-пароль; для акаунтів у БД те саме робить
+// verifyPassword). Хешуємо обидві сторони, щоб timingSafeEqual не падав на різній довжині.
+function safeEqual(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a, 'utf8').digest();
+  const hb = createHash('sha256').update(b, 'utf8').digest();
+  return timingSafeEqual(ha, hb);
 }
 
-// Публічний ендпоінт логіну: повертає секрет (= CRON_SECRET) у разі правильних логіну/паролю.
-router.post('/admin/login', (req, res) => {
-  const { login, password } = req.body || {};
-  const expectedLogin = process.env[telegramBotConfig.adminLoginEnv];
-  const expectedPassword = process.env[telegramBotConfig.adminPasswordEnv];
-  const cronSecret = process.env[telegramBotConfig.cronSecretEnv];
+// Публічний ендпоінт логіну: віддає підписаний токен сесії зі списком скоупів.
+// Два джерела акаунтів: аварійна env-пара (суперадмін, працює й з порожньою
+// таблицею bot_admins) і рядки bot_admins, створені з вкладки «Модератори».
+router.post('/admin/login', async (req, res) => {
+  const { login, password, remember } = req.body || {};
+  const ttl = remember ? ADMIN_TTL_REMEMBER_SECONDS : ADMIN_TTL_SECONDS;
+  const reject = () => res.status(401).json({ error: 'Невірний логін або пароль' });
 
-  if (!expectedLogin || !expectedPassword || !cronSecret) {
-    return res.status(500).json({
-      error: `Server not configured. Required env: ${telegramBotConfig.adminLoginEnv}, ${telegramBotConfig.adminPasswordEnv}, ${telegramBotConfig.cronSecretEnv}`,
+  if (!process.env.ADMIN_SESSION_SECRET) {
+    return res.status(500).json({ error: 'Server not configured. Required env: ADMIN_SESSION_SECRET' });
+  }
+  if (typeof login !== 'string' || typeof password !== 'string' || !login || !password) {
+    return reject();
+  }
+
+  const envLogin = process.env[telegramBotConfig.adminLoginEnv];
+  const envPassword = process.env[telegramBotConfig.adminPasswordEnv];
+  if (envLogin && envPassword && login === envLogin && safeEqual(password, envPassword)) {
+    return res.json({
+      ok: true,
+      token: issueAdminToken(ENV_ADMIN_ID, envLogin, 0, ttl),
+      login: envLogin,
+      displayName: envLogin,
+      isSuper: true,
+      scopes: [],
     });
   }
-  if (login !== expectedLogin || password !== expectedPassword) {
-    return res.status(401).json({ error: 'Невірний логін або пароль' });
+
+  try {
+    const admin = await getAdminByLogin(login);
+    // Однакова відповідь для невідомого логіна, хибного пароля й вимкненого
+    // акаунта — щоб не можна було перебором з'ясувати наявні логіни.
+    if (!admin || !admin.active || !verifyPassword(password, admin.passwordHash)) return reject();
+    await touchLastLogin(admin.id);
+    res.json({
+      ok: true,
+      token: issueAdminToken(admin.id, admin.login, admin.tokenEpoch, ttl),
+      login: admin.login,
+      displayName: admin.displayName,
+      isSuper: admin.isSuper,
+      scopes: admin.scopes,
+    });
+  } catch (e: any) {
+    // /admin/login — публічний, тож деталі збою (імена env, стан БД) назовні не віддаємо.
+    console.error('[admin/login] lookup failed', e?.message || e);
+    res.status(503).json({ error: 'Сервіс акаунтів тимчасово недоступний' });
   }
-  res.json({ ok: true, token: cronSecret });
+});
+
+// Хто я і що мені доступно. Фронт кличе на старті: підтверджує, що токен ще
+// живий, і підтягує актуальні скоупи (могли змінитися після видачі токена).
+router.get('/admin/me', (req, res) => {
+  const a = req.admin!;
+  res.json({
+    ok: true,
+    login: a.login,
+    displayName: a.displayName,
+    isSuper: a.isSuper,
+    scopes: a.scopes,
+    allScopes: ADMIN_SCOPES,
+  });
+});
+
+// ----------- Модератори (скоуп 'admins', фактично — тільки суперадмін) -----------
+
+router.get('/admin/admins', async (_req, res) => {
+  try {
+    res.json({ ok: true, admins: await listAdmins() });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// Пароль генерує сервер і повертає ОДИН раз — далі в БД тільки scrypt-хеш.
+router.post('/admin/admins', async (req, res) => {
+  const { login, displayName, scopes, isSuper } = req.body || {};
+  const normalized = normalizeLogin(String(login || ''));
+  if (!/^[a-z0-9._-]{3,32}$/.test(normalized)) {
+    return res.status(400).json({ error: 'Логін: 3–32 символи з a-z, 0-9, крапка, дефіс, підкреслення' });
+  }
+  try {
+    const { admin, password } = await createAdmin({
+      login: normalized,
+      displayName,
+      scopes,
+      isSuper: !!isSuper,
+      createdBy: req.admin!.login,
+    });
+    res.json({ ok: true, admin, password });
+  } catch (e: any) {
+    if (e?.code === '23505') return res.status(409).json({ error: 'Такий логін уже існує' });
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.patch('/admin/admins/:id', async (req, res) => {
+  const id = String(req.params.id);
+  const { displayName, scopes, isSuper, active } = req.body || {};
+  // Захист від самоблокування: єдиний суперадмін не має змоги забрати права в себе.
+  if (id === req.admin!.id && (isSuper === false || active === false)) {
+    return res.status(400).json({ error: 'Не можна зняти права або вимкнути власний акаунт' });
+  }
+  try {
+    const admin = await updateAdmin(id, { displayName, scopes, isSuper, active });
+    if (!admin) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true, admin });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.post('/admin/admins/:id/reset-password', async (req, res) => {
+  try {
+    const password = await resetAdminPassword(String(req.params.id));
+    if (!password) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true, password });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+router.delete('/admin/admins/:id', async (req, res) => {
+  const id = String(req.params.id);
+  if (id === req.admin!.id) return res.status(400).json({ error: 'Не можна видалити власний акаунт' });
+  try {
+    await deleteAdmin(id);
+    res.json({ ok: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
 });
 
 // Діагностика: викликає Telegram getChat — якщо бот реально має доступ, повертає
 // інфо чату (title, type, id). Якщо ні — error: 'chat not found' або 'forbidden'.
 router.get('/admin/check-chat', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const chatId = String(req.query.chatId || '').trim();
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
   try {
@@ -387,7 +517,6 @@ router.get('/admin/check-chat', async (req, res) => {
 // Діагностика: останні група-чати, з яких бот отримував повідомлення (через webhook).
 // Юзер пише будь-що в групу → бот записує chat_id у bot_meta. Потім тут видно.
 router.get('/admin/recent-groups', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { getMeta } = await import('./storage.js');
     const raw = await getMeta('recent_groups');
@@ -402,7 +531,6 @@ router.get('/admin/recent-groups', async (req, res) => {
 // Повертає per-chat результати — видно як саме Telegram повертає помилку.
 // kind=morning|evening
 router.get('/admin/test-announce', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const kind = String(req.query.kind || 'morning');
   try {
     const { announceMorningTop, announceEveningPuzzle } = await import('./groupAnnounce.js');
@@ -423,7 +551,6 @@ router.get('/admin/test-announce', async (req, res) => {
 
 // Тестовий ендпоінт: пише в чат "ping" — щоб переконатися що бот має токен і канал ОК.
 router.post('/admin/ping-chat', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { chatId, text } = req.body || {};
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
   try {
@@ -456,6 +583,7 @@ router.get('/admin/health', async (req, res) => {
       cronSecret: !!process.env[telegramBotConfig.cronSecretEnv],
       adminLogin: !!process.env[telegramBotConfig.adminLoginEnv],
       adminPassword: !!process.env[telegramBotConfig.adminPasswordEnv],
+      adminSessionSecret: !!process.env.ADMIN_SESSION_SECRET,
       supabaseUrl: !!process.env[telegramBotConfig.supabase.urlEnv],
       supabaseServiceKey: !!process.env[telegramBotConfig.supabase.serviceKeyEnv],
     },
@@ -464,7 +592,6 @@ router.get('/admin/health', async (req, res) => {
 
 // Перевірити, що Supabase налаштовано: схема запущена, ключ правильний.
 router.get('/admin/check-db', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { db, T } = await import('./storage.js');
     const tables = [T.users, T.cases, T.sessions, T.submissions, T.meta];
@@ -481,7 +608,6 @@ router.get('/admin/check-db', async (req, res) => {
 });
 
 router.post('/admin/save-questions', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { questions } = req.body || {};
   if (!Array.isArray(questions)) return res.status(400).json({ error: 'questions array required' });
   await setMeta('questions', JSON.stringify(questions));
@@ -493,7 +619,6 @@ router.post('/admin/save-questions', async (req, res) => {
 });
 
 router.get('/admin/questions', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const raw = await getMeta('questions');
   res.json({ questions: raw ? JSON.parse(raw) : [] });
 });
@@ -502,13 +627,11 @@ router.get('/admin/questions', async (req, res) => {
 // щоб через адмінку не можна було перезаписати чутливі ключі.
 const META_ALLOWED_KEYS = new Set(['min_confirmations', 'collab_lock_minutes']);
 router.get('/admin/meta', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const out: Record<string, string> = {};
   for (const k of META_ALLOWED_KEYS) out[k] = (await getMeta(k)) || '';
   res.json({ meta: out });
 });
 router.post('/admin/meta', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { key, value } = req.body || {};
   if (!key || !META_ALLOWED_KEYS.has(key)) {
     return res.status(400).json({ error: 'invalid key' });
@@ -518,7 +641,6 @@ router.post('/admin/meta', async (req, res) => {
 });
 
 router.post('/admin/set-webhook', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { url } = req.body || {};
   if (!url) return res.status(400).json({ error: 'url required' });
   const secret = process.env[telegramBotConfig.tg.webhookSecretEnv];
@@ -533,7 +655,6 @@ router.post('/admin/set-webhook', async (req, res) => {
 });
 
 router.get('/admin/webhook-info', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const info = await getWebhookInfo();
     res.json({ ok: true, info });
@@ -543,14 +664,12 @@ router.get('/admin/webhook-info', async (req, res) => {
 });
 
 router.post('/admin/delete-webhook', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   await deleteWebhook();
   res.json({ ok: true });
 });
 
 // Завантаження картинки в канал. Приймає base64 PNG/JPEG.
 router.post('/admin/upload-case', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const {
     imageBase64, sourcePdf, page, bbox, archive, fund, opys, mode,
     targetSubmissions, pointsRecognition, pointsVerification, difficulty,
@@ -611,7 +730,6 @@ router.post('/admin/upload-case', async (req, res) => {
 // Завантаження розпізнаної справи на ВЕБ-перевірку (вкладка «Веб» у Підготовці справ).
 // Картинка → група (як для бота), текст + питання + ai-відповіді → verif_cases.
 router.post('/admin/upload-verif-case', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const {
     imageBase64, sourcePdf, page, bbox, archive, fund, opys, questions, aiAnswers,
     targetSubmissions, pointsVerification,
@@ -652,7 +770,6 @@ router.post('/admin/upload-verif-case', async (req, res) => {
 // Per-опис оверрайди порогу підтверджень і базових балів — спільні для бота й
 // веб-перевірки (одна трійка archive/fund/opys). null = глобальний дефолт.
 router.get('/admin/description-settings', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { archive, fund, opys } = req.query as Record<string, string>;
   if (!archive || !fund || !opys) return res.status(400).json({ error: 'archive/fund/opys required' });
   try {
@@ -682,7 +799,6 @@ router.get('/admin/description-settings', async (req, res) => {
 });
 
 router.post('/admin/description-settings', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { archive, fund, opys, targetSubmissions, pointsRecognition, pointsVerification, difficulty } = req.body || {};
   if (!archive || !fund || !opys) return res.status(400).json({ error: 'archive/fund/opys required' });
   try {
@@ -712,7 +828,6 @@ router.post('/admin/description-settings', async (req, res) => {
 // web-частина — теж агрегат. Параметр ?source=tg|web|all (за замовч. all) дозволяє
 // зекономити запит, якщо адмін свідомо працює лише з одним джерелом.
 router.get('/admin/descriptions', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const sourceRaw = String(req.query.source || 'all');
   const source = (sourceRaw === 'tg' || sourceRaw === 'web') ? sourceRaw : 'all';
   try {
@@ -757,7 +872,6 @@ router.get('/admin/descriptions', async (req, res) => {
 });
 
 router.get('/admin/verif-descriptions', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { getVerifDescriptions } = await import('../_core/verifCases.js');
     res.json({ descriptions: await getVerifDescriptions() });
@@ -767,7 +881,6 @@ router.get('/admin/verif-descriptions', async (req, res) => {
 });
 
 router.get('/admin/verif-submissions-by-description', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const archive = String(req.query.archive || '');
   const fund = String(req.query.fund || '');
   const opys = String(req.query.opys || '');
@@ -783,7 +896,6 @@ router.get('/admin/verif-submissions-by-description', async (req, res) => {
 
 // Авто-нарізка: фронт шле картинку сторінки → ми просимо Gemini bbox-и.
 router.post('/admin/detect-bboxes', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { imageBase64, mime, apiKey, geminiKey } = req.body || {};
   // Підтримуємо обидва імені поля для backward-compat.
   const key = apiKey || geminiKey;
@@ -829,7 +941,6 @@ function collabCaseToSubmission(
 }
 
 router.get('/admin/results', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const limit = Math.min(parseInt((req.query.limit as string) || '500', 10) || 500, 5000);
   try {
     const {
@@ -888,7 +999,6 @@ router.get('/admin/results', async (req, res) => {
 });
 
 router.get('/admin/submissions-by-description', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const archive = String(req.query.archive || '');
   const fund = String(req.query.fund || '');
   const opys = String(req.query.opys || '');
@@ -965,7 +1075,6 @@ function levenshtein(a: string, b: string): number {
 }
 
 router.get('/admin/integrity', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const threshold = Math.max(0, parseInt((req.query.threshold as string) || '5', 10) || 5);
   const includeResolved = String(req.query.includeResolved || '') === '1';
   // НАЙВАЖЧИЙ ендпоінт: тягне ВСЕ — submissions, confirmations, cases, reviews
@@ -1173,7 +1282,6 @@ router.get('/admin/integrity', async (req, res) => {
 // Зняти бали з користувача за недоброчесний ввід + повідомити його.
 // Формулювання м'яке, без слова «штраф» — це навчальний меседж, не покарання.
 router.post('/admin/penalize', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { tgId, points, caseId, archive, fund, opys, fields, pairTgIdA, pairTgIdB } = req.body || {};
   if (!tgId || !Number.isFinite(points) || points <= 0) {
     return res.status(400).json({ error: 'tgId і додатній points обовʼязкові' });
@@ -1230,7 +1338,6 @@ router.post('/admin/penalize', async (req, res) => {
 
 // Позначити пару як «не потребує штрафу» — більше не зʼявлятиметься у списку.
 router.post('/admin/integrity/dismiss', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { caseId, pairTgIdA, pairTgIdB } = req.body || {};
   if (!caseId || !pairTgIdA || !pairTgIdB) {
     return res.status(400).json({ error: 'caseId, pairTgIdA, pairTgIdB обовʼязкові' });
@@ -1246,7 +1353,6 @@ router.post('/admin/integrity/dismiss', async (req, res) => {
 
 // Відкотити рішення по парі (повертає її в список).
 router.post('/admin/integrity/reopen', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { caseId, pairTgIdA, pairTgIdB } = req.body || {};
   if (!caseId || !pairTgIdA || !pairTgIdB) {
     return res.status(400).json({ error: 'caseId, pairTgIdA, pairTgIdB обовʼязкові' });
@@ -1271,7 +1377,6 @@ router.post('/admin/integrity/reopen', async (req, res) => {
 // виконати жодну дію — бот і веб повертають texts.bannedNotice. Бан за tg_id;
 // для web-юзера (tg_id="web:…") це водночас банить його унікальний нік.
 router.post('/admin/integrity/ban', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { tgId, reason, caseId, pairTgIdA, pairTgIdB } = req.body || {};
   if (!tgId) return res.status(400).json({ error: 'tgId обовʼязковий' });
   try {
@@ -1279,7 +1384,7 @@ router.post('/admin/integrity/ban', async (req, res) => {
     const { isWebUserId } = await import('../_core/webUsers.js');
     const user = await getUser(String(tgId));
     if (!user) return res.status(404).json({ error: 'Користувача не знайдено' });
-    await setUserBanned(String(tgId), true, String(reason || ''), 'admin');
+    await setUserBanned(String(tgId), true, String(reason || ''), req.admin!.login);
 
     // Якщо передано пару — прибираємо її зі списку «Перевірка доброчесності».
     if (caseId && pairTgIdA && pairTgIdB) {
@@ -1307,7 +1412,6 @@ router.post('/admin/integrity/ban', async (req, res) => {
 
 // Список заблокованих користувачів (для адмінки).
 router.get('/admin/banned-users', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { getBannedUsers } = await import('./storage.js');
     res.json({ ok: true, users: await getBannedUsers() });
@@ -1318,7 +1422,6 @@ router.get('/admin/banned-users', async (req, res) => {
 
 // Розблокувати користувача (відкат бана).
 router.post('/admin/integrity/unban', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { tgId } = req.body || {};
   if (!tgId) return res.status(400).json({ error: 'tgId обовʼязковий' });
   try {
@@ -1334,7 +1437,6 @@ router.post('/admin/integrity/unban', async (req, res) => {
 // Адмін зазначає кількість і причину; користувач отримує повідомлення в Telegram.
 // Бали йдуть і в lifetime-total, і в місячний рейтинг (як звичайні), атомарними RPC.
 router.post('/admin/grant-bonus', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { tgId, points, reason } = req.body || {};
   const pts = Math.round(Number(points) * 100) / 100;
   if (!tgId || !Number.isFinite(pts) || pts <= 0) {
@@ -1389,14 +1491,12 @@ function normBound(v: any): string | null {
 
 // Список доступних кнопок (для UI). Береться зі спільного каталогу.
 router.get('/admin/broadcast/buttons', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { BROADCAST_BUTTONS } = await import('../../src/telegram-bot/config.js');
   res.json({ buttons: BROADCAST_BUTTONS.map(b => ({ action: b.action, label: b.label })) });
 });
 
 // Прев'ю кількості отримувачів за критеріями (RPC, egress = одне число).
 router.post('/admin/broadcast/preview', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { from, to, maxCases } = req.body || {};
   const fromIso = normBound(from);
   const toIso = normBound(to);
@@ -1416,7 +1516,6 @@ router.post('/admin/broadcast/preview', async (req, res) => {
 // Створення кампанії: формуємо вибірку (RPC), наповнюємо recipients і одразу
 // домелюємо перший шматок у межах HTTP-бюджету (решту добʼє cron-tick).
 router.post('/admin/broadcast', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { title, body, buttons, from, to, maxCases } = req.body || {};
   const fromIso = normBound(from);
   const toIso = normBound(to);
@@ -1441,7 +1540,7 @@ router.post('/admin/broadcast', async (req, res) => {
       critFrom: fromIso,
       critTo: toIso,
       critMax: max,
-      createdBy: 'admin',
+      createdBy: req.admin!.login,
       recipients,
     });
 
@@ -1459,7 +1558,6 @@ router.post('/admin/broadcast', async (req, res) => {
 });
 
 router.get('/admin/broadcasts', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { listBroadcasts } = await import('./storage.js');
     res.json({ broadcasts: await listBroadcasts(50) });
@@ -1469,7 +1567,6 @@ router.get('/admin/broadcasts', async (req, res) => {
 });
 
 router.get('/admin/broadcast/:id', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
   try {
@@ -1484,7 +1581,6 @@ router.get('/admin/broadcast/:id', async (req, res) => {
 
 // Ручне «продовжити надсилання» — щоб не чекати cron-tick на хвості великої розсилки.
 router.post('/admin/broadcast/:id/drain', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
   try {
@@ -1498,7 +1594,6 @@ router.post('/admin/broadcast/:id/drain', async (req, res) => {
 });
 
 router.post('/admin/broadcast/:id/cancel', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
   try {
@@ -1515,7 +1610,6 @@ router.post('/admin/broadcast/:id/cancel', async (req, res) => {
 
 // ----- Профіль юзера: повна інформація (вкл. приватні поля), для адмін-UI -----
 router.get('/admin/user-profile/:tgId', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { getUser } = await import('./storage.js');
     const u = await getUser(req.params.tgId);
@@ -1550,7 +1644,6 @@ router.get('/admin/user-profile/:tgId', async (req, res) => {
 
 // Проксі аватара юзера. Авторизація — той самий cron-secret (як решта /admin/*).
 router.get('/admin/user-photo/:tgId', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { getUser } = await import('./storage.js');
     const u = await getUser(req.params.tgId);
@@ -1588,7 +1681,6 @@ router.get('/admin/user-photo/:tgId', async (req, res) => {
 });
 
 router.get('/admin/overview', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   // Кеш 5 хв. Раніше тут тягнули getAllUsers + getAllCases (повний скан з JSONB) —
   // це був головний винуватець egress адмінки. Тепер: компактний select юзерів
   // (5 полів) + getDescriptionProgressViaRpc (агрегати, без рядків кейсів).
@@ -1637,7 +1729,6 @@ router.get('/admin/overview', async (req, res) => {
 });
 
 router.get('/admin/today-stats', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   // Кеш 2 хв — частий refresh адмінкою + 2 повних скани таблиць activity.
   if (req.query.nocache !== '1') {
     const cached = cacheGet('today-stats');
@@ -1653,7 +1744,6 @@ router.get('/admin/today-stats', async (req, res) => {
 // Місячний рейтинг: список доступних місяців + лідерборд обраного місяця.
 // month='' (або не передано) → поточний/найновіший. Бали спільні (TG + web).
 router.get('/admin/monthly', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { getMonthlyMonths, getMonthlyLeaderboard } = await import('./storage.js');
     const months = await getMonthlyMonths();
@@ -1672,7 +1762,6 @@ router.get('/admin/monthly', async (req, res) => {
 // 4) Залишилось = totalDescriptions − fullyDoneNow − baseline.
 // 5) Прогнозована дата = сьогодні + ceil(залишилось / швидкість).
 router.get('/admin/fund-eta', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const windowDays = Math.max(
     1,
     Math.min(60, parseInt(String(req.query.windowDays || '14'), 10) || 14)
@@ -1684,7 +1773,6 @@ router.get('/admin/fund-eta', async (req, res) => {
 });
 
 router.get('/admin/daily-activity', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const tz = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
   const days = Math.max(1, Math.min(365, parseInt(String(req.query.days || '30'), 10) || 30));
   const sourceRaw = String(req.query.source || 'all');
@@ -1702,7 +1790,6 @@ router.get('/admin/daily-activity', async (req, res) => {
 });
 
 router.post('/admin/recompute-case', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { caseId } = req.body || {};
   const count = await recomputeCaseSubmissionCount(caseId);
   res.json({ ok: true, count });
@@ -1750,7 +1837,6 @@ async function computeGivenForSentence(
 
 // Речення дня (read).
 router.get('/admin/puzzle', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const date = String(req.query.date || '') || kyivDateString();
   try {
     const { getPuzzle } = await import('./storage.js');
@@ -1763,7 +1849,6 @@ router.get('/admin/puzzle', async (req, res) => {
 
 // Зберегти речення дня.
 router.post('/admin/puzzle', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { date, sentence } = req.body || {};
   const d = String(date || '') || kyivDateString();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
@@ -1784,7 +1869,6 @@ router.post('/admin/puzzle', async (req, res) => {
 // слово речення. Це орієнтир (слова реально трапляються в архіві), НЕ гарантія,
 // що слово збереться саме сьогодні.
 router.get('/admin/puzzle/word-availability', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const sentence = String(req.query.sentence || '');
   try {
     const { getRecognizedCollabAnswers } = await import('./storage.js');
@@ -1822,7 +1906,6 @@ router.get('/admin/puzzle/word-availability', async (req, res) => {
 // Зведення дня: фраза + учасники (нік, зібрано/підтверджено) відсортовані за
 // підтвердженими, потім зібраними + переможці.
 router.get('/admin/puzzle/progress', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const date = String(req.query.date || '') || kyivDateString();
   try {
     const {
@@ -1892,7 +1975,6 @@ router.get('/admin/puzzle/progress', async (req, res) => {
 
 // Усі пазли (минулі й майбутні), за зростанням дати.
 router.get('/admin/puzzles', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { getAllPuzzles } = await import('./storage.js');
     const puzzles = await getAllPuzzles();
@@ -1915,7 +1997,6 @@ function addDaysIso(dateStr: string, n: number): string {
 }
 
 router.post('/admin/puzzle/bulk', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const body = req.body || {};
   const dryRun = body.dryRun === true;
   const phrases = Array.isArray(body.phrases)
@@ -1957,7 +2038,6 @@ router.post('/admin/puzzle/bulk', async (req, res) => {
 // Реєстрація партнерських сайтів, які встановлюють віджет blukach. Ключ
 // показується ОДИН РАЗ на створення — далі тільки sha256 у БД.
 router.get('/admin/partners', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { listPartners } = await import('../_core/partners.js');
     res.json({ partners: await listPartners() });
@@ -1968,7 +2048,6 @@ router.get('/admin/partners', async (req, res) => {
 
 // Статистика партнерів за період [from, to). За замовчуванням — останні 30 днів.
 router.get('/admin/partners/stats', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const now = new Date();
   const defaultFrom = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const from = String(req.query.from || defaultFrom.toISOString());
@@ -1982,7 +2061,6 @@ router.get('/admin/partners/stats', async (req, res) => {
 });
 
 router.post('/admin/partners', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { partnerId, name, nicknamePrefix, allowedOrigins, customization } = req.body || {};
   if (!partnerId || !name || !nicknamePrefix) {
     return res.status(400).json({ error: 'partnerId, name, nicknamePrefix required' });
@@ -2001,7 +2079,6 @@ router.post('/admin/partners', async (req, res) => {
 });
 
 router.patch('/admin/partners/:id', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { name, nicknamePrefix, allowedOrigins, active, customization } = req.body || {};
   try {
     const { updatePartner } = await import('../_core/partners.js');
@@ -2019,7 +2096,6 @@ router.patch('/admin/partners/:id', async (req, res) => {
 });
 
 router.delete('/admin/partners/:id', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { deletePartner } = await import('../_core/partners.js');
     await deletePartner(req.params.id);
@@ -2036,7 +2112,6 @@ router.delete('/admin/partners/:id', async (req, res) => {
 // Живий стан для сторінки ведучого. `since` — курсор по id відповідей, щоб
 // щосекундний polling добирав лише нові рядки (а не всю стрічку).
 router.get('/admin/quiz/live', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const since = Number(req.query.since || 0) || 0;
   try {
     const { getQuizState, listQuizAnswers, getQuizLeaderboard } = await import('./storage.js');
@@ -2073,7 +2148,6 @@ router.get('/admin/quiz/live', async (req, res) => {
 
 // Перелік питань (для попереднього перегляду сценарію стріму).
 router.get('/admin/quiz/questions', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const { quizQuestions } = await import('./quiz.js');
   res.json({
     questions: quizQuestions().map((q, i) => ({
@@ -2085,7 +2159,6 @@ router.get('/admin/quiz/questions', async (req, res) => {
 });
 
 router.post('/admin/quiz/start', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { startQuiz, publicState } = await import('./quiz.js');
     res.json({ ok: true, state: publicState(await startQuiz()) });
@@ -2095,7 +2168,6 @@ router.post('/admin/quiz/start', async (req, res) => {
 });
 
 router.post('/admin/quiz/next', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { nextQuestion, publicState } = await import('./quiz.js');
     res.json({ ok: true, state: publicState(await nextQuestion()) });
@@ -2106,7 +2178,6 @@ router.post('/admin/quiz/next', async (req, res) => {
 
 // Перезапустити таймер поточного питання (дати учасникам ще часу).
 router.post('/admin/quiz/restart-timer', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { restartTimer, publicState } = await import('./quiz.js');
     res.json({ ok: true, state: publicState(await restartTimer()) });
@@ -2116,7 +2187,6 @@ router.post('/admin/quiz/restart-timer', async (req, res) => {
 });
 
 router.post('/admin/quiz/stop', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { stopQuiz, publicState } = await import('./quiz.js');
     res.json({ ok: true, state: publicState(await stopQuiz()) });
@@ -2127,7 +2197,6 @@ router.post('/admin/quiz/stop', async (req, res) => {
 
 // Повне скидання: бали + усі відповіді + стан (вікторина зупиняється).
 router.post('/admin/quiz/reset', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { resetQuiz } = await import('./storage.js');
     await resetQuiz();
@@ -2141,7 +2210,6 @@ router.post('/admin/quiz/reset', async (req, res) => {
 // Друга вкладка сторінки /quiz. Бали спільні з вікториною (bot_quiz_scores).
 
 router.get('/admin/standup/live', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { getStandupState, listStandupSignups, countStandupVotes, listStandupRounds, getQuizLeaderboard } =
       await import('./storage.js');
@@ -2178,7 +2246,6 @@ router.get('/admin/standup/live', async (req, res) => {
 });
 
 router.post('/admin/standup/start', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { startStandup, publicState } = await import('./standup.js');
     res.json({ ok: true, state: publicState(await startStandup()) });
@@ -2189,7 +2256,6 @@ router.post('/admin/standup/start', async (req, res) => {
 
 // Викликати учасника на сцену (клік по картці в черзі).
 router.post('/admin/standup/call', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   const tgId = String((req.body || {}).tg_id || '').trim();
   if (!tgId) return res.status(400).json({ error: 'tg_id required' });
   try {
@@ -2202,7 +2268,6 @@ router.post('/admin/standup/call', async (req, res) => {
 
 // Запустити хвилинний лічильник голосування за поточний виступ.
 router.post('/admin/standup/vote-timer', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { startVoteTimer, publicState } = await import('./standup.js');
     res.json({ ok: true, state: publicState(await startVoteTimer()) });
@@ -2213,7 +2278,6 @@ router.post('/admin/standup/vote-timer', async (req, res) => {
 
 // Повернутись до фази обдумування (перезапустити хвилину на жарт).
 router.post('/admin/standup/restart-thinking', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { restartThinking, publicState } = await import('./standup.js');
     res.json({ ok: true, state: publicState(await restartThinking()) });
@@ -2224,7 +2288,6 @@ router.post('/admin/standup/restart-thinking', async (req, res) => {
 
 // Наступна тема: закриває раунд (нарахування переможцям) і йде далі.
 router.post('/admin/standup/next', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { nextRound, publicState } = await import('./standup.js');
     const { state, winners } = await nextRound();
@@ -2235,7 +2298,6 @@ router.post('/admin/standup/next', async (req, res) => {
 });
 
 router.post('/admin/standup/stop', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { stopStandup, publicState } = await import('./standup.js');
     const { state, winners } = await stopStandup();
@@ -2248,7 +2310,6 @@ router.post('/admin/standup/stop', async (req, res) => {
 // Скидання стендапу: черги, лайки, підсумки раундів. Бали не чіпає — вони
 // спільні з вікториною (для них окрема кнопка на вкладці «Вікторина»).
 router.post('/admin/standup/reset', async (req, res) => {
-  if (!requireAdminSecret(req, res)) return;
   try {
     const { resetStandup } = await import('./storage.js');
     await resetStandup();

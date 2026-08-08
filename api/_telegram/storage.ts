@@ -35,6 +35,7 @@ export const T = {
   standupRounds:     `${PREFIX}standup_rounds`,
   quizAnswers:       `${PREFIX}quiz_answers`,
   quizScores:        `${PREFIX}quiz_scores`,
+  admins:            `${PREFIX}admins`,
 };
 const RPC_INC_DAILY = `${PREFIX}inc_daily`;
 const RPC_DESCRIPTION_PROGRESS = `${PREFIX}description_progress`;

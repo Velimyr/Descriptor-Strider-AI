@@ -4,7 +4,7 @@
 import React, { useEffect, useState } from 'react';
 import { LogOut } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { clearAdminSecret, getAdminSecret } from '../../services/telegramApi';
+import { AdminAuthProvider, useAdminAuth } from '../TelegramAdmin/adminAuth';
 import { LoginGate } from './shared';
 import { QuizTab } from './QuizTab';
 import { StandupTab } from './StandupTab';
@@ -13,7 +13,22 @@ type Tab = 'quiz' | 'standup';
 const TAB_KEY = 'quiz_page_tab';
 
 export function QuizPage() {
-  const [authed, setAuthed] = useState(() => !!getAdminSecret());
+  return (
+    <AdminAuthProvider
+      renderLogin={onSuccess => <LoginGate onDone={onSuccess} />}
+      renderLoading={() => (
+        <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-400">
+          Перевіряю доступ…
+        </div>
+      )}
+    >
+      <QuizShell />
+    </AdminAuthProvider>
+  );
+}
+
+function QuizShell() {
+  const { can, logout } = useAdminAuth();
   const [tab, setTab] = useState<Tab>(() =>
     (typeof window !== 'undefined' && localStorage.getItem(TAB_KEY)) === 'standup' ? 'standup' : 'quiz'
   );
@@ -22,7 +37,16 @@ export function QuizPage() {
     localStorage.setItem(TAB_KEY, tab);
   }, [tab]);
 
-  if (!authed) return <LoginGate onDone={() => setAuthed(true)} />;
+  if (!can('quiz')) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-slate-950 text-slate-300">
+        <div className="text-sm">У вашого акаунта немає доступу до сторінки шоу.</div>
+        <button onClick={logout} className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">
+          Вийти
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -41,10 +65,7 @@ export function QuizPage() {
         ))}
         <div className="flex-1" />
         <button
-          onClick={() => {
-            clearAdminSecret();
-            setAuthed(false);
-          }}
+          onClick={logout}
           title="Вийти"
           className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400"
         >

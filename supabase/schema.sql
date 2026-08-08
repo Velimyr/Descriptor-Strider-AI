@@ -1310,3 +1310,34 @@ begin
     from jsonb_to_recordset(v_winners) as w(tg_id text, display_name text, likes int);
 end $$;
 revoke all on function bot_standup_award_round(text, int, int) from public, anon, authenticated;
+
+-- ============================================================================
+-- МОДЕРАТОРИ АДМІНКИ (bot_admins)
+-- ============================================================================
+-- Раніше адмінка мала один спільний акаунт з env (TELEGRAM_ADMIN_LOGIN/PASSWORD),
+-- і в обмін на нього видавався TELEGRAM_CRON_SECRET. Тепер: окремі акаунти в БД
+-- з набором скоупів (= вкладок адмінки), сесія — підписаний HMAC-токен
+-- (ADMIN_SESSION_SECRET), а CRON_SECRET лишається тільки для /cron/*.
+--
+-- env-пара TELEGRAM_ADMIN_LOGIN/PASSWORD лишається як аварійний суперадмін-вхід
+-- (працює навіть коли ця таблиця порожня).
+create table if not exists bot_admins (
+  id            uuid        primary key default gen_random_uuid(),
+  login         text        not null unique,
+  -- scrypt: "<salt_hex>:<hash_hex>". Plaintext ніде не зберігається.
+  password_hash text        not null,
+  display_name  text        not null default '',
+  -- Ключі вкладок адмінки (див. src/telegram-bot/adminScopes.ts).
+  scopes        text[]      not null default '{}',
+  -- Суперадмін бачить усе + вкладку «Модератори». Скоупи для нього ігноруються.
+  is_super      boolean     not null default false,
+  active        boolean     not null default true,
+  -- Інкремент = миттєве відкликання всіх виданих токенів цього адміна.
+  -- Токен несе epoch на момент видачі; guard звіряє з поточним значенням.
+  token_epoch   int         not null default 0,
+  created_at    timestamptz not null default now(),
+  created_by    text,
+  last_login_at timestamptz
+);
+
+alter table bot_admins enable row level security;

@@ -4,9 +4,9 @@ import React, { useEffect, useState } from 'react';
 import { Clock, Trophy } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { adminLogin } from '../../services/telegramApi';
-import type { QuizScore } from '../../services/telegramApi';
+import type { AdminProfile, QuizScore } from '../../services/telegramApi';
 
-export const LoginGate: React.FC<{ onDone: () => void }> = ({ onDone }) => {
+export const LoginGate: React.FC<{ onDone: (profile: AdminProfile) => void }> = ({ onDone }) => {
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
@@ -17,8 +17,7 @@ export const LoginGate: React.FC<{ onDone: () => void }> = ({ onDone }) => {
     setBusy(true);
     setErr('');
     try {
-      await adminLogin(login, password, true);
-      onDone();
+      onDone(await adminLogin(login, password, true));
     } catch (e: any) {
       setErr(e?.message || 'Помилка входу');
     } finally {

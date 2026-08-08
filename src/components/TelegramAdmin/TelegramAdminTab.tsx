@@ -2,7 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X, RefreshCw, Save, UploadCloud, Wand2, Trash2, Plus, AlertTriangle } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import { TableColumn } from '../../types';
-import { tgApi, getAdminSecret, clearAdminSecret, adminLogin } from '../../services/telegramApi';
+import { tgApi, adminLogin, AdminProfile } from '../../services/telegramApi';
+import { ADMIN_SCOPE_LABELS, AdminScope } from '../../telegram-bot/adminScopes';
+import { AdminAuthProvider, useAdminAuth } from './adminAuth';
+import { AdminsView } from './AdminsView';
 import { createDefaultColumns, createColumn, COLUMN_ROLE_LABELS, COLUMN_ROLE_OPTIONS, inferColumnRole } from '../../lib/tableColumns';
 import { detectViaGemini } from '../../lib/sliceDetection';
 import { VerifUploadView } from '../CasesPreparation/VerifUploadView';
@@ -15,20 +18,47 @@ interface Props {
   initialQuestions?: TableColumn[]; // зазвичай tableStructure активного проєкту
 }
 
-type TabKey = 'setup' | 'questions' | 'cases' | 'results' | 'process' | 'overview' | 'integrity' | 'chart' | 'partners' | 'puzzle' | 'broadcast';
+// Вкладка = скоуп. Порядок тут — це порядок у навігації; модератор бачить лише
+// ті рядки, на які має право (суперадмін — усі).
+type TabKey = Exclude<AdminScope, 'quiz'>;
 
-export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => {
-  const [tab, setTab] = useState<TabKey>('setup');
-  const [authed, setAuthed] = useState<boolean>(!!getAdminSecret());
+const TABS: TabKey[] = [
+  'setup',
+  'questions',
+  'cases',
+  'results',
+  'process',
+  'overview',
+  'chart',
+  'integrity',
+  'partners',
+  'puzzle',
+  'broadcast',
+  'admins',
+];
 
-  if (!authed) {
-    return <LoginGate onSuccess={() => setAuthed(true)} onClose={onClose} />;
-  }
+export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => (
+  <AdminAuthProvider
+    renderLogin={onSuccess => <LoginGate onSuccess={onSuccess} onClose={onClose} />}
+    renderLoading={() => (
+      <div className="fixed inset-0 z-50 bg-white flex items-center justify-center text-slate-500 text-sm">
+        Перевіряю доступ…
+      </div>
+    )}
+  >
+    <AdminShell onClose={onClose} geminiKey={geminiKey} initialQuestions={initialQuestions} />
+  </AdminAuthProvider>
+);
 
-  const logout = () => {
-    clearAdminSecret();
-    setAuthed(false);
-  };
+const AdminShell: React.FC<Props> = ({ onClose, geminiKey, initialQuestions }) => {
+  const { profile, can, logout } = useAdminAuth();
+  const visibleTabs = useMemo(() => TABS.filter(can), [can]);
+  const [tab, setTab] = useState<TabKey | null>(() => visibleTabs[0] ?? null);
+
+  // Якщо активна вкладка зникла (права звузили в іншій вкладці/сесії) — падаємо на першу доступну.
+  useEffect(() => {
+    if (!tab || !visibleTabs.includes(tab)) setTab(visibleTabs[0] ?? null);
+  }, [visibleTabs, tab]);
 
   return (
     <div className="fixed inset-0 z-50 bg-white flex flex-col">
@@ -36,7 +66,11 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         <div className="flex items-center gap-2">
           <h2 className="font-bold text-lg">Telegram-бот — адмінка</h2>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-slate-500">
+            {profile.displayName || profile.login}
+            {profile.isSuper && <span className="ml-1 text-amber-600" title="Суперадмін">★</span>}
+          </span>
           <button onClick={logout} className="px-3 py-1 text-sm text-slate-600 hover:bg-slate-100 rounded">
             Вийти
           </button>
@@ -47,19 +81,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
       </header>
 
       <nav className="flex border-b bg-slate-50">
-        {([
-          ['setup', 'Налаштування'],
-          ['questions', 'Питання'],
-          ['cases', 'Підготовка справ'],
-          ['results', 'Результати'],
-          ['process', 'Експортувати опис'],
-          ['overview', 'Огляд'],
-          ['chart', 'Графік'],
-          ['integrity', 'Перевірка доброчесності'],
-          ['partners', 'Партнери'],
-          ['puzzle', 'Пазл'],
-          ['broadcast', 'Розсилки'],
-        ] as [TabKey, string][]).map(([k, label]) => (
+        {visibleTabs.map(k => (
           <button
             key={k}
             onClick={() => setTab(k)}
@@ -67,12 +89,17 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
               tab === k ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-600'
             }`}
           >
-            {label}
+            {ADMIN_SCOPE_LABELS[k]}
           </button>
         ))}
       </nav>
 
       <div className="flex-1 overflow-y-auto p-6">
+        {tab === null && (
+          <div className="text-slate-500 text-sm">
+            Вам не надано доступу до жодного розділу адмінки. Зверніться до адміністратора.
+          </div>
+        )}
         {tab === 'setup' && <SetupView />}
         {tab === 'questions' && <QuestionsView initialQuestions={initialQuestions} />}
         {tab === 'cases' && <CasesPrepAdmin geminiKey={geminiKey} />}
@@ -84,6 +111,7 @@ export const TelegramAdminTab: React.FC<Props> = ({ onClose, geminiKey, initialQ
         {tab === 'partners' && <PartnersView />}
         {tab === 'puzzle' && <PuzzleView />}
         {tab === 'broadcast' && <BroadcastView />}
+        {tab === 'admins' && <AdminsView />}
       </div>
     </div>
   );
@@ -114,7 +142,10 @@ const CasesPrepAdmin: React.FC<{ geminiKey: string }> = ({ geminiKey }) => {
   );
 };
 
-const LoginGate: React.FC<{ onSuccess: () => void; onClose: () => void }> = ({ onSuccess, onClose }) => {
+const LoginGate: React.FC<{ onSuccess: (p: AdminProfile) => void; onClose: () => void }> = ({
+  onSuccess,
+  onClose,
+}) => {
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [remember, setRemember] = useState(false);
@@ -126,8 +157,7 @@ const LoginGate: React.FC<{ onSuccess: () => void; onClose: () => void }> = ({ o
     setBusy(true);
     setErr('');
     try {
-      await adminLogin(login, password, remember);
-      onSuccess();
+      onSuccess(await adminLogin(login, password, remember));
     } catch (ex: any) {
       setErr(ex.message || 'Помилка');
     } finally {

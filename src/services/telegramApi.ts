@@ -1,46 +1,115 @@
-// Тонкий клієнт до /api/telegram/admin/*. Секрет адмінки зберігається в localStorage.
+// Тонкий клієнт до /api/telegram/admin/*. Сесія адмінки — підписаний сервером
+// токен зі скоупами (див. api/_core/adminToken.ts); зберігається в localStorage.
+import type { AdminScope } from '../telegram-bot/adminScopes';
 
-const SECRET_KEY = 'telegram_admin_secret';
+const TOKEN_KEY = 'telegram_admin_token';
 
-export const getAdminSecret = (): string =>
-  sessionStorage.getItem(SECRET_KEY) || localStorage.getItem(SECRET_KEY) || '';
+export interface AdminProfile {
+  login: string;
+  displayName: string;
+  isSuper: boolean;
+  scopes: AdminScope[];
+}
 
-export const setAdminSecret = (v: string, remember: boolean) => {
-  sessionStorage.setItem(SECRET_KEY, v);
-  if (remember) localStorage.setItem(SECRET_KEY, v);
-  else localStorage.removeItem(SECRET_KEY);
+export const getAdminToken = (): string =>
+  sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY) || '';
+
+export const setAdminToken = (v: string, remember: boolean) => {
+  sessionStorage.setItem(TOKEN_KEY, v);
+  if (remember) localStorage.setItem(TOKEN_KEY, v);
+  else localStorage.removeItem(TOKEN_KEY);
 };
 
-export const clearAdminSecret = () => {
-  sessionStorage.removeItem(SECRET_KEY);
-  localStorage.removeItem(SECRET_KEY);
+export const clearAdminToken = () => {
+  sessionStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(TOKEN_KEY);
 };
 
-export async function adminLogin(login: string, password: string, remember: boolean): Promise<void> {
+// Кидається на 401 — токен протух або права відкликано (token_epoch змінився).
+// Гейт ловить її й показує форму входу замість повідомлення про помилку.
+export class AdminUnauthorizedError extends Error {
+  constructor() {
+    super('Сесія завершилась — увійдіть знову');
+    this.name = 'AdminUnauthorizedError';
+  }
+}
+
+export async function adminLogin(
+  login: string,
+  password: string,
+  remember: boolean
+): Promise<AdminProfile> {
   const res = await fetch('/api/telegram/admin/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ login, password }),
+    body: JSON.stringify({ login, password, remember }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  setAdminSecret(data.token, remember);
+  setAdminToken(data.token, remember);
+  return {
+    login: data.login,
+    displayName: data.displayName || data.login,
+    isSuper: !!data.isSuper,
+    scopes: data.scopes || [],
+  };
 }
 
 async function call(path: string, init?: RequestInit) {
-  const secret = getAdminSecret();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'x-admin-secret': secret,
+    Authorization: `Bearer ${getAdminToken()}`,
     ...((init?.headers as any) || {}),
   };
   const res = await fetch(`/api/telegram${path}`, { ...init, headers });
+  if (res.status === 401) {
+    clearAdminToken();
+    throw new AdminUnauthorizedError();
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
 
+export interface AdminRow {
+  id: string;
+  login: string;
+  displayName: string;
+  scopes: AdminScope[];
+  isSuper: boolean;
+  active: boolean;
+  createdAt: string;
+  createdBy: string;
+  lastLoginAt: string | null;
+}
+
 export const tgApi = {
+  // Хто я і що мені доступно. Кличеться на старті адмінки: підтверджує, що токен
+  // ще живий, і підтягує актуальні скоупи (могли змінитись після видачі токена).
+  me: () => call('/admin/me') as Promise<AdminProfile & { allScopes: AdminScope[] }>,
+
+  listAdmins: () => call('/admin/admins') as Promise<{ admins: AdminRow[] }>,
+  createAdmin: (data: { login: string; displayName: string; scopes: AdminScope[]; isSuper: boolean }) =>
+    call('/admin/admins', { method: 'POST', body: JSON.stringify(data) }) as Promise<{
+      admin: AdminRow;
+      password: string;
+    }>,
+  updateAdmin: (
+    id: string,
+    patch: { displayName?: string; scopes?: AdminScope[]; isSuper?: boolean; active?: boolean }
+  ) =>
+    call(`/admin/admins/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }) as Promise<{ admin: AdminRow }>,
+  resetAdminPassword: (id: string) =>
+    call(`/admin/admins/${encodeURIComponent(id)}/reset-password`, {
+      method: 'POST',
+      body: '{}',
+    }) as Promise<{ password: string }>,
+  deleteAdmin: (id: string) =>
+    call(`/admin/admins/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
   health: () => call('/admin/health'),
   checkDb: () => call('/admin/check-db'),
   saveQuestions: (questions: any[]) =>
@@ -309,7 +378,7 @@ export const tgApi = {
       photoMessageId: string;
     }>,
   userPhotoUrl: (tgId: string) =>
-    `/api/telegram/admin/user-photo/${encodeURIComponent(tgId)}?secret=${encodeURIComponent(getAdminSecret())}`,
+    `/api/telegram/admin/user-photo/${encodeURIComponent(tgId)}?token=${encodeURIComponent(getAdminToken())}`,
   bulkPuzzles: (phrases: string[], startDate?: string, dryRun = false) =>
     call('/admin/puzzle/bulk', {
       method: 'POST',
@@ -397,7 +466,7 @@ export const tgApi = {
 
 // URL фото учасника для <img> (адмін-ендпоінт приймає секрет у query).
 export const userPhotoUrl = (tgId: string): string =>
-  `/api/telegram/admin/user-photo/${encodeURIComponent(tgId)}?secret=${encodeURIComponent(getAdminSecret())}`;
+  `/api/telegram/admin/user-photo/${encodeURIComponent(tgId)}?token=${encodeURIComponent(getAdminToken())}`;
 
 export interface StandupState {
   status: 'idle' | 'running' | 'finished';
