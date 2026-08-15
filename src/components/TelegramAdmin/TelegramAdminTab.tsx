@@ -8,6 +8,15 @@ import { AdminAuthProvider, useAdminAuth } from './adminAuth';
 import { AdminsView } from './AdminsView';
 import { createDefaultColumns, createColumn, COLUMN_ROLE_LABELS, COLUMN_ROLE_OPTIONS, inferColumnRole } from '../../lib/tableColumns';
 import { detectViaGemini } from '../../lib/sliceDetection';
+import {
+  parseNumberCell,
+  compareNumberInfo,
+  analyzeDuplicates,
+  type NumberInfo,
+  type DupRow,
+  type DupProposal,
+  type DupConfidence,
+} from '../../lib/duplicateResolver';
 import { VerifUploadView } from '../CasesPreparation/VerifUploadView';
 import { BroadcastView } from './BroadcastView';
 import { DescriptionSettingsFields, useDescriptionSettings } from './DescriptionSettings';
@@ -4366,28 +4375,6 @@ const ChartView: React.FC = () => {
 type ProcessStep = 'select' | 'step1' | 'step2';
 type GroupColor = 'green-full' | 'green-light' | 'green-superlight' | 'yellow' | 'red' | 'purple';
 
-interface NumberInfo {
-  base: number | null;
-  suffix: string;
-}
-
-// "1", "1а", "12б", "" → пара (число, суфікс). Нечислові → base=null.
-function parseNumberCell(s: string): NumberInfo {
-  const t = (s ?? '').trim();
-  if (!t) return { base: null, suffix: '' };
-  const m = t.match(/^(\d+)(.*)$/);
-  if (!m) return { base: null, suffix: t };
-  return { base: parseInt(m[1], 10), suffix: m[2].trim() };
-}
-
-function compareNumberInfo(a: NumberInfo, b: NumberInfo): number {
-  if (a.base !== b.base) {
-    if (a.base == null) return 1;
-    if (b.base == null) return -1;
-    return a.base - b.base;
-  }
-  return a.suffix.localeCompare(b.suffix, 'uk');
-}
 
 // Базова нормалізація — для групування за номером (просто trim+lower).
 const norm = (v: any) => String(v ?? '').trim().toLowerCase();
@@ -5075,6 +5062,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     );
     setStep2Rows(rows);
     setMissingNumbers(null);
+    setDupProposals(null);
     setStep('step2');
   };
 
@@ -5190,6 +5178,83 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     );
     return { items, rowIds };
   }, [step2Rows, numberColIdx]);
+
+  // ----- Автоматичне вирішення дублів -----
+  // Пропозиції рахуються з уже завантажених даних (сторінка+файл кожного рядка),
+  // без жодного запиту на сервер. Застосування живе тільки в step2Rows — як і
+  // ручне редагування комірок; у БД нічого не пишемо.
+  const [dupProposals, setDupProposals] = useState<DupProposal[] | null>(null);
+  const [dupPicked, setDupPicked] = useState<Set<string>>(new Set());
+  const [dupExpanded, setDupExpanded] = useState<Set<string>>(new Set());
+
+  const resolveDuplicates = () => {
+    if (numberColIdx < 0 || duplicateInfo.items.length === 0) return;
+    const rows: DupRow[] = step2Rows.map(r => ({
+      id: r.id,
+      isEmpty: r.isEmpty,
+      number: String(r.answers[numberColIdx] ?? ''),
+      sourcePdf: r.sourcePdf,
+      page: r.page,
+    }));
+    const proposals = analyzeDuplicates(rows, duplicateInfo.items);
+    setDupProposals(proposals);
+    // Преселектимо тільки впевнені — решту адмін вмикає свідомо.
+    setDupPicked(new Set(proposals.filter(p => p.suggested && p.confidence === 'high').map(p => p.value)));
+    setDupExpanded(new Set());
+    setMsg('');
+  };
+
+  const toggleDupPick = (value: string) => {
+    setDupPicked(prev => {
+      const n = new Set(prev);
+      if (n.has(value)) n.delete(value);
+      else n.add(value);
+      return n;
+    });
+  };
+
+  const applyDupProposals = () => {
+    if (!dupProposals) return;
+    const chosen = dupProposals.filter(p => p.suggested && p.targetRowId && dupPicked.has(p.value));
+    if (chosen.length === 0) return;
+
+    const patch = new Map<string, string>();       // rowId → новий номер
+    const dropRows = new Set<string>();            // жовті заглушки, що більше не потрібні
+    const filledBases = new Set<number>();
+    for (const p of chosen) {
+      patch.set(p.targetRowId!, p.suggested!);
+      if (p.replacesEmptyRowId) dropRows.add(p.replacesEmptyRowId);
+      const info = parseNumberCell(p.suggested!);
+      if (info.base != null) filledBases.add(info.base);
+    }
+
+    setStep2Rows(prev =>
+      prev
+        .filter(r => !dropRows.has(r.id))
+        .map(r =>
+          patch.has(r.id)
+            ? { ...r, answers: r.answers.map((a, j) => (j === numberColIdx ? patch.get(r.id)! : a)) }
+            : r
+        )
+        .sort((a, b) =>
+          compareNumberInfo(
+            parseNumberCell(a.answers[numberColIdx] || ''),
+            parseNumberCell(b.answers[numberColIdx] || '')
+          )
+        )
+    );
+    // Виправлені номери більше не є пропусками — прибираємо їх з банера.
+    setMissingNumbers(prev => (prev ? prev.filter(n => !filledBases.has(n)) : prev));
+    setDupProposals(null);
+    setDupPicked(new Set());
+    setMsg(`✓ Застосовано виправлень: ${chosen.length}`);
+  };
+
+  const DUP_CONF: Record<DupConfidence, { label: string; badge: string; card: string }> = {
+    high: { label: 'висока впевненість', badge: 'bg-emerald-600', card: 'border-emerald-300 bg-emerald-50' },
+    medium: { label: 'середня впевненість', badge: 'bg-amber-500', card: 'border-amber-300 bg-amber-50' },
+    low: { label: 'низька впевненість', badge: 'bg-slate-400', card: 'border-slate-300 bg-slate-50' },
+  };
 
   const exportCsv = () => {
     if (questions.length === 0) return;
@@ -5532,6 +5597,18 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
               Експорт CSV
             </button>
             <button
+              onClick={resolveDuplicates}
+              disabled={duplicateInfo.items.length === 0}
+              title={
+                duplicateInfo.items.length === 0
+                  ? 'Дублікатів немає — вирішувати нічого'
+                  : 'Порівняти кожен дубль із сусідами по його сторінці й запропонувати правильний номер'
+              }
+              className="px-3 py-1.5 bg-rose-600 text-white rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Вирішити дублі
+            </button>
+            <button
               onClick={checkMissingNumbers}
               disabled={numberColIdx < 0}
               title={
@@ -5595,8 +5672,129 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                 ))}
               </div>
               <div className="mt-1 text-rose-700/80">
-                Виправте значення в підсвічених рядках, щоб розблокувати експорт.
+                Виправте значення в підсвічених рядках вручну — або натисніть «Вирішити дублі»,
+                щоб отримати пропозиції на основі сусідів по сторінці.
               </div>
+            </div>
+          )}
+
+          {dupProposals !== null && (
+            <div className="border rounded p-2 space-y-2 bg-white">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="text-sm font-medium">
+                  Пропозиції виправлень ({dupProposals.filter(p => p.suggested).length} з{' '}
+                  {dupProposals.length})
+                </div>
+                <div className="flex-1" />
+                <button
+                  onClick={applyDupProposals}
+                  disabled={dupPicked.size === 0}
+                  className="px-3 py-1 bg-emerald-600 text-white rounded text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Застосувати вибрані ({dupPicked.size})
+                </button>
+                <button
+                  onClick={() => setDupPicked(new Set())}
+                  className="px-3 py-1 bg-white border rounded text-xs hover:bg-slate-50"
+                >
+                  Зняти всі
+                </button>
+                <button
+                  onClick={() => setDupProposals(null)}
+                  className="px-3 py-1 bg-white border rounded text-xs hover:bg-slate-50"
+                >
+                  Сховати
+                </button>
+              </div>
+
+              {dupProposals.length === 0 && (
+                <div className="text-xs text-slate-500">Немає що аналізувати.</div>
+              )}
+
+              {dupProposals.map(p => {
+                const conf = DUP_CONF[p.confidence];
+                const target = p.members.find(m => m.rowId === p.targetRowId);
+                const open = dupExpanded.has(p.value);
+                return (
+                  <div key={p.value} className={`border rounded p-2 text-xs space-y-1 ${conf.card}`}>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="flex items-center gap-2 font-medium">
+                        <input
+                          type="checkbox"
+                          checked={dupPicked.has(p.value)}
+                          disabled={!p.suggested || !p.targetRowId}
+                          onChange={() => toggleDupPick(p.value)}
+                        />
+                        «{p.value}» ×{p.members.length}
+                      </label>
+                      <span className={`px-1.5 py-0.5 rounded text-white text-[10px] ${conf.badge}`}>
+                        {conf.label}
+                      </span>
+                      {p.suggested && target ? (
+                        <span className="font-mono">
+                          {target.page ? `стор. ${target.page}` : 'стор. ?'}
+                          {target.pdf ? ` · ${target.pdf}` : ''}: {target.number} → <b>{p.suggested}</b>
+                        </span>
+                      ) : (
+                        <span className="text-slate-500">автоматично не визначено</span>
+                      )}
+                      {p.wasGloballyMissing && (
+                        <span className="px-1.5 py-0.5 rounded bg-white border text-[10px] text-slate-600">
+                          був у пропусках нумерації
+                        </span>
+                      )}
+                      <div className="flex-1" />
+                      <button
+                        onClick={() =>
+                          setDupExpanded(prev => {
+                            const n = new Set(prev);
+                            if (n.has(p.value)) n.delete(p.value);
+                            else n.add(p.value);
+                            return n;
+                          })
+                        }
+                        className="px-2 py-0.5 bg-white border rounded text-[11px] hover:bg-slate-50"
+                      >
+                        {open ? 'Згорнути' : 'Чому?'}
+                      </button>
+                    </div>
+
+                    {open && (
+                      <div className="space-y-1 pt-1">
+                        <div className="text-slate-700 leading-relaxed">{p.reason}</div>
+                        <table className="text-[11px] border-collapse">
+                          <thead>
+                            <tr className="text-slate-500">
+                              <th className="text-left pr-3 font-normal">Файл</th>
+                              <th className="text-left pr-3 font-normal">Стор.</th>
+                              <th className="text-left pr-3 font-normal">Сусіди по сторінці</th>
+                              <th className="text-left font-normal">Вердикт</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {p.members.map(m => (
+                              <tr key={m.rowId} className={m.rowId === p.targetRowId ? 'font-medium' : ''}>
+                                <td className="pr-3 align-top">{m.pdf || '—'}</td>
+                                <td className="pr-3 align-top">{m.page || '—'}</td>
+                                <td className="pr-3 align-top">
+                                  {m.neighbours.length ? m.neighbours.join(', ') : '—'}
+                                </td>
+                                <td className="align-top">
+                                  {m.verdict === 'fits'
+                                    ? 'вписується'
+                                    : m.verdict === 'misfits'
+                                    ? 'не вписується'
+                                    : 'даних замало'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
           <div className="text-xs text-slate-500">
