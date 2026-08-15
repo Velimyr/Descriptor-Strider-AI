@@ -11,7 +11,7 @@ import { detectViaGemini } from '../../lib/sliceDetection';
 import {
   parseNumberCell,
   compareNumberInfo,
-  analyzeDuplicates,
+  analyzeNumbering,
   type NumberInfo,
   type DupRow,
   type DupProposal,
@@ -5188,7 +5188,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   const [dupExpanded, setDupExpanded] = useState<Set<string>>(new Set());
 
   const resolveDuplicates = () => {
-    if (numberColIdx < 0 || duplicateInfo.items.length === 0) return;
+    if (numberColIdx < 0 || step2Rows.length === 0) return;
     const rows: DupRow[] = step2Rows.map(r => ({
       id: r.id,
       isEmpty: r.isEmpty,
@@ -5196,26 +5196,26 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       sourcePdf: r.sourcePdf,
       page: r.page,
     }));
-    const proposals = analyzeDuplicates(rows, duplicateInfo.items);
+    const proposals = analyzeNumbering(rows, duplicateInfo.items);
     setDupProposals(proposals);
     // Преселектимо тільки впевнені — решту адмін вмикає свідомо.
-    setDupPicked(new Set(proposals.filter(p => p.suggested && p.confidence === 'high').map(p => p.value)));
+    setDupPicked(new Set(proposals.filter(p => p.suggested && p.confidence === 'high').map(p => p.key)));
     setDupExpanded(new Set());
-    setMsg('');
+    setMsg(proposals.length === 0 ? '✓ Проблем із номерами не знайдено.' : '');
   };
 
-  const toggleDupPick = (value: string) => {
+  const toggleDupPick = (key: string) => {
     setDupPicked(prev => {
       const n = new Set(prev);
-      if (n.has(value)) n.delete(value);
-      else n.add(value);
+      if (n.has(key)) n.delete(key);
+      else n.add(key);
       return n;
     });
   };
 
   const applyDupProposals = () => {
     if (!dupProposals) return;
-    const chosen = dupProposals.filter(p => p.suggested && p.targetRowId && dupPicked.has(p.value));
+    const chosen = dupProposals.filter(p => p.suggested && p.targetRowId && dupPicked.has(p.key));
     if (chosen.length === 0) return;
 
     const patch = new Map<string, string>();       // rowId → новий номер
@@ -5598,15 +5598,15 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
             </button>
             <button
               onClick={resolveDuplicates}
-              disabled={duplicateInfo.items.length === 0}
+              disabled={numberColIdx < 0 || step2Rows.length === 0}
               title={
-                duplicateInfo.items.length === 0
-                  ? 'Дублікатів немає — вирішувати нічого'
-                  : 'Порівняти кожен дубль із сусідами по його сторінці й запропонувати правильний номер'
+                numberColIdx < 0
+                  ? 'Спершу позначте колонку-«номер» у питаннях'
+                  : 'Знайти номери, що вибиваються з нумерації своєї сторінки, і дублі — та запропонувати виправлення'
               }
               className="px-3 py-1.5 bg-rose-600 text-white rounded text-sm disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              Вирішити дублі
+              Вирішити дублі й описки
             </button>
             <button
               onClick={checkMissingNumbers}
@@ -5714,21 +5714,24 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
               {dupProposals.map(p => {
                 const conf = DUP_CONF[p.confidence];
                 const target = p.members.find(m => m.rowId === p.targetRowId);
-                const open = dupExpanded.has(p.value);
+                const open = dupExpanded.has(p.key);
                 return (
-                  <div key={p.value} className={`border rounded p-2 text-xs space-y-1 ${conf.card}`}>
+                  <div key={p.key} className={`border rounded p-2 text-xs space-y-1 ${conf.card}`}>
                     <div className="flex flex-wrap items-center gap-2">
                       <label className="flex items-center gap-2 font-medium">
                         <input
                           type="checkbox"
-                          checked={dupPicked.has(p.value)}
+                          checked={dupPicked.has(p.key)}
                           disabled={!p.suggested || !p.targetRowId}
-                          onChange={() => toggleDupPick(p.value)}
+                          onChange={() => toggleDupPick(p.key)}
                         />
-                        «{p.value}» ×{p.members.length}
+                        {p.title}
                       </label>
                       <span className={`px-1.5 py-0.5 rounded text-white text-[10px] ${conf.badge}`}>
                         {conf.label}
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-white border text-[10px] text-slate-600">
+                        {p.kind === 'page-outlier' ? 'вибивається зі сторінки' : 'дубль номера'}
                       </span>
                       {p.suggested && target ? (
                         <span className="font-mono">
@@ -5748,8 +5751,8 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                         onClick={() =>
                           setDupExpanded(prev => {
                             const n = new Set(prev);
-                            if (n.has(p.value)) n.delete(p.value);
-                            else n.add(p.value);
+                            if (n.has(p.key)) n.delete(p.key);
+                            else n.add(p.key);
                             return n;
                           })
                         }

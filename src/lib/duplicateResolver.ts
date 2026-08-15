@@ -1,13 +1,20 @@
-// Автоматичне вирішення дублів номерів справ на Кроці 2 «Експортувати опис».
+// Автоматичне виправлення номерів справ на Кроці 2 «Експортувати опис».
 //
-// Ідея: кожен рядок знає, на якій сторінці якого PDF його знайшли. Справи на одній
-// сторінці опису йдуть підряд, тож сусіди по сторінці задають очікуваний діапазон.
-// Якщо з двох рядків з однаковим номером один у діапазон своєї сторінки вписується,
-// а другий — ні, то помилка саме в другому; правильний номер шукаємо серед пропусків
-// у нумерації цієї сторінки, віддаючи перевагу тому, що найменше відрізняється цифрами.
+// Працює у два проходи, від найсильнішого доказу до найслабшого.
 //
-// Приклад: «123» на стор. 10 (сусіди 120–125) і «123» на стор. 23 (сусіди 219–222, 224).
-// Другий не вписується, усередині 219–224 бракує 223, і 223 ↔ 123 — одна цифра. → 223.
+// 1. ВИКИДИ НА СТОРІНЦІ. Нумерація опису монотонна: якщо стор. 17 закінчується на 130,
+//    а стор. 19 починається зі 142, то на стор. 18 можуть бути тільки 131–141 — це
+//    «коридор» сторінки. Номери, що з коридору випадають (34, 36, 37, 39, 40), майже
+//    завжди означають недописану першу цифру. Ставимо їх у вільні місця коридору
+//    (134, 136, 137, 139, 140) — і лише тоді, коли цифри, які людина таки написала,
+//    збігаються з кандидатом.
+//
+// 2. ДУБЛІ. Те, що лишилось: два записи з однаковим номером на різних сторінках.
+//    Дивимось, чий номер вписується в діапазон своєї сторінки, а чий ні; для «винного»
+//    шукаємо вільний номер у пропусках його сторінки з найближчим написанням.
+//
+// Перший прохід часто прибирає й дублі: 34 на стор. 18 стає 134, тож 34 на стор. 8
+// лишається єдиним.
 
 export interface NumberInfo {
   base: number | null;
@@ -46,6 +53,7 @@ export type DupConfidence = 'high' | 'medium' | 'low';
 export type DupVerdict = 'fits' | 'misfits' | 'unknown';
 // Звідки взято контекст: лише зі своєї сторінки, чи довелось захопити сусідні аркуші.
 export type DupScope = 'page' | 'spread';
+export type DupProposalKind = 'page-outlier' | 'duplicate';
 
 export interface DupMemberAnalysis {
   rowId: string;
@@ -58,7 +66,9 @@ export interface DupMemberAnalysis {
 }
 
 export interface DupProposal {
-  value: string;                   // дубльоване значення
+  key: string;                     // унікальний ключ (для React і для вибору)
+  kind: DupProposalKind;
+  title: string;                   // короткий підпис картки
   members: DupMemberAnalysis[];
   targetRowId: string | null;      // який рядок пропонуємо змінити
   suggested: string | null;        // новий номер (із збереженим суфіксом)
@@ -92,6 +102,9 @@ function levenshtein(a: string, b: string): number {
 }
 
 type DigitKind = 'substitution' | 'transposition' | 'truncation' | 'indel' | 'far';
+
+// Впізнавані описки — тільки на них можна будувати автоматичну пропозицію.
+const RECOGNIZABLE: DigitKind[] = ['truncation', 'substitution', 'transposition', 'indel'];
 
 function digitKind(a: string, b: string): { kind: DigitKind; dist: number } {
   const dist = levenshtein(a, b);
@@ -128,8 +141,23 @@ function similarityScore(kind: DigitKind, dist: number): number {
   }
 }
 
+function kindText(kind: DigitKind, written: string, candidate: number, dist: number): string {
+  switch (kind) {
+    case 'truncation':
+      return dist === 1
+        ? `збігається з ним, якщо дописати пропущену першу цифру («${written}» → «${candidate}»)`
+        : `збігається з ним, якщо дописати ${dist} пропущені початкові цифри («${written}» → «${candidate}»)`;
+    case 'substitution': return 'відрізняється від нього однією цифрою';
+    case 'transposition': return 'відрізняється переставленими сусідніми цифрами';
+    case 'indel': return 'відрізняється однією зайвою/пропущеною цифрою';
+    default: return `відрізняється на ${dist} цифр(и)`;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Допоміжне
+
+const normValue = (v: string) => String(v ?? '').trim().toLowerCase();
 
 function pageTokens(page: string): string[] {
   return String(page ?? '')
@@ -168,60 +196,358 @@ interface Candidate {
   score: number;
 }
 
+// Розрив у номерах, більший за цей, розділяє сторінку на окремі кластери.
+// Всередині однієї сторінки опису номери йдуть майже підряд; стрибок на 10+
+// означає, що частина записів належить іншій «сотні».
+const CLUSTER_GAP = 10;
+
+interface PageEntry {
+  rowId: string;
+  base: number;
+  suffix: string;
+  raw: string;
+}
+
 // ---------------------------------------------------------------------------
 
-export function analyzeDuplicates(
+export function analyzeNumbering(
   rows: DupRow[],
   duplicates: { value: string; rowIds: string[] }[]
 ): DupProposal[] {
   const byId = new Map<string, DupRow>();
   for (const r of rows) byId.set(r.id, r);
 
-  // Зайняті номери — ТІЛЬКИ реальні рядки. Жовті заглушки під пропуски нумерації
-  // не блокують кандидата: навпаки, збіг із заглушкою підтверджує, що там і є діра.
-  const usedBases = new Set<number>();
-  const emptyByBase = new Map<number, string>();
+  // Зайняті номери — ТІЛЬКИ реальні рядки, і саме ПОВНІ значення разом із суфіксом:
+  // «169» і «169а» — різні справи, тож «169» лишається вільним, навіть коли «169а» є.
+  // Жовті заглушки під пропуски нумерації не блокують кандидата: навпаки, збіг із
+  // заглушкою підтверджує, що там і є діра.
+  const usedValues = new Set<string>();
+  const emptyByValue = new Map<string, string>();
+  const realBases: number[] = [];
   for (const r of rows) {
     const info = parseNumberCell(r.number);
     if (info.base == null) continue;
+    const key = normValue(r.number);
     if (r.isEmpty) {
-      if (!emptyByBase.has(info.base)) emptyByBase.set(info.base, r.id);
+      if (!emptyByValue.has(key)) emptyByValue.set(key, r.id);
     } else {
-      usedBases.add(info.base);
+      usedValues.add(key);
+      realBases.push(info.base);
     }
   }
-  const realBases = [...usedBases];
   const globalMin = realBases.length ? Math.min(...realBases) : null;
   const globalMax = realBases.length ? Math.max(...realBases) : null;
+  const isFree = (n: number, suffix: string) => n > 0 && !usedValues.has(normValue(`${n}${suffix}`));
 
-  // Сторінка → рядки на ній (лише реальні: заглушки не мають сторінки).
-  const pageIndex = new Map<string, string[]>();
+  // Сторінка → записи на ній (лише реальні: заглушки не мають сторінки).
+  const pageIndex = new Map<string, PageEntry[]>();
   for (const r of rows) {
     if (r.isEmpty) continue;
+    const info = parseNumberCell(r.number);
+    if (info.base == null) continue;
     for (const t of pageTokens(r.page)) {
       const key = pageKey(r.sourcePdf, t);
       const list = pageIndex.get(key) || [];
-      list.push(r.id);
+      list.push({ rowId: r.id, base: info.base, suffix: info.suffix, raw: r.number });
       pageIndex.set(key, list);
     }
   }
+
+  const proposals: DupProposal[] = [];
+  // Рядки, для яких пропозицію вже зроблено, і номери, вже зайняті пропозиціями —
+  // щоб два виправлення не претендували на одне й те саме місце.
+  const handledRows = new Set<string>();
+  const claimed = new Set<string>();
+
+  // Рядки, що вже потраплять у картку дубля: щоб не показувати про них дві картки.
+  const inDuplicateGroup = new Set(duplicates.flatMap(d => d.rowIds));
+
+  for (const p of detectPageOutliers({
+    pageIndex, isFree, claimed, emptyByValue, globalMin, globalMax, inDuplicateGroup,
+  })) {
+    proposals.push(p);
+    if (p.targetRowId) handledRows.add(p.targetRowId);
+  }
+
+  for (const p of resolveDuplicates({
+    duplicates, byId, pageIndex, isFree, claimed, emptyByValue, globalMin, globalMax,
+    inDuplicateGroup, handledRows,
+  })) {
+    proposals.push(p);
+    if (p.targetRowId) handledRows.add(p.targetRowId);
+  }
+
+  return proposals;
+}
+
+// Сумісність зі старою назвою.
+export const analyzeDuplicates = analyzeNumbering;
+
+// ---------------------------------------------------------------------------
+// Прохід 1 — викиди на сторінці
+
+interface Ctx {
+  pageIndex: Map<string, PageEntry[]>;
+  isFree: (n: number, suffix: string) => boolean;
+  claimed: Set<string>;
+  emptyByValue: Map<string, string>;
+  globalMin: number | null;
+  globalMax: number | null;
+  inDuplicateGroup: Set<string>;
+}
+
+// Розбиває відсортовані номери сторінки на кластери за розривами.
+function clusterBases(entries: PageEntry[]): PageEntry[][] {
+  const sorted = [...entries].sort((a, b) => a.base - b.base);
+  const out: PageEntry[][] = [];
+  let cur: PageEntry[] = [];
+  for (const e of sorted) {
+    if (cur.length && e.base - cur[cur.length - 1].base > CLUSTER_GAP) {
+      out.push(cur);
+      cur = [];
+    }
+    cur.push(e);
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+// Основний («правильний») кластер сторінки — найбільший, і то з відривом.
+function dominantCluster(entries: PageEntry[]): PageEntry[] | null {
+  const clusters = clusterBases(entries);
+  if (clusters.length < 2) return null;
+  const sorted = [...clusters].sort((a, b) => b.length - a.length);
+  if (sorted[0].length < 3) return null;
+  if (sorted[0].length <= sorted[1].length) return null; // нічия — судити не беремось
+  return sorted[0];
+}
+
+function detectPageOutliers(ctx: Ctx): DupProposal[] {
+  const { pageIndex } = ctx;
+
+  // Фаза 1: для кожної сторінки — діапазон її «правильних» номерів.
+  const spine = new Map<string, { lo: number; hi: number; pdf: string; pageNo: number; token: string }>();
+  for (const [key, entries] of pageIndex) {
+    const hash = key.lastIndexOf('#');
+    const pdf = key.slice(0, hash);
+    const token = key.slice(hash + 1);
+    const pageNo = parseInt(token, 10);
+    if (!Number.isFinite(pageNo)) continue;
+    const main = dominantCluster(entries) ?? clusterBases(entries)[0];
+    if (!main || main.length === 0) continue;
+    spine.set(key, { lo: main[0].base, hi: main[main.length - 1].base, pdf, pageNo, token });
+  }
+
+  // Найближча сторінка того ж файлу з відомим діапазоном (у заданому напрямку).
+  const neighbourSpine = (pdf: string, pageNo: number, dir: -1 | 1) => {
+    for (let step = 1; step <= 5; step++) {
+      const s = spine.get(pageKey(pdf, String(pageNo + dir * step)));
+      if (s) return s;
+    }
+    return null;
+  };
+
+  const out: DupProposal[] = [];
+
+  for (const [key, entries] of pageIndex) {
+    const info = spine.get(key);
+    if (!info) continue;
+    const main = dominantCluster(entries);
+    if (!main) continue;
+
+    const mainIds = new Set(main.map(e => e.rowId));
+    // Той самий номер двічі на одній сторінці — це два скани тієї самої справи,
+    // а не описка. Такі рядки лишаємо проходу по дублях, він пояснить це коректно.
+    const perPageCount = new Map<string, number>();
+    for (const e of entries) {
+      const k = normValue(e.raw);
+      perPageCount.set(k, (perPageCount.get(k) ?? 0) + 1);
+    }
+    const outliers = entries.filter(
+      e => !mainIds.has(e.rowId) && (perPageCount.get(normValue(e.raw)) ?? 0) < 2
+    );
+    if (outliers.length === 0) continue;
+
+    // Коридор сторінки: між останнім номером попереднього аркуша і першим наступного.
+    const prev = neighbourSpine(info.pdf, info.pageNo, -1);
+    const next = neighbourSpine(info.pdf, info.pageNo, 1);
+    const bounded = !!prev && !!next;
+    const corridorLo = prev ? prev.hi + 1 : info.lo - outliers.length;
+    const corridorHi = next ? next.lo - 1 : info.hi + outliers.length;
+    if (corridorHi < corridorLo) continue;
+    // Захист від абсурдно широкого коридору (дірки в нумерації сторінок).
+    if (corridorHi - corridorLo > 400) continue;
+
+    const mainBases = main.map(e => e.base);
+    const mainLo = mainBases[0];
+    const mainHi = mainBases[mainBases.length - 1];
+
+    // Для кожного викиду — вільні місця коридору з упізнаваною опискою.
+    type Pick = { entry: PageEntry; cand: Candidate; alternatives: number };
+    const picks: Pick[] = [];
+    for (const e of outliers) {
+      const written = String(e.base);
+      const cands: Candidate[] = [];
+      for (let n = corridorLo; n <= corridorHi; n++) {
+        if (!ctx.isFree(n, e.suffix)) continue;
+        const { kind, dist } = digitKind(written, String(n));
+        if (!RECOGNIZABLE.includes(kind)) continue;
+        const inMain = n >= mainLo && n <= mainHi;
+        cands.push({
+          base: n,
+          type: inMain ? 'gap' : 'extension',
+          kind,
+          dist,
+          score: similarityScore(kind, dist) + (inMain ? 50 : 15),
+        });
+      }
+      if (cands.length === 0) {
+        // Якщо рядок і так піде окремою карткою дубля — не дублюємо повідомлення.
+        if (!ctx.inDuplicateGroup.has(e.rowId)) {
+          out.push(noPickProposal(e, info, main, corridorLo, corridorHi));
+        }
+        continue;
+      }
+      cands.sort((a, b) => b.score - a.score || a.dist - b.dist || a.base - b.base);
+      picks.push({ entry: e, cand: cands[0], alternatives: cands.length - 1 });
+    }
+
+    // Найвпевненіші розбирають місця першими, щоб два викиди не сіли на одне число.
+    picks.sort((a, b) => b.cand.score - a.cand.score);
+    for (const p of picks) {
+      const value = `${p.cand.base}${p.entry.suffix}`;
+      if (ctx.claimed.has(normValue(value))) continue;
+      ctx.claimed.add(normValue(value));
+
+      const member: DupMemberAnalysis = {
+        rowId: p.entry.rowId,
+        number: p.entry.raw,
+        pdf: info.pdf,
+        page: info.token,
+        neighbours: mainBases,
+        scope: 'page',
+        verdict: 'misfits',
+      };
+      const confidence: DupConfidence = p.alternatives === 0 && bounded ? 'high' : 'medium';
+      out.push({
+        key: `outlier:${p.entry.rowId}`,
+        kind: 'page-outlier',
+        title: `«${p.entry.raw}» → «${value}»`,
+        members: [member],
+        targetRowId: p.entry.rowId,
+        suggested: value,
+        confidence,
+        wasGloballyMissing:
+          ctx.globalMin != null && ctx.globalMax != null &&
+          p.cand.base >= ctx.globalMin && p.cand.base <= ctx.globalMax,
+        replacesEmptyRowId: ctx.emptyByValue.get(normValue(value)) ?? null,
+        reason: explainOutlier({
+          entry: p.entry, info, mainBases, corridorLo, corridorHi, bounded,
+          cand: p.cand, value, alternatives: p.alternatives,
+          hadEmptyRow: ctx.emptyByValue.has(normValue(value)),
+        }),
+      });
+    }
+  }
+
+  return out;
+}
+
+function noPickProposal(
+  e: PageEntry,
+  info: { pdf: string; token: string },
+  main: PageEntry[],
+  corridorLo: number,
+  corridorHi: number
+): DupProposal {
+  const mainBases = main.map(m => m.base);
+  return {
+    key: `outlier:${e.rowId}`,
+    kind: 'page-outlier',
+    title: `«${e.raw}» — вибивається зі сторінки`,
+    members: [{
+      rowId: e.rowId,
+      number: e.raw,
+      pdf: info.pdf,
+      page: info.token,
+      neighbours: mainBases,
+      scope: 'page',
+      verdict: 'misfits',
+    }],
+    targetRowId: null,
+    suggested: null,
+    confidence: 'low',
+    wasGloballyMissing: false,
+    replacesEmptyRowId: null,
+    reason:
+      `${fmtPlace({ pdf: info.pdf, page: info.token })}: номер «${e.raw}» різко вибивається з решти ` +
+      `номерів сторінки (${fmtList(mainBases)}). За сусідніми аркушами тут можливі лише ` +
+      `${corridorLo}–${corridorHi}, але жодне вільне місце в цьому проміжку не схоже на «${e.raw}» ` +
+      'написанням. Автоматично не визначено — потрібне ручне рішення.',
+  };
+}
+
+function explainOutlier(p: {
+  entry: PageEntry;
+  info: { pdf: string; token: string };
+  mainBases: number[];
+  corridorLo: number;
+  corridorHi: number;
+  bounded: boolean;
+  cand: Candidate;
+  value: string;
+  alternatives: number;
+  hadEmptyRow: boolean;
+}): string {
+  const parts: string[] = [];
+  parts.push(
+    `${fmtPlace({ pdf: p.info.pdf, page: p.info.token })}: решта номерів сторінки — ` +
+      `${fmtList(p.mainBases)}, а «${p.entry.raw}» із цього ряду різко вибивається.`
+  );
+  parts.push(
+    p.bounded
+      ? `За сусідніми аркушами на цій сторінці можуть бути тільки номери ${p.corridorLo}–${p.corridorHi}.`
+      : `Судячи з нумерації, на цій сторінці очікуються номери близько ${p.corridorLo}–${p.corridorHi}.`
+  );
+  const missingNote = p.hadEmptyRow
+    ? ' (він уже стоїть у таблиці як порожній рядок-пропуск — цей рядок приберемо)'
+    : '';
+  parts.push(
+    `Вільне місце ${p.cand.base} не зайняте жодною справою${missingNote} і ` +
+      `${kindText(p.cand.kind, p.entry.raw, p.cand.base, p.cand.dist)}.`
+  );
+  if (p.alternatives > 0) {
+    parts.push(`У проміжку є ще ${p.alternatives} схожих варіант(и) — варто звірити зі скановою сторінкою.`);
+  }
+  parts.push(`→ Пропоную замінити «${p.entry.raw}» на «${p.value}».`);
+  return parts.join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// Прохід 2 — дублі
+
+function resolveDuplicates(a: Ctx & {
+  duplicates: { value: string; rowIds: string[] }[];
+  byId: Map<string, DupRow>;
+  handledRows: Set<string>;
+}): DupProposal[] {
+  const { duplicates, byId, pageIndex, handledRows } = a;
 
   const neighboursOf = (row: DupRow, exclude: Set<string>): { bases: number[]; scope: DupScope } => {
     const seen = new Set<string>();
     const bases = new Set<number>();
     const collect = (tokens: string[]) => {
       for (const t of tokens) {
-        for (const id of pageIndex.get(pageKey(row.sourcePdf, t)) || []) {
-          if (id === row.id || exclude.has(id) || seen.has(id)) continue;
-          seen.add(id);
-          const info = parseNumberCell(byId.get(id)!.number);
-          if (info.base != null) bases.add(info.base);
+        for (const e of pageIndex.get(pageKey(row.sourcePdf, t)) || []) {
+          if (e.rowId === row.id || exclude.has(e.rowId) || seen.has(e.rowId)) continue;
+          seen.add(e.rowId);
+          bases.add(e.base);
         }
       }
     };
     const own = pageTokens(row.page);
     collect(own);
-    if (bases.size >= 2) return { bases: [...bases].sort((a, b) => a - b), scope: 'page' };
+    if (bases.size >= 2) return { bases: [...bases].sort((x, y) => x - y), scope: 'page' };
 
     // На сторінці замало сусідів (буває, коли справ на аркуші всього дві-три).
     // Розширюємо контекст на сусідні аркуші того ж файлу — нумерація там продовжується.
@@ -232,17 +558,19 @@ export function analyzeDuplicates(
       if (n > 1) around.add(String(n - 1));
       around.add(String(n + 1));
     }
-    if (around.size === 0) return { bases: [...bases].sort((a, b) => a - b), scope: 'page' };
+    if (around.size === 0) return { bases: [...bases].sort((x, y) => x - y), scope: 'page' };
     collect([...around].filter(t => !own.includes(t)));
-    return { bases: [...bases].sort((a, b) => a - b), scope: 'spread' };
+    return { bases: [...bases].sort((x, y) => x - y), scope: 'spread' };
   };
 
-  const proposals: DupProposal[] = [];
+  const out: DupProposal[] = [];
 
   for (const dup of duplicates) {
     const groupIds = new Set(dup.rowIds);
     const memberRows = dup.rowIds.map(id => byId.get(id)).filter((r): r is DupRow => !!r);
     if (memberRows.length < 2) continue;
+    // Якщо когось із групи вже виправив прохід по викидах — дубль зникне сам.
+    if (memberRows.some(r => handledRows.has(r.id))) continue;
 
     const members: DupMemberAnalysis[] = memberRows.map(r => {
       // Близнюка виключаємо з контексту, щоб він не забруднював діапазон сторінки.
@@ -255,19 +583,17 @@ export function analyzeDuplicates(
         verdict = own >= lo - 1 && own <= hi + 1 ? 'fits' : 'misfits';
       }
       return {
-        rowId: r.id,
-        number: r.number,
-        pdf: String(r.sourcePdf ?? ''),
-        page: String(r.page ?? ''),
-        neighbours,
-        scope,
-        verdict,
+        rowId: r.id, number: r.number,
+        pdf: String(r.sourcePdf ?? ''), page: String(r.page ?? ''),
+        neighbours, scope, verdict,
       };
     });
 
     // Заготовка «нічого не пропонуємо» — далі або доповнюємо, або віддаємо як є.
     const stub = {
-      value: dup.value,
+      key: `dup:${dup.value}`,
+      kind: 'duplicate' as DupProposalKind,
+      title: `дубль «${dup.value}» ×${members.length}`,
       members,
       targetRowId: null,
       suggested: null,
@@ -284,7 +610,7 @@ export function analyzeDuplicates(
       keySets.every(ks => ks.length > 0) &&
       keySets.slice(1).every(ks => ks.some(k => keySets[0].includes(k)));
     if (sharePage) {
-      proposals.push({
+      out.push({
         ...stub,
         reason:
           `Обидва записи «${dup.value}» лежать на одній сторінці (${fmtPlace(members[0])}). ` +
@@ -296,7 +622,7 @@ export function analyzeDuplicates(
     const misfits = members.filter(m => m.verdict === 'misfits');
     const fits = members.filter(m => m.verdict === 'fits');
     if (misfits.length !== 1 || fits.length === 0) {
-      proposals.push({ ...stub, reason: explainNoTarget(dup.value, members) });
+      out.push({ ...stub, reason: explainNoTarget(dup.value, members) });
       continue;
     }
 
@@ -308,7 +634,8 @@ export function analyzeDuplicates(
     const onPage = new Set(nb);
 
     // Пул кандидатів: спершу пропуски всередині діапазону сторінки, потім розширення краю.
-    const free = (n: number) => n > 0 && !usedBases.has(n);
+    const suffix = targetInfo.suffix;
+    const free = (n: number) => a.isFree(n, suffix) && !a.claimed.has(normValue(`${n}${suffix}`));
     const gaps: number[] = [];
     for (let n = lo; n <= hi; n++) if (!onPage.has(n) && free(n)) gaps.push(n);
     const extensions = [lo - 1, hi + 1, lo - 2, hi + 2].filter(n => !onPage.has(n) && free(n));
@@ -319,14 +646,11 @@ export function analyzeDuplicates(
     const scored: Candidate[] = [];
     const push = (n: number, type: 'gap' | 'extension', typeScore: number) => {
       const { kind, dist } = digitKind(targetDigits, String(n));
-      const filled = [...nb, n].sort((a, b) => a - b);
+      const filled = [...nb, n].sort((x, y) => x - y);
       const contiguityBonus = isContiguous(filled) ? 20 : 0;
       const soleBonus = type === 'gap' && soleGap ? 25 : 0;
       scored.push({
-        base: n,
-        type,
-        kind,
-        dist,
+        base: n, type, kind, dist,
         score: similarityScore(kind, dist) + typeScore + contiguityBonus + soleBonus,
       });
     };
@@ -339,7 +663,7 @@ export function analyzeDuplicates(
     if (truncations.length === 1) truncations[0].score += 25;
 
     if (scored.length === 0) {
-      proposals.push({
+      out.push({
         ...stub,
         reason:
           `${fmtPlace(target)}: номер «${target.number}» не вписується в діапазон ${lo}–${hi} ` +
@@ -349,8 +673,21 @@ export function analyzeDuplicates(
       continue;
     }
 
-    scored.sort((a, b) => b.score - a.score || a.dist - b.dist || a.base - b.base);
+    scored.sort((x, y) => y.score - x.score || x.dist - y.dist || x.base - y.base);
     const best = scored[0];
+    // Кандидат, не схожий на написане (три і більше цифр різниці), — це не описка,
+    // а здогадка навмання. Краще чесно сказати, що не визначили.
+    if (best.kind === 'far' && best.dist >= 3) {
+      out.push({
+        ...stub,
+        reason:
+          `${fmtPlace(target)}: номер «${target.number}» не вписується в діапазон ${lo}–${hi} ` +
+          `(сусіди: ${fmtList(nb)}), тож помилка саме тут. Але жоден вільний номер поблизу ` +
+          `(найближчий — ${best.base}) не схожий на «${target.number}» написанням, ` +
+          'тож підставляти щось навмання не буду. Потрібне ручне рішення.',
+      });
+      continue;
+    }
     const runnerUp = scored[1];
     const noTie = !runnerUp || best.score - runnerUp.score >= 20;
 
@@ -360,35 +697,31 @@ export function analyzeDuplicates(
     // Контекст із сусідніх аркушів слабший за контекст самої сторінки — стелю знижуємо.
     if (target.scope === 'spread' && confidence === 'high') confidence = 'medium';
 
-    const suggested = `${best.base}${targetInfo.suffix}`;
-    const wasGloballyMissing =
-      globalMin != null && globalMax != null && best.base >= globalMin && best.base <= globalMax;
+    const suggested = `${best.base}${suffix}`;
+    a.claimed.add(normValue(suggested));
 
-    proposals.push({
+    out.push({
       ...stub,
       targetRowId: target.rowId,
       suggested,
       confidence,
-      wasGloballyMissing,
-      replacesEmptyRowId: emptyByBase.get(best.base) ?? null,
+      wasGloballyMissing:
+        a.globalMin != null && a.globalMax != null && best.base >= a.globalMin && best.base <= a.globalMax,
+      replacesEmptyRowId: a.emptyByValue.get(normValue(suggested)) ?? null,
       reason: explainProposal({
-        value: dup.value,
         target,
         others: members.filter(m => m.rowId !== target.rowId),
-        lo,
-        hi,
-        best,
+        lo, hi, best,
         runnerUp: noTie ? null : runnerUp,
         suggested,
-        wasGloballyMissing,
-        hadEmptyRow: emptyByBase.has(best.base),
+        wasGloballyMissing:
+          a.globalMin != null && a.globalMax != null && best.base >= a.globalMin && best.base <= a.globalMax,
+        hadEmptyRow: a.emptyByValue.has(normValue(suggested)),
       }),
     });
   }
 
-  // Порядок карток — той самий, що й у банері дублікатів.
-  proposals.sort((a, b) => compareNumberInfo(parseNumberCell(a.value), parseNumberCell(b.value)));
-  return proposals;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +760,6 @@ function explainNoTarget(value: string, members: DupMemberAnalysis[]): string {
 }
 
 function explainProposal(p: {
-  value: string;
   target: DupMemberAnalysis;
   others: DupMemberAnalysis[];
   lo: number;
@@ -455,23 +787,14 @@ function explainProposal(p: {
     parts.push(`Діапазон суцільний, найближчий вільний номер поруч — ${p.best.base}.`);
   }
 
-  const kindText: Record<DigitKind, string> = {
-    substitution: 'відрізняється від нього однією цифрою',
-    transposition: 'відрізняється переставленими сусідніми цифрами',
-    truncation:
-      p.best.dist === 1
-        ? `збігається з ним, якщо дописати пропущену першу цифру («${p.target.number}» → «${p.best.base}»)`
-        : `збігається з ним, якщо дописати ${p.best.dist} пропущені початкові цифри («${p.target.number}» → «${p.best.base}»)`,
-    indel: 'відрізняється однією зайвою/пропущеною цифрою',
-    far: `відрізняється на ${p.best.dist} цифр(и)`,
-  };
   const missingNote = p.wasGloballyMissing
     ? p.hadEmptyRow
       ? ' (він уже стоїть у таблиці як порожній рядок-пропуск — цей рядок приберемо)'
       : ' (він входить до пропусків нумерації опису)'
     : '';
   parts.push(
-    `Номер ${p.best.base} не зайнятий жодною іншою справою${missingNote} і ${kindText[p.best.kind]}.`
+    `Номер ${p.best.base} не зайнятий жодною іншою справою${missingNote} і ` +
+      `${kindText(p.best.kind, p.target.number, p.best.base, p.best.dist)}.`
   );
 
   for (const o of p.others) {
