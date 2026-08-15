@@ -6,8 +6,11 @@
 //    а стор. 19 починається зі 142, то на стор. 18 можуть бути тільки 131–141 — це
 //    «коридор» сторінки. Номери, що з коридору випадають (34, 36, 37, 39, 40), майже
 //    завжди означають недописану першу цифру. Ставимо їх у вільні місця коридору
-//    (134, 136, 137, 139, 140) — і лише тоді, коли цифри, які людина таки написала,
-//    збігаються з кандидатом.
+//    (134, 136, 137, 139, 140) за двома доказами:
+//      • НАПИСАННЯМ — цифри, які людина таки вписала, збігаються з кандидатом;
+//      • ПОЗИЦІЄЮ — кандидат є єдиною діркою в ряду сторінки, після якої ряд стає
+//        суцільним. Цей доказ рятує випадки, де вписано зовсім інший номер
+//        («1285» замість «1480»), і там написання не підказує нічого.
 //
 // 2. ДУБЛІ. Те, що лишилось: два записи з однаковим номером на різних сторінках.
 //    Дивимось, чий номер вписується в діапазон своєї сторінки, а чий ні; для «винного»
@@ -194,6 +197,28 @@ interface Candidate {
   kind: DigitKind;
   dist: number;
   score: number;
+  // Єдина дірка всередині ряду сторінки, після заповнення якої ряд стає суцільним.
+  // Це доказ позицією, а не написанням: працює навіть коли цифри геть не схожі.
+  structural?: boolean;
+}
+
+// Чи є `n` єдиним вільним місцем усередині ряду, і чи стає ряд суцільним після нього.
+function soleContiguousHole(
+  bases: number[],
+  isFree: (n: number) => boolean
+): number | null {
+  const uniq = [...new Set(bases)].sort((a, b) => a - b);
+  if (uniq.length < 3) return null;
+  const present = new Set(uniq);
+  const holes: number[] = [];
+  for (let n = uniq[0]; n <= uniq[uniq.length - 1]; n++) {
+    if (!present.has(n)) {
+      if (!isFree(n)) return null; // діра зайнята кимось іншим — ряд не «наш»
+      holes.push(n);
+      if (holes.length > 1) return null;
+    }
+  }
+  return holes.length === 1 ? holes[0] : null;
 }
 
 // Розрив у номерах, більший за цей, розділяє сторінку на окремі кластери.
@@ -378,30 +403,45 @@ function detectPageOutliers(ctx: Ctx): DupProposal[] {
     // Захист від абсурдно широкого коридору (дірки в нумерації сторінок).
     if (corridorHi - corridorLo > 400) continue;
 
-    const mainBases = main.map(e => e.base);
+    const mainBases = [...new Set(main.map(e => e.base))].sort((x, y) => x - y);
     const mainLo = mainBases[0];
     const mainHi = mainBases[mainBases.length - 1];
 
     // Для кожного викиду — вільні місця коридору з упізнаваною опискою.
-    type Pick = { entry: PageEntry; cand: Candidate; alternatives: number };
+    type Pick = { entry: PageEntry; cand: Candidate; contested: boolean };
     const picks: Pick[] = [];
     for (const e of outliers) {
       const written = String(e.base);
+      // Єдина дірка в ряду сторінки, після якої ряд стає суцільним — доказ позицією.
+      const hole = soleContiguousHole(mainBases, n => ctx.isFree(n, e.suffix));
       const cands: Candidate[] = [];
       for (let n = corridorLo; n <= corridorHi; n++) {
         if (!ctx.isFree(n, e.suffix)) continue;
         const { kind, dist } = digitKind(written, String(n));
         if (!RECOGNIZABLE.includes(kind)) continue;
         const inMain = n >= mainLo && n <= mainHi;
+        const structural = n === hole;
         cands.push({
           base: n,
           type: inMain ? 'gap' : 'extension',
           kind,
           dist,
-          score: similarityScore(kind, dist) + (inMain ? 50 : 15),
+          structural,
+          score: similarityScore(kind, dist) + (inMain ? 50 : 15) + (structural ? 40 : 0),
         });
       }
       if (cands.length === 0) {
+        // Написання не підказало нічого — пробуємо доказ позицією: якщо в ряду
+        // сторінки рівно одна дірка і після неї ряд стає суцільним, місце однозначне.
+        if (hole != null && hole >= corridorLo && hole <= corridorHi) {
+          const { kind, dist } = digitKind(written, String(hole));
+          picks.push({
+            entry: e,
+            cand: { base: hole, type: 'gap', kind, dist, score: 999, structural: true },
+            contested: false,
+          });
+          continue;
+        }
         // Якщо рядок і так піде окремою карткою дубля — не дублюємо повідомлення.
         if (!ctx.inDuplicateGroup.has(e.rowId)) {
           out.push(noPickProposal(e, info, main, corridorLo, corridorHi));
@@ -409,7 +449,12 @@ function detectPageOutliers(ctx: Ctx): DupProposal[] {
         continue;
       }
       cands.sort((a, b) => b.score - a.score || a.dist - b.dist || a.base - b.base);
-      picks.push({ entry: e, cand: cands[0], alternatives: cands.length - 1 });
+      // Суперник рахується лише тоді, коли він реально близький за доказовістю.
+      picks.push({
+        entry: e,
+        cand: cands[0],
+        contested: !!cands[1] && cands[0].score - cands[1].score < 20,
+      });
     }
 
     // Найвпевненіші розбирають місця першими, щоб два викиди не сіли на одне число.
@@ -428,7 +473,7 @@ function detectPageOutliers(ctx: Ctx): DupProposal[] {
         scope: 'page',
         verdict: 'misfits',
       };
-      const confidence: DupConfidence = p.alternatives === 0 && bounded ? 'high' : 'medium';
+      const confidence: DupConfidence = !p.contested && bounded ? 'high' : 'medium';
       out.push({
         key: `outlier:${p.entry.rowId}`,
         kind: 'page-outlier',
@@ -443,7 +488,7 @@ function detectPageOutliers(ctx: Ctx): DupProposal[] {
         replacesEmptyRowId: ctx.emptyByValue.get(normValue(value)) ?? null,
         reason: explainOutlier({
           entry: p.entry, info, mainBases, corridorLo, corridorHi, bounded,
-          cand: p.cand, value, alternatives: p.alternatives,
+          cand: p.cand, value, contested: p.contested,
           hadEmptyRow: ctx.emptyByValue.has(normValue(value)),
         }),
       });
@@ -496,7 +541,7 @@ function explainOutlier(p: {
   bounded: boolean;
   cand: Candidate;
   value: string;
-  alternatives: number;
+  contested: boolean;
   hadEmptyRow: boolean;
 }): string {
   const parts: string[] = [];
@@ -512,12 +557,21 @@ function explainOutlier(p: {
   const missingNote = p.hadEmptyRow
     ? ' (він уже стоїть у таблиці як порожній рядок-пропуск — цей рядок приберемо)'
     : '';
-  parts.push(
-    `Вільне місце ${p.cand.base} не зайняте жодною справою${missingNote} і ` +
-      `${kindText(p.cand.kind, p.entry.raw, p.cand.base, p.cand.dist)}.`
-  );
-  if (p.alternatives > 0) {
-    parts.push(`У проміжку є ще ${p.alternatives} схожих варіант(и) — варто звірити зі скановою сторінкою.`);
+  if (p.cand.structural && p.cand.kind === 'far') {
+    parts.push(
+      `Місце ${p.cand.base} не зайняте жодною справою${missingNote}, і це ЄДИНА дірка в ряду ` +
+        `сторінки — після неї ряд стає суцільним, тож інших варіантів просто немає. ` +
+        `Написанням «${p.entry.raw}» на нього не схожий (тут не описка в цифрі, ` +
+        'а вписаний зовсім інший номер), тож варто звірити зі сканом.'
+    );
+  } else {
+    parts.push(
+      `Вільне місце ${p.cand.base} не зайняте жодною справою${missingNote} і ` +
+        `${kindText(p.cand.kind, p.entry.raw, p.cand.base, p.cand.dist)}.`
+    );
+  }
+  if (p.contested) {
+    parts.push("У проміжку є ще один так само схожий варіант — варто звірити зі скановою сторінкою.");
   }
   parts.push(`→ Пропоную замінити «${p.entry.raw}» на «${p.value}».`);
   return parts.join(' ');
@@ -673,11 +727,17 @@ function resolveDuplicates(a: Ctx & {
       continue;
     }
 
-    scored.sort((x, y) => y.score - x.score || x.dist - y.dist || x.base - y.base);
+    // Доказ позицією: єдина дірка в ряду сторінки, після якої ряд стає суцільним.
+    // Працює навіть коли написання геть не схоже — місце все одно однозначне.
+    const hole = soleContiguousHole(nb, n => free(n));
+    for (const c of scored) if (c.base === hole) c.structural = true;
+
+    scored.sort((x, y) => Number(!!y.structural) - Number(!!x.structural) ||
+      y.score - x.score || x.dist - y.dist || x.base - y.base);
     const best = scored[0];
-    // Кандидат, не схожий на написане (три і більше цифр різниці), — це не описка,
-    // а здогадка навмання. Краще чесно сказати, що не визначили.
-    if (best.kind === 'far' && best.dist >= 3) {
+    // Кандидат, не схожий на написане (три і більше цифр різниці) і без доказу
+    // позицією, — це здогадка навмання. Краще чесно сказати, що не визначили.
+    if (!best.structural && best.kind === 'far' && best.dist >= 3) {
       out.push({
         ...stub,
         reason:
@@ -689,10 +749,11 @@ function resolveDuplicates(a: Ctx & {
       continue;
     }
     const runnerUp = scored[1];
-    const noTie = !runnerUp || best.score - runnerUp.score >= 20;
+    const noTie = !runnerUp || best.structural || best.score - runnerUp.score >= 20;
 
     let confidence: DupConfidence = 'low';
-    if (best.score >= 165 && noTie) confidence = 'high';
+    if (best.structural) confidence = 'high';
+    else if (best.score >= 165 && noTie) confidence = 'high';
     else if (best.score >= 100) confidence = 'medium';
     // Контекст із сусідніх аркушів слабший за контекст самої сторінки — стелю знижуємо.
     if (target.scope === 'spread' && confidence === 'high') confidence = 'medium';
@@ -792,10 +853,19 @@ function explainProposal(p: {
       ? ' (він уже стоїть у таблиці як порожній рядок-пропуск — цей рядок приберемо)'
       : ' (він входить до пропусків нумерації опису)'
     : '';
-  parts.push(
-    `Номер ${p.best.base} не зайнятий жодною іншою справою${missingNote} і ` +
-      `${kindText(p.best.kind, p.target.number, p.best.base, p.best.dist)}.`
-  );
+  if (p.best.structural && p.best.kind === 'far') {
+    parts.push(
+      `Номер ${p.best.base} не зайнятий жодною іншою справою${missingNote}, і це ЄДИНА дірка ` +
+        `в ряду сторінки — після неї ряд стає суцільним, тож інших варіантів просто немає. ` +
+        `Написанням «${p.target.number}» на нього не схожий (тут не описка в цифрі, ` +
+        'а вписаний зовсім інший номер), тож варто звірити зі сканом.'
+    );
+  } else {
+    parts.push(
+      `Номер ${p.best.base} не зайнятий жодною іншою справою${missingNote} і ` +
+        `${kindText(p.best.kind, p.target.number, p.best.base, p.best.dist)}.`
+    );
+  }
 
   for (const o of p.others) {
     if (o.verdict === 'fits') {
