@@ -44,13 +44,16 @@ export interface DupRow {
 
 export type DupConfidence = 'high' | 'medium' | 'low';
 export type DupVerdict = 'fits' | 'misfits' | 'unknown';
+// Звідки взято контекст: лише зі своєї сторінки, чи довелось захопити сусідні аркуші.
+export type DupScope = 'page' | 'spread';
 
 export interface DupMemberAnalysis {
   rowId: string;
   number: string;
   pdf: string;
   page: string;
-  neighbours: number[];  // бази сусідів по сторінці, відсортовані
+  neighbours: number[];  // бази сусідів, відсортовані
+  scope: DupScope;
   verdict: DupVerdict;   // unknown → сусідів < 2, судити нема на чому
 }
 
@@ -88,10 +91,17 @@ function levenshtein(a: string, b: string): number {
   return prev[n];
 }
 
-type DigitKind = 'substitution' | 'transposition' | 'indel' | 'far';
+type DigitKind = 'substitution' | 'transposition' | 'truncation' | 'indel' | 'far';
 
 function digitKind(a: string, b: string): { kind: DigitKind; dist: number } {
   const dist = levenshtein(a, b);
+  // «Недописаний» номер: людина не вписала початок («123» → «23», «1024» → «24»).
+  // Написані цифри збігаються точно, бракує лише префікса — дуже характерна описка,
+  // тож рахуємо її нарівні із заміною однієї цифри, скільки б цифр не бракувало.
+  if (a.length !== b.length && a && b) {
+    const [short, long] = a.length < b.length ? [a, b] : [b, a];
+    if (long.endsWith(short)) return { kind: 'truncation', dist: long.length - short.length };
+  }
   if (a.length === b.length) {
     let diff = 0;
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
@@ -111,6 +121,7 @@ function digitKind(a: string, b: string): { kind: DigitKind; dist: number } {
 function similarityScore(kind: DigitKind, dist: number): number {
   switch (kind) {
     case 'substitution': return 100;
+    case 'truncation': return 100;
     case 'transposition': return 90;
     case 'indel': return 70;
     default: return Math.max(0, 60 - 20 * (dist - 1));
@@ -195,18 +206,35 @@ export function analyzeDuplicates(
     }
   }
 
-  const neighboursOf = (row: DupRow, exclude: Set<string>): number[] => {
+  const neighboursOf = (row: DupRow, exclude: Set<string>): { bases: number[]; scope: DupScope } => {
     const seen = new Set<string>();
     const bases = new Set<number>();
-    for (const t of pageTokens(row.page)) {
-      for (const id of pageIndex.get(pageKey(row.sourcePdf, t)) || []) {
-        if (id === row.id || exclude.has(id) || seen.has(id)) continue;
-        seen.add(id);
-        const info = parseNumberCell(byId.get(id)!.number);
-        if (info.base != null) bases.add(info.base);
+    const collect = (tokens: string[]) => {
+      for (const t of tokens) {
+        for (const id of pageIndex.get(pageKey(row.sourcePdf, t)) || []) {
+          if (id === row.id || exclude.has(id) || seen.has(id)) continue;
+          seen.add(id);
+          const info = parseNumberCell(byId.get(id)!.number);
+          if (info.base != null) bases.add(info.base);
+        }
       }
+    };
+    const own = pageTokens(row.page);
+    collect(own);
+    if (bases.size >= 2) return { bases: [...bases].sort((a, b) => a - b), scope: 'page' };
+
+    // На сторінці замало сусідів (буває, коли справ на аркуші всього дві-три).
+    // Розширюємо контекст на сусідні аркуші того ж файлу — нумерація там продовжується.
+    const around = new Set<string>();
+    for (const t of own) {
+      const n = parseInt(t, 10);
+      if (!Number.isFinite(n)) continue;
+      if (n > 1) around.add(String(n - 1));
+      around.add(String(n + 1));
     }
-    return [...bases].sort((a, b) => a - b);
+    if (around.size === 0) return { bases: [...bases].sort((a, b) => a - b), scope: 'page' };
+    collect([...around].filter(t => !own.includes(t)));
+    return { bases: [...bases].sort((a, b) => a - b), scope: 'spread' };
   };
 
   const proposals: DupProposal[] = [];
@@ -218,7 +246,7 @@ export function analyzeDuplicates(
 
     const members: DupMemberAnalysis[] = memberRows.map(r => {
       // Близнюка виключаємо з контексту, щоб він не забруднював діапазон сторінки.
-      const neighbours = neighboursOf(r, groupIds);
+      const { bases: neighbours, scope } = neighboursOf(r, groupIds);
       const own = parseNumberCell(r.number).base;
       let verdict: DupVerdict = 'unknown';
       if (neighbours.length >= 2 && own != null) {
@@ -232,6 +260,7 @@ export function analyzeDuplicates(
         pdf: String(r.sourcePdf ?? ''),
         page: String(r.page ?? ''),
         neighbours,
+        scope,
         verdict,
       };
     });
@@ -304,6 +333,11 @@ export function analyzeDuplicates(
     for (const n of gaps) push(n, 'gap', 50);
     for (const n of extensions) push(n, 'extension', Math.abs(n - lo) <= 1 || Math.abs(n - hi) <= 1 ? 15 : 8);
 
+    // Якщо серед усіх кандидатів рівно один закінчується написаними цифрами — це
+    // сильний унікальний сигнал («23» на сторінці зі 120, 121, 124 → тільки 123).
+    const truncations = scored.filter(c => c.kind === 'truncation');
+    if (truncations.length === 1) truncations[0].score += 25;
+
     if (scored.length === 0) {
       proposals.push({
         ...stub,
@@ -323,6 +357,8 @@ export function analyzeDuplicates(
     let confidence: DupConfidence = 'low';
     if (best.score >= 165 && noTie) confidence = 'high';
     else if (best.score >= 100) confidence = 'medium';
+    // Контекст із сусідніх аркушів слабший за контекст самої сторінки — стелю знижуємо.
+    if (target.scope === 'spread' && confidence === 'high') confidence = 'medium';
 
     const suggested = `${best.base}${targetInfo.suffix}`;
     const wasGloballyMissing =
@@ -366,12 +402,13 @@ function explainNoTarget(value: string, members: DupMemberAnalysis[]): string {
   const places = members
     .map(m => {
       if (m.verdict === 'unknown') {
-        return `${fmtPlace(m)} — сусідів по сторінці замало (${m.neighbours.length}), судити нема на чому`;
+        return `${fmtPlace(m)} — сусідів замало (${m.neighbours.length}) навіть із суміжними аркушами, судити нема на чому`;
       }
       const lo = m.neighbours[0];
       const hi = m.neighbours[m.neighbours.length - 1];
       const verb = m.verdict === 'fits' ? 'вписується' : 'НЕ вписується';
-      return `${fmtPlace(m)} — сусіди ${fmtList(m.neighbours)} (діапазон ${lo}–${hi}), номер ${verb}`;
+      const src = m.scope === 'spread' ? ' (із суміжних аркушів)' : '';
+      return `${fmtPlace(m)} — сусіди${src} ${fmtList(m.neighbours)} (діапазон ${lo}–${hi}), номер ${verb}`;
     })
     .join('; ');
 
@@ -403,20 +440,28 @@ function explainProposal(p: {
 }): string {
   const parts: string[] = [];
 
+  const where =
+    p.target.scope === 'spread'
+      ? 'На самій сторінці сусідів замало, тож дивимось і на суміжні аркуші: там є'
+      : 'На цій сторінці також є';
   parts.push(
-    `${fmtPlace(p.target)}: номер «${p.target.number}». На цій сторінці також є ${fmtList(p.target.neighbours)} — ` +
+    `${fmtPlace(p.target)}: номер «${p.target.number}». ${where} ${fmtList(p.target.neighbours)} — ` +
       `діапазон ${p.lo}–${p.hi}, і «${p.target.number}» у нього не потрапляє.`
   );
 
   if (p.best.type === 'gap') {
     parts.push(`Усередині діапазону бракує ${p.best.base}.`);
   } else {
-    parts.push(`Діапазон сторінки суцільний, найближчий вільний номер поруч — ${p.best.base}.`);
+    parts.push(`Діапазон суцільний, найближчий вільний номер поруч — ${p.best.base}.`);
   }
 
   const kindText: Record<DigitKind, string> = {
     substitution: 'відрізняється від нього однією цифрою',
     transposition: 'відрізняється переставленими сусідніми цифрами',
+    truncation:
+      p.best.dist === 1
+        ? `збігається з ним, якщо дописати пропущену першу цифру («${p.target.number}» → «${p.best.base}»)`
+        : `збігається з ним, якщо дописати ${p.best.dist} пропущені початкові цифри («${p.target.number}» → «${p.best.base}»)`,
     indel: 'відрізняється однією зайвою/пропущеною цифрою',
     far: `відрізняється на ${p.best.dist} цифр(и)`,
   };

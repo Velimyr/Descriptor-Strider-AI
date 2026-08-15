@@ -5767,7 +5767,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                             <tr className="text-slate-500">
                               <th className="text-left pr-3 font-normal">Файл</th>
                               <th className="text-left pr-3 font-normal">Стор.</th>
-                              <th className="text-left pr-3 font-normal">Сусіди по сторінці</th>
+                              <th className="text-left pr-3 font-normal">Сусідні номери</th>
                               <th className="text-left font-normal">Вердикт</th>
                             </tr>
                           </thead>
@@ -5778,6 +5778,9 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                                 <td className="pr-3 align-top">{m.page || '—'}</td>
                                 <td className="pr-3 align-top">
                                   {m.neighbours.length ? m.neighbours.join(', ') : '—'}
+                                  {m.scope === 'spread' && m.neighbours.length > 0 && (
+                                    <span className="text-slate-500"> · із суміжних аркушів</span>
+                                  )}
                                 </td>
                                 <td className="align-top">
                                   {m.verdict === 'fits'
