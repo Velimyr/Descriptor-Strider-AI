@@ -157,24 +157,25 @@ function buildDescriptionOrder(
   return order;
 }
 
-export async function selectNextCaseForUser(
+// Кандидати, яких цьому юзеру можна показати (RPC + фільтр «Які справи надсилати»).
+// forceHard — примусово ЛИШЕ складні (коли юзер прийняв пропозицію «хочеш складну?»).
+// excludeCaseId — не пропонувати цю справу: її сабміт ще в польоті, тож RPC-фільтр
+// «не сабмітив» її ще не відсіює (гонитва «Підтвердити» ↔ «Нова справа»).
+async function loadCandidatesForUser(
   tgId: string,
-  // forceHard — примусово ЛИШЕ складні (коли юзер прийняв пропозицію «хочеш складну?»).
-  // excludeCaseId — не пропонувати цю справу: її сабміт ще в польоті, тож RPC-фільтр
-  // «не сабмітив» її ще не відсіює (гонитва «Підтвердити» ↔ «Нова справа»).
   opts?: { forceHard?: boolean; excludeCaseId?: string }
-): Promise<BotCase | null> {
+): Promise<CandidateCase[]> {
   // Один SQL: тільки кандидати, які цьому юзеру можна показати.
   // Фільтри: status='open', не сабмітив/пропустив/торкався, не лочена іншим.
   // v2 (egress-фікс): слім-рядки лише з релевантних описів. Фолбек на v1 —
   // на випадок, якщо код задеплоєно раніше, ніж SQL-функцію v2.
   const targetParallel = cfg.cases.targetSubmissions;
 
-  // Спершу — легкі преференси (складність, фільтр справ, остання дія), бо режим
-  // складності треба знати ДО вибірки кандидатів (фільтр складності — всередині RPC).
-  const [hardPref, lastKind, caseFilter] = await Promise.all([
+  // Спершу — легкі преференси (складність, фільтр справ), бо режим складності
+  // треба знати ДО вибірки кандидатів (фільтр складності — всередині RPC).
+  // У межах withRequestCache обидва беруться з одного закешованого рядка юзера.
+  const [hardPref, caseFilter] = await Promise.all([
     getUserHardPref(tgId),
-    getLastUserCaseKind(tgId),
     getUserCaseFilter(tgId),
   ]);
   const hardMode: HardMode = opts?.forceHard
@@ -198,12 +199,28 @@ export async function selectNextCaseForUser(
   // Фільтр «Які справи надсилати». Перевірка = collab із вже наявною версією
   // (confirmationsCount>0); решта (parallel або collab без версії) = розпізнавання.
   const isVerification = (c: CandidateCase) => c.mode === 'collaborative' && c.confirmationsCount > 0;
-  const candidates =
-    caseFilter === 'recognition'
-      ? allCandidates.filter(c => !isVerification(c))
-      : caseFilter === 'verification'
-        ? allCandidates.filter(c => isVerification(c))
-        : allCandidates;
+  return caseFilter === 'recognition'
+    ? allCandidates.filter(c => !isVerification(c))
+    : caseFilter === 'verification'
+      ? allCandidates.filter(c => isVerification(c))
+      : allCandidates;
+}
+
+// Чи є для юзера хоч одна справа — без вибору конкретної й без читання повного рядка
+// (для пропозиції складної: треба лише знати, що вона існує).
+export async function hasCandidateForUser(
+  tgId: string,
+  opts?: { forceHard?: boolean; excludeCaseId?: string }
+): Promise<boolean> {
+  return (await loadCandidatesForUser(tgId, opts)).length > 0;
+}
+
+export async function selectNextCaseForUser(
+  tgId: string,
+  opts?: { forceHard?: boolean; excludeCaseId?: string }
+): Promise<BotCase | null> {
+  const targetParallel = cfg.cases.targetSubmissions;
+  const candidates = await loadCandidatesForUser(tgId, opts);
   if (candidates.length === 0) return null;
 
   // Слім-кандидат → повний рядок справи (одна точкова вибірка замість того,
@@ -269,6 +286,8 @@ export async function selectNextCaseForUser(
     const collabCreate = sameDesc.find(c => c.mode === 'collaborative' && c.confirmationsCount === 0);
     const collabReview = sameDesc.find(c => c.mode === 'collaborative' && c.confirmationsCount > 0);
     if (collabCreate && collabReview) {
+      // Остання дія юзера потрібна лише тут — читаємо ліниво, а не на кожен вибір.
+      const lastKind = await getLastUserCaseKind(tgId);
       return resolveFull(lastKind === 'create' ? collabReview : collabCreate);
     }
     return resolveFull(primary[0]);
