@@ -41,6 +41,8 @@ import {
   getUserGeminiModel,
   resolveGeminiModelId,
   getUserHardPref,
+  getUserWithSession,
+  withRequestCache,
   CaseFilter,
   GeminiModelChoice,
 } from './storage.js';
@@ -77,6 +79,7 @@ import {
   progressByDescription,
   recomputeCaseSubmissionCount,
   selectNextCaseForUser,
+  hasCandidateForUser,
 } from './scheduler.js';
 import {
   applyMarathonBonus,
@@ -705,6 +708,12 @@ async function getCollabLockMinutes(): Promise<number> {
 // --------- main handler ---------
 
 export async function handleUpdate(update: any): Promise<void> {
+  // Один кеш рядка bot_users на весь апдейт: бан-чек, преференси вибору справи й
+  // dispatch читають той самий рядок — тепер одним запитом (див. withRequestCache).
+  return withRequestCache(() => handleUpdateInner(update));
+}
+
+async function handleUpdateInner(update: any): Promise<void> {
   // Діагностика: коли бот отримує будь-що з групи/супергрупи, запам'ятовуємо її ID
   // у bot_meta('recent_groups') — щоб адмін міг побачити правильний chat_id для
   // налаштування announceChatIds. Fire-and-forget.
@@ -764,8 +773,8 @@ async function handleMessage(msg: any) {
   const rawText: string = msg.text || '';
   const text = normalizeCommand(rawText);
 
-  // Читаємо user і session паралельно — все одно потрібні для більшості шляхів.
-  const [user, session] = await Promise.all([getUser(tgId), getSession(tgId)]);
+  // User і session одним запитом — все одно потрібні для більшості шляхів.
+  const { user, session } = await getUserWithSession(tgId);
 
   // Бан (перевірка доброчесності): заблокований не може виконати жодну дію.
   if (user?.banned) {
@@ -1180,9 +1189,9 @@ async function handleCallback(cb: any) {
   const messageId = cb.message?.message_id;
   const data: string = cb.data || '';
 
-  // Один getUser тут обслуговує і бан-чек, і онбординг нижче — без зайвого читання
-  // (egress: не додаємо нового запиту понад той, що й так робився для intro).
-  const cbUser = await getUser(tgId);
+  // Один запит тут обслуговує і бан-чек, і онбординг нижче, і сесію для кнопок
+  // справи в кінці (усі гілки до неї завершуються return і сесію не пишуть).
+  const { user: cbUser, session: cbSession } = await getUserWithSession(tgId);
 
   // Бан (перевірка доброчесності): заблокований не може виконати жодну дію.
   if (cbUser?.banned) {
@@ -1596,10 +1605,10 @@ async function handleCallback(cb: any) {
     return;
   }
 
-  // ack + читання сесії і питань — паралельно
-  const [, session, questions] = await Promise.all([
+  // ack + читання питань — паралельно (сесію прочитано разом із юзером на вході).
+  const session = cbSession;
+  const [, questions] = await Promise.all([
     answerCallbackQuery(cb.id),
-    getSession(tgId),
     getQuestions(),
   ]);
 
@@ -1861,7 +1870,7 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
   // (лічильник не скидаємо — запропонуємо, щойно складна зʼявиться).
   const hardPref = await getUserHardPref(tgId);
   if (!hardPref.sendHardCases && hardPref.casesSinceHardOffer >= HARD_OFFER_EVERY) {
-    const hardAvailable = await selectNextCaseForUser(tgId, { forceHard: true, excludeCaseId });
+    const hardAvailable = await hasCandidateForUser(tgId, { forceHard: true, excludeCaseId });
     if (hardAvailable) {
       await sendMessage(chatId, T.hardOfferPrompt, {
         reply_markup: {
@@ -2602,11 +2611,15 @@ export async function dispatchCaseToUser(
   }
   if (questions.length === 0) return false;
 
+  // Один PATCH лише потрібних колонок (не upsert усього рядка: той переписав би
+  // total_points значенням, прочитаним на початку апдейту).
   // Лічильник «справ від останньої пропозиції складної» — рахуємо будь-яку видану
   // справу юзерам, що НЕ отримують складні (для «кожну 20-ту пропонуємо складну»).
-  if (!user.sendHardCases) {
-    await patchUser(tgId, { casesSinceHardOffer: (user.casesSinceHardOffer || 0) + 1 });
-  }
+  const dispatchedPatch: Partial<BotUser> = {
+    lastDispatchedCaseId: next.caseId,
+    lastDispatchedAt: nowIsoUtc(),
+    ...(user.sendHardCases ? {} : { casesSinceHardOffer: (user.casesSinceHardOffer || 0) + 1 }),
+  };
 
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
   // Під фото — кнопка «Показати опис» (PDF архівного опису) + дисклеймер.
@@ -2637,10 +2650,7 @@ export async function dispatchCaseToUser(
         state: 'previewing',
         mode: next.mode,
       }),
-      upsertUser(
-        { ...user, lastDispatchedCaseId: next.caseId, lastDispatchedAt: nowIsoUtc() },
-        user.rowIndex
-      ),
+      patchUser(tgId, dispatchedPatch),
       sendMessage(tgId, summary, { reply_markup: keyboardForCollabPreview() }),
     ]);
     return true;
@@ -2662,10 +2672,7 @@ export async function dispatchCaseToUser(
       state: 'asking',
       mode: next.mode,
     }),
-    upsertUser(
-      { ...user, lastDispatchedCaseId: next.caseId, lastDispatchedAt: nowIsoUtc() },
-      user.rowIndex
-    ),
+    patchUser(tgId, dispatchedPatch),
     askQuestion(tgId, questions, 0),
   ]);
   return true;

@@ -29,6 +29,7 @@ import {
   setMeta,
   tryClaimLease,
   unlockCase,
+  withRequestCache,
 } from './storage.js';
 
 const ROUND_KEY = 'tick_round';
@@ -202,12 +203,15 @@ async function runChunkUnderLease(force: boolean): Promise<TickChunkResult> {
     }
 
     try {
-      try {
-        await sendScheduledGreeting(tgId);
-      } catch (e) {
-        console.error('greeting failed', tgId, e);
-      }
-      const sent = await dispatchCaseToUser(tgId, false);
+      // Привітання й видача справи читають той самий рядок юзера — один запит на обох.
+      const sent = await withRequestCache(async () => {
+        try {
+          await sendScheduledGreeting(tgId);
+        } catch (e) {
+          console.error('greeting failed', tgId, e);
+        }
+        return dispatchCaseToUser(tgId, false);
+      });
       if (sent) {
         state.stats.sent++;
         results.push({ tgId, sent: true });

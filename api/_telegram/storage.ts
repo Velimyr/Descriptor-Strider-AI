@@ -1,4 +1,5 @@
 // Сховище стану бота — Postgres через Supabase. Один файл, інтерфейс зберігається.
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
 
@@ -62,6 +63,86 @@ const RPC_STANDUP_AWARD_ROUND = `${PREFIX}standup_award_round`;
 const RPC_KEYWORD_BACKFILL_SCAN = `${PREFIX}keyword_backfill_scan`;
 const RPC_KEYWORD_VARIANT_STATUS = `${PREFIX}keyword_variant_status`;
 
+// ---------- REQUEST-SCOPED КЕШ РЯДКА КОРИСТУВАЧА ----------
+// Кожен HTTP-запит до Supabase = рядок в edge-логах (квота Logs Ingest на Free —
+// 1 GB/міс), а один апдейт бота читав той самий рядок bot_users 3–6 разів
+// (бан-чек, преференси вибору справи, dispatch). Кеш живе лише в межах одного
+// апдейту / однієї видачі справи (withRequestCache) — між апдейтами нічого не
+// зберігається. Сесії й справи НЕ кешуємо: їх свідомо перечитують, щоб ловити гонки.
+//
+// Інвалідація — у fetch клієнта (cacheAwareFetch): будь-який запис у bot_users або
+// RPC поза READ_ONLY_RPCS скидає кеш і до, і після запиту. Тригерів на bot_* нема;
+// з RPC у bot_users пишуть inc_total_points і merge_users. Додаєте тригер, що пише
+// в bot_users з іншої таблиці, — додайте її шлях у cacheAwareFetch.
+type RequestCache = { users: Map<string, Promise<any | null>> };
+const requestCache = new AsyncLocalStorage<RequestCache>();
+
+export function withRequestCache<R>(fn: () => Promise<R>): Promise<R> {
+  if (requestCache.getStore()) return fn();
+  return requestCache.run({ users: new Map() }, fn);
+}
+
+const READ_ONLY_RPCS = new Set([
+  RPC_CANDIDATE_CASES,
+  RPC_CANDIDATE_CASES_V2,
+  RPC_TODAY_ACTIVITY,
+  RPC_DAILY_ACTIVITY,
+  RPC_DESCRIPTION_PROGRESS,
+  RPC_LEADERBOARD_TOP,
+  RPC_USER_RANK,
+]);
+const USERS_PATH = `/rest/v1/${T.users}`;
+const RPC_PATH_PREFIX = '/rest/v1/rpc/';
+
+function requestPath(input: RequestInfo | URL): string {
+  const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  try {
+    return new URL(href).pathname;
+  } catch {
+    return '';
+  }
+}
+
+async function cacheAwareFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const store = requestCache.getStore();
+  const method = (init?.method || 'GET').toUpperCase();
+  if (!store || method === 'GET' || method === 'HEAD') return fetch(input, init);
+  const path = requestPath(input);
+  const invalidates =
+    path === USERS_PATH ||
+    (path.startsWith(RPC_PATH_PREFIX) && !READ_ONLY_RPCS.has(path.slice(RPC_PATH_PREFIX.length)));
+  if (!invalidates) return fetch(input, init);
+  // До запиту — щоб паралельне читання не взяло старий рядок із кешу; після — щоб
+  // не лишився рядок, прочитаний, поки запис ще летів.
+  store.users.clear();
+  try {
+    return await fetch(input, init);
+  } finally {
+    store.users.clear();
+  }
+}
+
+// Повний рядок bot_users; в межах withRequestCache — один запит на апдейт.
+function loadUserRow(tgId: string): Promise<any | null> {
+  const fetchRow = async () => {
+    const { data, error } = await db().from(T.users).select('*').eq('tg_id', tgId).maybeSingle();
+    if (error) throw error;
+    return data;
+  };
+  const store = requestCache.getStore();
+  if (!store) return fetchRow();
+  let row = store.users.get(tgId);
+  if (!row) {
+    const p = fetchRow();
+    store.users.set(tgId, p);
+    p.catch(() => {
+      if (store.users.get(tgId) === p) store.users.delete(tgId);
+    });
+    row = p;
+  }
+  return row;
+}
+
 export function db(): SupabaseClient {
   if (cachedClient) return cachedClient;
   const url = process.env[telegramBotConfig.supabase.urlEnv];
@@ -73,6 +154,7 @@ export function db(): SupabaseClient {
   }
   cachedClient = createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: cacheAwareFetch },
   });
   return cachedClient;
 }
@@ -227,7 +309,12 @@ function mapUser(r: any): BotUser {
 }
 
 // Легке читання фільтра справ (одна колонка). Викликається при виборі наступної справи.
+// У межах withRequestCache — з уже завантаженого рядка, без окремого запиту.
 export async function getUserCaseFilter(tgId: string): Promise<CaseFilter> {
+  if (requestCache.getStore()) {
+    const row = await loadUserRow(tgId);
+    return (row?.case_filter || 'all') as CaseFilter;
+  }
   const { data, error } = await db()
     .from(T.users)
     .select('case_filter')
@@ -571,9 +658,8 @@ export async function getUsersByIds(tgIds: string[]): Promise<BotUser[]> {
 }
 
 export async function getUser(tgId: string): Promise<BotUser | null> {
-  const { data, error } = await db().from(T.users).select('*').eq('tg_id', tgId).maybeSingle();
-  if (error) throw error;
-  return data ? mapUser(data) : null;
+  const row = await loadUserRow(tgId);
+  return row ? mapUser(row) : null;
 }
 
 export async function upsertUser(
@@ -937,6 +1023,40 @@ export async function patchCase(caseId: string, patch: Partial<Omit<BotCase, 'ro
 }
 
 // ---------- SESSIONS ----------
+// Юзер + його сесія одним запитом замість двох (FK bot_sessions.tg_id → bot_users.tg_id,
+// сесія 1:1 з юзером). Рядок юзера кладемо в кеш апдейту так само, як loadUserRow
+// (промісом одразу — запис, що пролетить паралельно, його скине); сесію не кешуємо.
+export async function getUserWithSession(
+  tgId: string
+): Promise<{ user: BotUser | null; session: BotSession | null }> {
+  const req = (async () => {
+    const { data, error } = await db()
+      .from(T.users)
+      .select(`*, session:${T.sessions}(*)`)
+      .eq('tg_id', tgId)
+      .maybeSingle();
+    if (error) throw error;
+    return data as any;
+  })();
+  const store = requestCache.getStore();
+  if (store) {
+    const rowP = req.then(d => {
+      if (!d) return null;
+      const { session: _s, ...row } = d;
+      return row;
+    });
+    store.users.set(tgId, rowP);
+    rowP.catch(() => {
+      if (store.users.get(tgId) === rowP) store.users.delete(tgId);
+    });
+  }
+  const data = await req;
+  if (!data) return { user: null, session: null };
+  const { session: rawSession, ...row } = data;
+  const s = Array.isArray(rawSession) ? rawSession[0] : rawSession;
+  return { user: mapUser(row), session: s ? mapSession(s) : null };
+}
+
 export async function getSession(tgId: string): Promise<BotSession | null> {
   const { data, error } = await db().from(T.sessions).select('*').eq('tg_id', tgId).maybeSingle();
   if (error) throw error;
@@ -961,11 +1081,12 @@ export async function setSession(s: Omit<BotSession, 'rowIndex'>, _existingRowIn
     );
   if (error) throw error;
 
-  // Автопродовження collab-локу на кожну відповідь (нуль нових читань понад
-  // getMeta-кеш): активна людина не втрачає лок посеред проходження питань,
-  // навіть якщо базовий TTL від видачі вже сплив. Для parallel — не чіпаємо
+  // Автопродовження collab-локу (нуль нових читань понад getMeta-кеш): активна
+  // людина не втрачає лок посеред проходження питань, навіть якщо базовий TTL від
+  // видачі вже сплив. Не частіше ніж раз на LOCK_RENEW_MIN_INTERVAL_MS — інакше це
+  // PATCH bot_cases на кожну відповідь. Для parallel — не чіпаємо
   // (locked_until там ніде не читається).
-  if (s.mode === 'collaborative' && s.caseId) {
+  if (s.mode === 'collaborative' && s.caseId && !lockRecentlyRenewed(s.caseId, s.tgId)) {
     try {
       const raw = await getMeta('collab_lock_minutes');
       const n = parseInt(raw || '', 10);
@@ -1553,18 +1674,40 @@ export async function getRecentSubmissions(limit = 100) {
 }
 
 // ---------- COLLABORATIVE MODE ----------
+// Локи, поставлені/продовжені цим інстансом: caseId → хто й коли. Лише для
+// тротлінгу автопродовження в setSession. Інший інстанс про них не знає — тоді
+// просто продовжить лок зайвий раз (безпечно). Зняття локу тут → забуваємо запис.
+const LOCK_RENEW_MIN_INTERVAL_MS = 5 * 60_000;
+const recentLocks = new Map<string, { tgId: string; at: number; until: number }>();
+
+function lockRecentlyRenewed(caseId: string, tgId: string): boolean {
+  const l = recentLocks.get(caseId);
+  const now = Date.now();
+  return !!l && l.tgId === tgId && l.until > now && now - l.at < LOCK_RENEW_MIN_INTERVAL_MS;
+}
+
+function forgetLock(caseId: string) {
+  recentLocks.delete(caseId);
+}
+
 // Видача справи юзеру: лочимо на lockMinutes хвилин.
 export async function lockCase(caseId: string, tgId: string, lockMinutes: number): Promise<void> {
-  const until = new Date(Date.now() + lockMinutes * 60_000).toISOString();
+  const until = Date.now() + lockMinutes * 60_000;
   const { error } = await db()
     .from(T.cases)
-    .update({ locked_by_tg_id: tgId, locked_until: until })
+    .update({ locked_by_tg_id: tgId, locked_until: new Date(until).toISOString() })
     .eq('case_id', caseId);
   if (error) throw error;
+  if (recentLocks.size > 1000) {
+    const now = Date.now();
+    for (const [id, l] of recentLocks) if (l.until <= now) recentLocks.delete(id);
+  }
+  recentLocks.set(caseId, { tgId, at: Date.now(), until });
 }
 
 // Зняти блокування (юзер завершив дію або відмовився).
 export async function unlockCase(caseId: string): Promise<void> {
+  forgetLock(caseId);
   const { error } = await db()
     .from(T.cases)
     .update({ locked_by_tg_id: '', locked_until: null })
@@ -1640,6 +1783,7 @@ export async function setCaseCreated(
   authorTgId: string,
   answers: string[]
 ): Promise<void> {
+  forgetLock(caseId);
   const { error } = await db()
     .from(T.cases)
     .update({
@@ -1661,6 +1805,7 @@ export async function setCaseEdited(
   editorTgId: string,
   answers: string[]
 ): Promise<void> {
+  forgetLock(caseId);
   const { error } = await db()
     .from(T.cases)
     .update({
@@ -1679,6 +1824,7 @@ export async function setCaseEdited(
 // лок, але НЕ скидає confirmations_count/current_author_tg_id — коло підтверджень
 // не рветься, бо змістовно у справі нічого не змінилось.
 export async function updateCaseCommentOnly(caseId: string, answers: string[]): Promise<void> {
+  forgetLock(caseId);
   const { error } = await db()
     .from(T.cases)
     .update({
@@ -1703,6 +1849,7 @@ export async function confirmCase(
   if (!cur) throw new Error(`Case not found: ${caseId}`);
   const next = cur.confirmationsCount + 1;
   const closed = next >= minConfirmations;
+  forgetLock(caseId);
   const { error } = await db()
     .from(T.cases)
     .update({
@@ -1870,9 +2017,17 @@ export async function getCandidateCasesSlimForUser(
 }
 
 // Легке читання складних-налаштувань юзера (2 колонки) — для вибору справи/лічильника.
+// У межах withRequestCache — з уже завантаженого рядка, без окремого запиту.
 export async function getUserHardPref(
   tgId: string
 ): Promise<{ sendHardCases: boolean; casesSinceHardOffer: number }> {
+  if (requestCache.getStore()) {
+    const row = await loadUserRow(tgId);
+    return {
+      sendHardCases: row?.send_hard_cases === true,
+      casesSinceHardOffer: Number(row?.cases_since_hard_offer || 0),
+    };
+  }
   const { data, error } = await db()
     .from(T.users)
     .select('send_hard_cases, cases_since_hard_offer')
