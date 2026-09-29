@@ -1,6 +1,5 @@
 import express from "express";
 import axios from "axios";
-import { google } from "googleapis";
 import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
@@ -18,9 +17,18 @@ dotenv.config({
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
+// googleapis дуже важкий (~0.6–1 с CPU лише на імпорт) — вантажимо його ліниво, тільки
+// коли викликано OAuth/Sheets-ендпоінт. Інакше він парсився б на КОЖЕН холодний старт
+// функції (апдейти бота, віджет, крони), хоча там не потрібен.
+let googlePromise: Promise<typeof import("googleapis")["google"]> | null = null;
+const loadGoogle = () => (googlePromise ??= import("googleapis").then(m => m.google));
+
 const app = express();
 
-app.use(cors());
+// maxAge: браузер кешує CORS-preflight (OPTIONS) до 2 год (стеля Chrome) замість
+// дефолтних 5 с. Віджет на партнерських сайтах шле X-Partner-Key/Authorization,
+// тож без цього майже кожен його запит = 2 виклики функції (OPTIONS + сам запит).
+app.use(cors({ maxAge: 7200 }));
 app.use(express.json({ limit: '50mb' }));
 
 // Telegram-бот: усі маршрути під /api/telegram. Існуючий функціонал не змінюється.
@@ -49,10 +57,11 @@ app.get("/api/proxy-pdf", async (req, res) => {
 });
 
 // Google Auth URL
-app.get("/api/auth/google/url", (req, res) => {
+app.get("/api/auth/google/url", async (req, res) => {
   const redirectUri = req.query.redirectUri as string;
   if (!redirectUri) return res.status(400).send("redirectUri is required");
   
+  const google = await loadGoogle();
   const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, redirectUri);
   const url = client.generateAuthUrl({
     access_type: "offline",
@@ -72,6 +81,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
   if (!redirectUri) return res.status(400).send("State (redirectUri) is missing");
 
   try {
+    const google = await loadGoogle();
     const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, redirectUri);
     const { tokens } = await client.getToken({
       code: code as string,
@@ -107,6 +117,7 @@ app.post("/api/sheets/append", async (req, res) => {
   const targetSheet = sheetName || "Sheet1";
 
   try {
+    const google = await loadGoogle();
     const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
     client.setCredentials(tokens);
     const sheets = google.sheets({ version: "v4", auth: client });
@@ -201,6 +212,7 @@ app.post("/api/sheets/delete-rows", async (req, res) => {
   const { tokens, spreadsheetId, sheetName, pdfUrl, pageNumber, urlColumnIndex, pageColumnIndex } = req.body;
   const targetSheet = sheetName || "Sheet1";
   try {
+    const google = await loadGoogle();
     const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
     client.setCredentials(tokens);
     const sheets = google.sheets({ version: "v4", auth: client });
@@ -285,6 +297,7 @@ app.post("/api/sheets/update-tags", async (req, res) => {
   const targetSheet = sheetName || "Sheet1";
   
   try {
+    const google = await loadGoogle();
     const client = new google.auth.OAuth2(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
     client.setCredentials(tokens);
     const sheets = google.sheets({ version: "v4", auth: client });

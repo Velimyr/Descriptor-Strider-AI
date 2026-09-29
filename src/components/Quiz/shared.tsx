@@ -1,6 +1,6 @@
 // Спільні шматки сторінки стріму /quiz: вхід ведучого, круговий таймер,
 // панель рейтингу (бали спільні для вікторини й стендапу) і локальний тік часу.
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Clock, Trophy } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { adminLogin } from '../../services/telegramApi';
@@ -64,6 +64,29 @@ export function useNow(intervalMs = 200): number {
     return () => clearInterval(id);
   }, [intervalMs]);
   return now;
+}
+
+// Опитування сервера для сторінки ведучого. Під час раунду — щосекунди; поки шоу
+// не йде (idle/finished), без дій ведучого стан не змінюється, тож опитуємо раз на
+// idleMs (дії ведучого самі одразу викликають poll()). Кожне опитування — виклик
+// Vercel-функції: сторінка, забута відкритою, інакше палила б ~86 400 викликів/добу.
+export function useLivePoll(
+  poll: () => Promise<unknown>,
+  running: boolean,
+  { activeMs = 1000, idleMs = 15_000 }: { activeMs?: number; idleMs?: number } = {}
+) {
+  const runningRef = useRef(running);
+  runningRef.current = running;
+  useEffect(() => {
+    let last = Date.now();
+    poll();
+    const id = setInterval(() => {
+      if (!runningRef.current && Date.now() - last < idleMs) return;
+      last = Date.now();
+      poll();
+    }, activeMs);
+    return () => clearInterval(id);
+  }, [poll, activeMs, idleMs]);
 }
 
 // Секунди, що лишились до ISO-моменту (0, якщо момент порожній або минув).

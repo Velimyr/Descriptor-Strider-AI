@@ -6,7 +6,7 @@ import { Play, SkipForward, RotateCcw, Square, Timer as TimerIcon, Users } from 
 import { cn } from '../../lib/utils';
 import { tgApi, userPhotoUrl } from '../../services/telegramApi';
 import type { StandupLive, StandupSignup } from '../../services/telegramApi';
-import { ConfirmButton, Leaderboard, Timer, useNow, secondsUntil } from './shared';
+import { ConfirmButton, Leaderboard, Timer, useLivePoll, useNow, secondsUntil } from './shared';
 
 const POLL_MS = 1000;
 
@@ -25,11 +25,7 @@ export function StandupTab() {
     }
   }, []);
 
-  useEffect(() => {
-    poll();
-    const id = setInterval(poll, POLL_MS);
-    return () => clearInterval(id);
-  }, [poll]);
+  useLivePoll(poll, live?.state.status === 'running', { activeMs: POLL_MS });
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);

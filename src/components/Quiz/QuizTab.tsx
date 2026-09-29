@@ -5,7 +5,7 @@ import { Play, SkipForward, RotateCcw, Square, Check, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { tgApi } from '../../services/telegramApi';
 import type { QuizAnswer, QuizLive, QuizScore } from '../../services/telegramApi';
-import { ConfirmButton, Leaderboard, Timer, useNow, secondsUntil } from './shared';
+import { ConfirmButton, Leaderboard, Timer, useLivePoll, useNow, secondsUntil } from './shared';
 
 const POLL_MS = 1000;
 
@@ -58,11 +58,7 @@ export function QuizTab() {
     }
   }, []);
 
-  useEffect(() => {
-    poll();
-    const id = setInterval(poll, POLL_MS);
-    return () => clearInterval(id);
-  }, [poll]);
+  useLivePoll(poll, live?.state.status === 'running', { activeMs: POLL_MS });
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
