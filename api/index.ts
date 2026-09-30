@@ -25,6 +25,37 @@ const loadGoogle = () => (googlePromise ??= import("googleapis").then(m => m.goo
 
 const app = express();
 
+// ETag вимкнено: Express рахував SHA1 по КОЖНОМУ тілу відповіді (звіт «Доброчесності»
+// — 8.5 МБ, проксі картинок, JSON адмінки) лише заради рідких 304. Картинки кешує
+// CDN за Cache-Control, тож на поведінку це не впливає.
+app.set("etag", false);
+
+// ---- Діагностика CPU (Vercel Fluid рахує Active CPU) ----
+// Холодний старт: скільки CPU процес спалив до першого запиту (завантаження модулів).
+// Запит: дельта process.cpuUsage() за час обробки. Лічильник процесний, тож при
+// паралельних запитах в одному інстансі цифри частково перекриваються — але для
+// пошуку «важких» маршрутів цього досить. Логуємо лише ≥ CPU_LOG_MS, щоб не шуміти.
+// Query-рядок НЕ пишемо (там бувають секрети) — лише шлях з узагальненими id.
+const CPU_LOG_MS = Number(process.env.CPU_LOG_MS || 40);
+let coldStartLogged = false;
+app.use((req, res, next) => {
+  if (!coldStartLogged) {
+    coldStartLogged = true;
+    const boot = process.cpuUsage();
+    console.log(`[cpu] cold-start boot=${Math.round((boot.user + boot.system) / 1000)}ms first=${req.method} ${req.path}`);
+  }
+  const startCpu = process.cpuUsage();
+  const startAt = Date.now();
+  res.on("finish", () => {
+    const d = process.cpuUsage(startCpu);
+    const ms = Math.round((d.user + d.system) / 1000);
+    if (ms < CPU_LOG_MS) return;
+    const route = req.path.replace(/\/[0-9a-f-]{8,}|\/\d+/gi, "/:id");
+    console.log(`[cpu] ${ms}ms ${req.method} ${route} status=${res.statusCode} wall=${Date.now() - startAt}ms`);
+  });
+  next();
+});
+
 // maxAge: браузер кешує CORS-preflight (OPTIONS) до 2 год (стеля Chrome) замість
 // дефолтних 5 с. Віджет на партнерських сайтах шле X-Partner-Key/Authorization,
 // тож без цього майже кожен його запит = 2 виклики функції (OPTIONS + сам запит).
@@ -122,7 +153,8 @@ app.post("/api/sheets/append", async (req, res) => {
     client.setCredentials(tokens);
     const sheets = google.sheets({ version: "v4", auth: client });
 
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+    // fields — лише потрібні властивості аркушів, а не вся метадата таблиці.
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties(sheetId,title)" });
     const sheet = spreadsheet.data.sheets?.find(s => s.properties?.title === targetSheet) || spreadsheet.data.sheets?.[0];
     const sheetId = sheet?.properties?.sheetId || 0;
 
@@ -150,15 +182,23 @@ app.post("/api/sheets/append", async (req, res) => {
     let valuesToAppend = processedRows;
 
     if (!isHeader && Array.isArray(headers) && headers.length > 0) {
-      const existingResponse = await sheets.spreadsheets.values.get({
+      const isBlank = (rows: any[][]) =>
+        rows.length === 0 || rows.every(row => row.every(cell => `${cell ?? ""}`.trim() === ""));
+      // Спершу читаємо лише рядок 1: після запису заголовків він непорожній, і весь
+      // аркуш тягнути не треба. Раніше КОЖНА сторінка читала аркуш цілком — CPU і трафік
+      // росли з кожним доданим рядком. Повне читання лишилось тільки коли рядок 1 порожній.
+      const firstRow = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `${targetSheet}`,
+        range: `'${String(targetSheet).replace(/'/g, "''")}'!1:1`,
       });
-
-      const existingRows = existingResponse.data.values || [];
-      const isSheetEmpty = existingRows.length === 0 || existingRows.every(row =>
-        row.every(cell => `${cell ?? ""}`.trim() === "")
-      );
+      let isSheetEmpty = false;
+      if (isBlank(firstRow.data.values || [])) {
+        const existingResponse = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `${targetSheet}`,
+        });
+        isSheetEmpty = isBlank(existingResponse.data.values || []);
+      }
 
       if (isSheetEmpty) {
         valuesToAppend = [headers, ...processedRows];
@@ -217,7 +257,8 @@ app.post("/api/sheets/delete-rows", async (req, res) => {
     client.setCredentials(tokens);
     const sheets = google.sheets({ version: "v4", auth: client });
 
-    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+    // fields — лише потрібні властивості аркушів, а не вся метадата таблиці.
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets.properties(sheetId,title)" });
     const sheet = spreadsheet.data.sheets?.find(s => s.properties?.title === targetSheet) || spreadsheet.data.sheets?.[0];
     const sheetId = sheet?.properties?.sheetId || 0;
 

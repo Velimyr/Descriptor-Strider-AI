@@ -1054,24 +1054,46 @@ router.get('/admin/submissions-by-description', async (req, res) => {
 // Знаходимо пари submissions для однієї справи, де якась відповідь
 // відрізняється від попередньої більше ніж на 5 символів (Levenshtein).
 // Допомагає виявити користувачів, які вводять текст «від балди».
-function levenshtein(a: string, b: string): number {
+// Точна відстань. Раніше — повна матриця m×n на кожне порівняння: ~5 с CPU на
+// перерахунок (93 тис. порівнянь довгих полів). Тепер без зміни результату
+// (звірено на всіх реальних парах + фазинг): спільні префікс/суфікс відрізаємо
+// (на відстань не впливають), а DP рахуємо лише в діагональній смузі ширини k
+// (Ukkonen): результат ≤ k — точний, інакше подвоюємо k аж до повної матриці.
+// Майже однакові рядки (типовий випадок) коштують O(k·n) замість O(n²).
+function levenshtein(a: string, b: string, minBand = 5): number {
   if (a === b) return 0;
-  if (!a.length) return b.length;
-  if (!b.length) return a.length;
-  const m = a.length, n = b.length;
-  let prev = new Array(n + 1);
-  let curr = new Array(n + 1);
-  for (let j = 0; j <= n; j++) prev[j] = j;
-  for (let i = 1; i <= m; i++) {
-    curr[0] = i;
-    const ca = a.charCodeAt(i - 1);
-    for (let j = 1; j <= n; j++) {
-      const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
-      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+  let s = 0, ea = a.length, eb = b.length;
+  while (s < ea && s < eb && a.charCodeAt(s) === b.charCodeAt(s)) s++;
+  while (ea > s && eb > s && a.charCodeAt(ea - 1) === b.charCodeAt(eb - 1)) { ea--; eb--; }
+  const m = ea - s, n = eb - s;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const full = Math.max(m, n);
+  const BIG = full + 1;
+  let prev = new Uint32Array(n + 1);
+  let curr = new Uint32Array(n + 1);
+  for (let k = Math.max(minBand, Math.abs(m - n), 1); ; k *= 2) {
+    const band = Math.min(k, full);
+    const top = Math.min(n, band);
+    for (let j = 0; j <= top; j++) prev[j] = j;
+    if (top < n) prev[top + 1] = BIG;
+    for (let i = 1; i <= m; i++) {
+      const lo = i - band > 1 ? i - band : 1;
+      const hi = i + band < n ? i + band : n;
+      curr[lo - 1] = lo === 1 ? i : BIG;
+      const ca = a.charCodeAt(s + i - 1);
+      for (let j = lo; j <= hi; j++) {
+        const del = prev[j] + 1;
+        const ins = curr[j - 1] + 1;
+        const sub = prev[j - 1] + (ca === b.charCodeAt(s + j - 1) ? 0 : 1);
+        curr[j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+      }
+      if (hi < n) curr[hi + 1] = BIG;
+      const t = prev; prev = curr; curr = t;
     }
-    [prev, curr] = [curr, prev];
+    const d = prev[n];
+    if (d <= band || band >= full) return d;
   }
-  return prev[n];
 }
 
 router.get('/admin/integrity', async (req, res) => {
@@ -1226,7 +1248,7 @@ router.get('/admin/integrity', async (req, res) => {
             const va = String(aa[k] ?? '');
             const vb = String(bb[k] ?? '');
             if (va === vb) continue;
-            const d = levenshtein(va, vb);
+            const d = levenshtein(va, vb, threshold);
             if (d > threshold) {
               fieldDiffs.push({
                 questionIndex: k,
