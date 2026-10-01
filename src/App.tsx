@@ -891,8 +891,16 @@ export default function App() {
         return storedData;
       }
     } else {
-      const response = await fetch(`/api/proxy-pdf?url=${encodeURIComponent(file.url)}`);
-      if (!response.ok) throw new Error(`Не вдалося завантажити PDF: ${response.statusText}`);
+      // Напряму з джерела: серверний проксі вимкнено (див. /api/proxy-pdf в api/index.ts).
+      // Працює лише з сайтами, що дозволяють CORS; інакше — завантажити файл і додати локально.
+      const corsHint = 'Сайт не дозволяє завантажувати PDF за посиланням — завантажте файл і додайте його як локальний.';
+      let response: Response;
+      try {
+        response = await fetch(file.url);
+      } catch {
+        throw new Error(`Не вдалося завантажити PDF. ${corsHint}`);
+      }
+      if (!response.ok) throw new Error(`Не вдалося завантажити PDF (HTTP ${response.status}). ${corsHint}`);
       const arrayBuffer = await response.arrayBuffer();
       logDuration(`${label}: віддалений PDF завантажено (${formatBytes(arrayBuffer.byteLength)})`, bufferStartedAt, 10000);
       return arrayBuffer;

@@ -39,6 +39,17 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, posi
   const [stage, setStage] = useState<Stage>({ kind: 'floater' });
   const [stats, setStats] = useState<UserStats | null>(null);
   const heartbeatRef = useRef<number | null>(null);
+  // Запит дії над справою в польоті. Ref — щоб відсікти повторні тапи ще до
+  // ререндера (на iPhone встигало піти 9 confirm за секунду), state — щоб
+  // заблокувати кнопки візуально.
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const runExclusive = async (fn: () => Promise<void>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    try { await fn(); } finally { busyRef.current = false; setBusy(false); }
+  };
 
   // Завантажуємо існуючу сесію (якщо є).
   useEffect(() => {
@@ -126,31 +137,37 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, posi
   }
 
   // ----- Submit / Confirm -----
-  async function doSubmit(caseId: string, answers: string[]) {
-    try {
-      const result = await api.submit(caseId, answers);
-      const s = await api.stats().catch(() => null);
-      if (s) setStats(s);
-      setStage({ kind: 'submitted', result });
-    } catch (e: any) {
-      setStage({ kind: 'error', message: e?.message || 'Помилка збереження' });
-    }
+  function doSubmit(caseId: string, answers: string[]) {
+    return runExclusive(async () => {
+      try {
+        const result = await api.submit(caseId, answers);
+        const s = await api.stats().catch(() => null);
+        if (s) setStats(s);
+        setStage({ kind: 'submitted', result });
+      } catch (e: any) {
+        setStage({ kind: 'error', message: e?.message || 'Помилка збереження' });
+      }
+    });
   }
 
-  async function doConfirm(caseId: string) {
-    try {
-      const result = await api.confirm(caseId);
-      const s = await api.stats().catch(() => null);
-      if (s) setStats(s);
-      setStage({ kind: 'submitted', result });
-    } catch (e: any) {
-      setStage({ kind: 'error', message: e?.message || 'Помилка підтвердження' });
-    }
+  function doConfirm(caseId: string) {
+    return runExclusive(async () => {
+      try {
+        const result = await api.confirm(caseId);
+        const s = await api.stats().catch(() => null);
+        if (s) setStats(s);
+        setStage({ kind: 'submitted', result });
+      } catch (e: any) {
+        setStage({ kind: 'error', message: e?.message || 'Помилка підтвердження' });
+      }
+    });
   }
 
-  async function doSkip(caseId: string) {
-    try { await api.skip(caseId); } catch {}
-    takeCase();
+  function doSkip(caseId: string) {
+    return runExclusive(async () => {
+      try { await api.skip(caseId); } catch {}
+      takeCase();
+    });
   }
 
   // ----- Linking з Telegram -----
@@ -254,6 +271,7 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, posi
         {stage.kind === 'case' && (
           <CaseStage
             stage={stage}
+            busy={busy}
             onChange={setStage}
             onSubmit={(answers) => doSubmit(stage.data.caseId, answers)}
             onConfirm={() => doConfirm(stage.data.caseId)}
@@ -304,13 +322,14 @@ const Invite: React.FC<{ onAccept: () => void; onDecline: () => void }> = ({ onA
 // ===== CaseStage =====
 type CaseStageProps = {
   stage: Extract<Stage, { kind: 'case' }>;
+  busy: boolean;
   onChange: (s: Stage) => void;
   onSubmit: (answers: string[]) => void;
   onConfirm: () => void;
   onSkip: () => void;
 };
 
-const CaseStage: React.FC<CaseStageProps> = ({ stage, onChange, onSubmit, onConfirm, onSkip }) => {
+const CaseStage: React.FC<CaseStageProps> = ({ stage, busy, onChange, onSubmit, onConfirm, onSkip }) => {
   const { data, mode, answers, qIndex } = stage;
   const total = data.questions.length;
   const onSummary = qIndex >= total;
@@ -333,9 +352,11 @@ const CaseStage: React.FC<CaseStageProps> = ({ stage, onChange, onSubmit, onConf
         <img className="blkch-image" src={data.imageUrl} alt="Архівна справа" />
         <Summary questions={data.questions} answers={answers} onEdit={editAt} />
         <div className="blkch-btn-row" style={{ marginTop: 12 }}>
-          <button className="blkch-btn blkch-btn-primary" onClick={onConfirm}>✅ Усе правильно</button>
-          <button className="blkch-btn blkch-btn-secondary" onClick={() => editAt(0)}>✏ Виправити</button>
-          <button className="blkch-btn blkch-btn-danger" onClick={onSkip}>❌ Пропустити</button>
+          <button className="blkch-btn blkch-btn-primary" onClick={onConfirm} disabled={busy}>
+            {busy ? '⏳ Зберігаю…' : '✅ Усе правильно'}
+          </button>
+          <button className="blkch-btn blkch-btn-secondary" onClick={() => editAt(0)} disabled={busy}>✏ Виправити</button>
+          <button className="blkch-btn blkch-btn-danger" onClick={onSkip} disabled={busy}>❌ Пропустити</button>
         </div>
       </>
     );
@@ -349,9 +370,11 @@ const CaseStage: React.FC<CaseStageProps> = ({ stage, onChange, onSubmit, onConf
         <img className="blkch-image" src={data.imageUrl} alt="Архівна справа" />
         <Summary questions={data.questions} answers={answers} onEdit={editAt} />
         <div className="blkch-btn-row" style={{ marginTop: 12 }}>
-          <button className="blkch-btn blkch-btn-primary" onClick={() => onSubmit(answers)}>✅ Підтвердити</button>
-          <button className="blkch-btn blkch-btn-secondary" onClick={() => onChange({ ...stage, qIndex: total - 1 })}>⬅ Назад</button>
-          <button className="blkch-btn blkch-btn-danger" onClick={onSkip}>❌ Пропустити</button>
+          <button className="blkch-btn blkch-btn-primary" onClick={() => onSubmit(answers)} disabled={busy}>
+            {busy ? '⏳ Зберігаю…' : '✅ Підтвердити'}
+          </button>
+          <button className="blkch-btn blkch-btn-secondary" onClick={() => onChange({ ...stage, qIndex: total - 1 })} disabled={busy}>⬅ Назад</button>
+          <button className="blkch-btn blkch-btn-danger" onClick={onSkip} disabled={busy}>❌ Пропустити</button>
         </div>
       </>
     );
@@ -377,7 +400,7 @@ const CaseStage: React.FC<CaseStageProps> = ({ stage, onChange, onSubmit, onConf
         <button className="blkch-btn blkch-btn-primary" onClick={goNext} disabled={!answers[qIndex]}>
           {qIndex === total - 1 ? 'Далі →' : 'Далі →'}
         </button>
-        <button className="blkch-btn blkch-btn-danger" onClick={onSkip}>❌ Пропустити справу</button>
+        <button className="blkch-btn blkch-btn-danger" onClick={onSkip} disabled={busy}>❌ Пропустити справу</button>
       </div>
     </>
   );

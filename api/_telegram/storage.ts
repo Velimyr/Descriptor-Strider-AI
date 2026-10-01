@@ -1740,6 +1740,61 @@ export async function recordCaseEvent(
   if (error) throw error;
 }
 
+// Атомарний клейм участі у справі: INSERT … ON CONFLICT DO NOTHING RETURNING —
+// рядок повертається лише тому виклику, що його вставив. true — юзер торкається
+// справи вперше, false — у нього вже є подія (дубль запиту). На відміну від
+// recordCaseEvent (upsert, перезаписує) — нічого не змінює, якщо рядок уже є.
+export async function claimCaseEvent(
+  caseId: string,
+  tgId: string,
+  kind: 'create' | 'edit' | 'confirm',
+  answers: string[] = [],
+  partnerId?: string | null
+): Promise<boolean> {
+  const { data, error } = await db()
+    .from(T.caseConfirmations)
+    .upsert(
+      {
+        case_id: caseId,
+        tg_id: tgId,
+        kind,
+        at: new Date().toISOString(),
+        answers,
+        partner_id: partnerId || null,
+      },
+      { onConflict: 'case_id,tg_id', ignoreDuplicates: true }
+    )
+    .select('case_id');
+  if (error) throw error;
+  return (data || []).length > 0;
+}
+
+// Клейм підтвердження (collab): true — цей виклик першим зарахував confirm юзера.
+// Без нього подвійний тап у віджеті (9 запитів за секунду) 9 разів інкрементив
+// confirmations_count і нараховував бали — справи закривались з одним підтвердженням.
+// Окрім свіжої вставки, приймаємо один легальний випадок: «натиснув Редагувати, а
+// потім Підтвердити на старому прев'ю» в боті — рядок 'edit' без балів
+// (points_status IS NULL, правку ще не здано) переводимо в confirm умовним UPDATE;
+// він теж атомарний, тож із двох конкурентних пройде лише один.
+export async function claimConfirmEvent(
+  caseId: string,
+  tgId: string,
+  answers: string[] = [],
+  partnerId?: string | null
+): Promise<boolean> {
+  if (await claimCaseEvent(caseId, tgId, 'confirm', answers, partnerId)) return true;
+  const { data, error } = await db()
+    .from(T.caseConfirmations)
+    .update({ kind: 'confirm', at: new Date().toISOString(), answers, partner_id: partnerId || null })
+    .eq('case_id', caseId)
+    .eq('tg_id', tgId)
+    .eq('kind', 'edit')
+    .is('points_status', null)
+    .select('case_id');
+  if (error) throw error;
+  return (data || []).length > 0;
+}
+
 // Список case_id, до яких юзер уже доторкався (для виключення з dispatch).
 export async function getTouchedCaseIds(tgId: string): Promise<string[]> {
   const { data, error } = await db()

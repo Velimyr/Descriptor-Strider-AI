@@ -31,6 +31,11 @@ interface Props {
 // ті рядки, на які має право (суперадмін — усі).
 type TabKey = Exclude<AdminScope, 'quiz'>;
 
+// Перевірку доброчесності тимчасово вимкнено (CPU-ліміт Vercel): вкладка лишається
+// (бани/розблокування), але завантаження звіту недоступне. Серверний перемикач —
+// INTEGRITY_DISABLED у api/_telegram/index.ts; вмикати обидва разом.
+const INTEGRITY_DISABLED = true;
+
 const TABS: TabKey[] = [
   'setup',
   'questions',
@@ -6299,6 +6304,12 @@ const IntegrityView: React.FC = () => {
 
   return (
     <div className="space-y-3">
+      {INTEGRITY_DISABLED && (
+        <div className="p-3 rounded-lg border border-amber-300 bg-amber-50 text-sm text-amber-800">
+          ⏸ Перевірку доброчесності тимчасово вимкнено для економії ресурсів сервера
+          (ліміт CPU на Vercel). Список заблокованих і розблокування працюють.
+        </div>
+      )}
       <EgressWarning
         level="very-heavy"
         endpoints={['/admin/integrity']}
@@ -6316,8 +6327,8 @@ const IntegrityView: React.FC = () => {
       <div className="flex flex-wrap gap-2 items-center">
         <button
           onClick={() => refresh()}
-          disabled={busy}
-          className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm flex items-center gap-1"
+          disabled={busy || INTEGRITY_DISABLED}
+          className="px-3 py-1.5 bg-indigo-600 text-white rounded text-sm flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <RefreshCw size={14} /> {busy ? 'Завантаження…' : loaded ? 'Оновити' : 'Завантажити перевірку'}
         </button>

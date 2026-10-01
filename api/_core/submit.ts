@@ -5,12 +5,12 @@ import {
   BotCase,
   BotUser,
   appendSubmission,
+  claimCaseEvent,
+  claimConfirmEvent,
   confirmCase,
   getCase,
-  hasUserTouchedCase,
   incDailyCount,
   incMonthlyPoints,
-  recordCaseEvent,
   setCaseCreated,
   setCaseEdited,
   updateCaseCommentOnly,
@@ -101,11 +101,17 @@ export async function submitAnswers(
   }
 
   // action === 'submit' у collab → create (перша версія) або edit (виправлення).
-  const alreadyTouched = await hasUserTouchedCase(cse.caseId, user.tgId);
-  if (cse.confirmationsCount === 0 && !alreadyTouched) {
-    return submitCollabCreate(user, cse, answers!);
-  }
-  return submitCollabEdit(user, cse, answers!);
+  // У вебі юзер торкається справи рівно один раз (dispatch не видає вже торкнуті),
+  // тож наявна подія = дубль запиту (подвійний тап, друга вкладка). Раніше другий
+  // запит ішов у гілку edit: перезаписував власну версію як «правку», скидав
+  // лічильник і рахувався ще однією дією за день.
+  return cse.confirmationsCount === 0
+    ? submitCollabCreate(user, cse, answers!)
+    : submitCollabEdit(user, cse, answers!);
+}
+
+function alreadySubmitted(): SubmitError {
+  return new SubmitError('already_submitted', 'Відповідь на цю справу вже збережено');
 }
 
 // ---- Parallel ----
@@ -159,32 +165,38 @@ async function submitParallel(user: BotUser, cse: BotCase, answers: string[]): P
 
 // ---- Collab: create ----
 async function submitCollabCreate(user: BotUser, cse: BotCase, answers: string[]): Promise<SubmitResult> {
-  await Promise.all([
-    setCaseCreated(cse.caseId, user.tgId, answers),
-    recordCaseEvent(cse.caseId, user.tgId, 'create', answers, user.partnerId),
-  ]);
+  // Клейм ДО зміни справи: з двох конкурентних запитів справу запише лише один.
+  if (!(await claimCaseEvent(cse.caseId, user.tgId, 'create', answers, user.partnerId))) {
+    throw alreadySubmitted();
+  }
+  await setCaseCreated(cse.caseId, user.tgId, answers);
   return deliverCollabPoints(user, false, cse.pointsRecognition ?? 3, 'collab-create', 'recognition', true, cse.caseId);
 }
 
 // ---- Collab: edit ----
 async function submitCollabEdit(user: BotUser, cse: BotCase, answers: string[]): Promise<SubmitResult> {
+  if (!(await claimCaseEvent(cse.caseId, user.tgId, 'edit', answers, user.partnerId))) {
+    throw alreadySubmitted();
+  }
   // Якщо змінився лише «Коментар розпізнавача» (технічне поле) — не рвемо коло
   // підтверджень (лічильник лишається як був), інакше звична поведінка (скидання до 1).
   const questions = await getQuestions();
   const commentOnly = onlyCommentFieldChanged(cse.currentAnswers || [], answers, questions);
-  await Promise.all([
-    commentOnly
-      ? updateCaseCommentOnly(cse.caseId, answers)
-      : setCaseEdited(cse.caseId, user.tgId, answers),
-    recordCaseEvent(cse.caseId, user.tgId, 'edit', answers, user.partnerId),
-  ]);
+  await (commentOnly
+    ? updateCaseCommentOnly(cse.caseId, answers)
+    : setCaseEdited(cse.caseId, user.tgId, answers));
   return deliverCollabPoints(user, false, cse.pointsVerification ?? 1, 'collab-edit', 'verification', true, cse.caseId);
 }
 
 // ---- Collab: confirm ----
 async function submitCollabConfirm(user: BotUser, cse: BotCase): Promise<SubmitResult> {
   const min = await getMinConfirmations(cse.targetSubmissions);
-  await recordCaseEvent(cse.caseId, user.tgId, 'confirm', cse.currentAnswers || [], user.partnerId);
+  // Клейм ДО інкременту: повторний запит (подвійний тап, друга вкладка) не має
+  // ні рахуватись у confirmations_count, ні приносити бали вдруге.
+  const claimed = await claimConfirmEvent(cse.caseId, user.tgId, cse.currentAnswers || [], user.partnerId);
+  if (!claimed) {
+    throw new SubmitError('already_confirmed', 'Ви вже підтвердили цю справу');
+  }
   const { closed } = await confirmCase(cse.caseId, min);
   // Справу закрито — розраховуємо непідтверджені бали її розпізнавача/редакторів.
   if (closed) {

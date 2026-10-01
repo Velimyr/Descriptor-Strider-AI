@@ -27,7 +27,9 @@ export async function serveBadgeImage(req: Request, res: Response) {
           : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
           : 'image/png';
         res.setHeader('Content-Type', ct);
-        res.setHeader('Cache-Control', 'public, max-age=86400');
+        // s-maxage — щоб і ці відповіді кешував CDN. Сайт уже бере статику
+        // /badges/<id>.webp|.mp4; маршрут лишився для вкладок зі старим бандлом.
+        res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=604800');
         return res.send(buf);
       } catch {
         // пробуємо наступний кандидат

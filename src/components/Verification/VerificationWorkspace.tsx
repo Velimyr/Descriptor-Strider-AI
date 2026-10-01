@@ -489,11 +489,14 @@ export const VerificationWorkspace: React.FC<{ opysBaseUrl?: string }> = ({ opys
           <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 text-center space-y-4" onClick={e => e.stopPropagation()}>
             <div className="text-sm font-bold text-amber-600 uppercase tracking-wider">🏅 Нове досягнення!</div>
             <div className="space-y-5">
+              {/* Статика з public/badges/<id>.webp|.mp4 (256 px, ~20–100 КБ) — роздає CDN без
+                  виклику функції. Це стиснені копії api/_telegram/badges/* (оригінали лишаються
+                  для бота): при заміні картинки бейджа перегенеруйте й копію. */}
               {celebrate.map(b => (
                 <div key={b.id} className="space-y-2">
                   {b.media === 'video' ? (
                     <video
-                      src={`/api/verif/badge/${encodeURIComponent(b.id)}/image`}
+                      src={`/badges/${encodeURIComponent(b.id)}.mp4`}
                       className="w-28 h-28 object-contain mx-auto rounded-xl"
                       autoPlay
                       loop
@@ -502,7 +505,7 @@ export const VerificationWorkspace: React.FC<{ opysBaseUrl?: string }> = ({ opys
                     />
                   ) : (
                     <img
-                      src={`/api/verif/badge/${encodeURIComponent(b.id)}/image`}
+                      src={`/badges/${encodeURIComponent(b.id)}.webp`}
                       alt={b.title}
                       className="w-28 h-28 object-contain mx-auto rounded-xl"
                       referrerPolicy="no-referrer"

@@ -6,6 +6,7 @@ import {
   BotUser,
   BotCase,
   deleteSession,
+  claimConfirmEvent,
   claimSessionForSubmit,
   releaseSessionSubmit,
   getCase,
@@ -1679,9 +1680,9 @@ async function handleCallback(cb: any) {
     // reply_markup вільний (фото й питання зайняті inline-кнопками). Так меню
     // оновлюється саме — на кожній підтвердженій справі, без зайвих повідомлень
     // і без жодного додаткового запиту в БД (cbUser уже завантажений вище).
-    const ack = await sendMessage(chatId, T.savingNotice, { reply_markup: mainMenuKeyboard(cbUser) });
+    await sendMessage(chatId, T.savingNotice, { reply_markup: mainMenuKeyboard(cbUser) });
     try {
-      await collabConfirm(chatId, tgId, session.caseId, ack?.message_id);
+      await collabConfirm(chatId, tgId, session.caseId);
     } catch (e) {
       // Відкат у стан, з якого клеймили (для прев'ю це 'previewing').
       await releaseSessionSubmit(tgId, session.caseId, session.state).catch(() => {});
@@ -1814,9 +1815,9 @@ async function handleCallback(cb: any) {
     // Миттєвий фідбек — щоб користувач не натискав знову поки йдуть Sheets/Telegram запити.
     // Тут же прокидаємо нижнє меню (див. коментар у collab:confirm) — заразом
     // оновлюємо клавіатуру після змін у наборі кнопок.
-    const ack = await sendMessage(chatId, T.savingNotice, { reply_markup: mainMenuKeyboard(cbUser) });
+    await sendMessage(chatId, T.savingNotice, { reply_markup: mainMenuKeyboard(cbUser) });
     try {
-      await confirmAndSubmit(chatId, tgId, session, questions, answers, ack?.message_id);
+      await confirmAndSubmit(chatId, tgId, session, questions, answers);
     } catch (e) {
       // Сабміт упав — повертаємо стан, з якого клеймили, щоб «Підтвердити» можна
       // було натиснути повторно, а сесія не зависла в 'submitting'.
@@ -1830,16 +1831,33 @@ async function handleCallback(cb: any) {
 // --------- commands ---------
 
 async function cmdNext(chatId: number, tgId: string, existing: BotSession | null) {
-  // Миттєвий фідбек поки шукаємо/відкриваємо.
-  await sendMessage(chatId, T.processingNotice);
-  console.log('[cmdNext]', { tgId, hasExisting: !!existing, state: existing?.state, currentQ: existing?.currentQ, caseId: existing?.caseId });
+  // Миттєвий фідбек поки шукаємо/відкриваємо. Не чекаємо його одразу: запит у
+  // Telegram летить паралельно з читаннями з БД (кандидати, преференси), а перед
+  // кожним наступним повідомленням дочікуємось — порядок у чаті той самий.
+  // Збій «Обробляю…» не фатальний — справу все одно видаємо.
+  const notice: Promise<unknown> = sendMessage(chatId, T.processingNotice)
+    .catch(e => console.error('processingNotice failed', e?.message || e));
+  try {
+    await cmdNextInner(chatId, tgId, existing, notice);
+  } finally {
+    // Не віддаємо відповідь вебхуку, поки повідомлення не пішло (після відповіді
+    // інстанс можуть заморозити).
+    await notice;
+  }
+}
 
+async function cmdNextInner(
+  chatId: number,
+  tgId: string,
+  existing: BotSession | null,
+  notice: Promise<unknown>
+) {
   // 'submitting' — попередня справа якраз зберігається (паралельний виклик).
   // Це НЕ «відкрита справа»: не показуємо її знову, а одразу видаємо нову —
   // dispatch перезапише рядок сесії, а хвіст сабміту його не зачепить
   // (deleteSession там умовний, по case_id старої справи).
   if (existing && existing.state !== 'submitting') {
-    const questions = await getQuestions();
+    const [questions] = await Promise.all([getQuestions(), notice]);
     if (existing.state === 'confirming') {
       const answers: string[] = JSON.parse(existing.answersJson || '[]');
       await sendMessage(chatId, T.sessionAlreadyOpen);
@@ -1872,6 +1890,7 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
   if (!hardPref.sendHardCases && hardPref.casesSinceHardOffer >= HARD_OFFER_EVERY) {
     const hardAvailable = await hasCandidateForUser(tgId, { forceHard: true, excludeCaseId });
     if (hardAvailable) {
+      await notice;
       await sendMessage(chatId, T.hardOfferPrompt, {
         reply_markup: {
           inline_keyboard: [[
@@ -1884,7 +1903,7 @@ async function cmdNext(chatId: number, tgId: string, existing: BotSession | null
     }
   }
   // Ручне «Нова справа» — іґноруємо paused, бо опція розсилки тільки для авторозсилок.
-  await dispatchCaseToUser(tgId, true, false, excludeCaseId);
+  await dispatchCaseToUser(tgId, true, false, excludeCaseId, notice);
 }
 
 // Кожну N-ту видану справу пропонуємо складну юзеру, який їх не отримує за замовч.
@@ -2591,7 +2610,10 @@ export async function dispatchCaseToUser(
   forceHard = false,
   // excludeCaseId — справа, чий сабміт ще в польоті: RPC-фільтр «не сабмітив» її
   // ще не бачить, тож без явного виключення видали б її ж повторно.
-  excludeCaseId?: string
+  excludeCaseId?: string,
+  // Ще не доставлене «Обробляю…» (cmdNext): читання з БД ідуть паралельно з ним,
+  // а перед першим власним повідомленням чекаємо, щоб не обігнати його в чаті.
+  pendingNotice?: Promise<unknown>
 ): Promise<boolean> {
   // Паралельні незалежні читання.
   const [user, next, questions] = await Promise.all([
@@ -2599,13 +2621,13 @@ export async function dispatchCaseToUser(
     selectNextCaseForUser(tgId, { forceHard, excludeCaseId }),
     getQuestions(),
   ]);
-  console.log('[dispatch]', { tgId, userStatus: user?.status, ignorePaused, hasNext: !!next, nextCaseId: next?.caseId, questions: questions.length });
   if (!user) return false;
   if (user.banned) return false; // забаненим (перевірка доброчесності) не розсилаємо
   if (!ignorePaused && user.status !== 'active') return false;
   if (!next) {
     // Просили складну, але її немає — фолбек на звичайну (без «справ немає»).
-    if (forceHard) return dispatchCaseToUser(tgId, ignorePaused, false, excludeCaseId);
+    if (forceHard) return dispatchCaseToUser(tgId, ignorePaused, false, excludeCaseId, pendingNotice);
+    await pendingNotice;
     await sendMessage(tgId, T.noCasesLeft);
     return false;
   }
@@ -2624,19 +2646,20 @@ export async function dispatchCaseToUser(
   // Спочатку фото — щоб користувач бачив документ ДО першого питання.
   // Під фото — кнопка «Показати опис» (PDF архівного опису) + дисклеймер.
   // AI-кнопку даємо лише у flow створення опису (не у collab-перегляді чужого варіанту).
+  // Collab-лок ставимо паралельно з надсиланням фото (раніше — послідовно після):
+  // це два незалежні мережеві виклики, а лок так стає навіть раніше.
   const isRecognition = !(next.mode === 'collaborative' && next.confirmationsCount > 0);
-  await sendCasePhotoWithOpys(tgId, next, isRecognition ? next.caseId : undefined);
+  const lockP = next.mode === 'collaborative'
+    ? getCollabLockMinutes().then(m => lockCase(next.caseId, tgId, m))
+    : Promise.resolve();
+  await pendingNotice;
+  await Promise.all([
+    sendCasePhotoWithOpys(tgId, next, isRecognition ? next.caseId : undefined),
+    lockP,
+  ]);
 
-  console.log('[dispatch.next]', {
-    caseId: next.caseId,
-    mode: next.mode,
-    confirmationsCount: next.confirmationsCount,
-    rawKeys: Object.keys(next),
-  });
   // ----- Collab-режим: якщо вже є current версія, показуємо preview замість опитування. -----
   if (next.mode === 'collaborative' && next.confirmationsCount > 0) {
-    const lockMinutes = await getCollabLockMinutes();
-    await lockCase(next.caseId, tgId, lockMinutes);
     const summary = buildSummary(questions, next.currentAnswers);
     await Promise.all([
       setSession({
@@ -2657,10 +2680,6 @@ export async function dispatchCaseToUser(
   }
 
   // ----- Звичайний flow (parallel або collab без current версії — creation). -----
-  if (next.mode === 'collaborative') {
-    const lockMinutes = await getCollabLockMinutes();
-    await lockCase(next.caseId, tgId, lockMinutes);
-  }
   await Promise.all([
     setSession({
       tgId,
@@ -2930,8 +2949,7 @@ async function confirmAndSubmit(
   tgId: string,
   session: BotSession,
   questions: TableColumn[],
-  answers: string[],
-  ackMessageId?: number
+  answers: string[]
 ) {
   // user і case — паралельно
   const [user, cse] = await Promise.all([getUser(tgId), getCase(session.caseId)]);
@@ -2942,12 +2960,6 @@ async function confirmAndSubmit(
     return;
   }
 
-  console.log('[confirmAndSubmit] case', {
-    caseId: cse.caseId,
-    mode: cse.mode,
-    confirmationsCount: cse.confirmationsCount,
-    hasMode: 'mode' in cse,
-  });
   // Collab-режим: розгалуження на create vs edit.
   if (cse.mode === 'collaborative') {
     const alreadyEdit = await hasUserTouchedCase(cse.caseId, tgId);
@@ -2958,7 +2970,7 @@ async function confirmAndSubmit(
     if (!alreadyEdit && session.state === 'asking' && cse.confirmationsCount > 0) {
       return handleCaseStolenWhileAnswering(chatId, tgId, cse, questions);
     }
-    return collabSubmit(chatId, tgId, cse, user, questions, answers, alreadyEdit, ackMessageId);
+    return collabSubmit(chatId, tgId, cse, user, questions, answers, alreadyEdit);
   }
 
   const sourceLinkEnabled = telegramBotConfig.sheets.sourceLink.mode !== 'none';
@@ -3043,14 +3055,10 @@ async function confirmAndSubmit(
     ),
     // Місячний рейтинг: ті самі бали — у рядок поточного київського місяця.
     incMonthlyPoints(kyivMonthString(), tgId, earned, user.displayName),
-    // Редагуємо ack-повідомлення на фінальний текст замість надсилання нового.
-    // ВАЖЛИВО: editMessageText дозволяє тільки inline_keyboard у reply_markup.
-    // mainMenuKeyboard — це reply keyboard (постійна, унизу екрана), її не треба
-    // прокидати в edit — вона сама по собі не зникне. Тому редагуємо БЕЗ reply_markup.
-    ackMessageId
-      ? editMessageText(chatId, ackMessageId, finalText)
-          .catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))
-      : sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }),
+    // Фінальний текст — НОВИМ повідомленням, без спроби редагувати «Зберігаю…»:
+    // те несе нижнє меню (reply keyboard), а такі повідомлення Telegram редагувати
+    // не дає («message can't be edited») — edit падав щоразу й лише додавав запит.
+    sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }),
   ]);
 
   if (tierMsg) {
@@ -3114,8 +3122,7 @@ async function collabSubmit(
   user: BotUser,
   questions: TableColumn[],
   answers: string[],
-  alreadyEdit: boolean,
-  ackMessageId?: number
+  alreadyEdit: boolean
 ) {
   const finalAnswers = questions.map((_, i) => answers[i] ?? '');
 
@@ -3147,7 +3154,7 @@ async function collabSubmit(
   const actionBase = alreadyEdit ? (cse.pointsVerification ?? 1) : (cse.pointsRecognition ?? 3);
   const action: MarathonAction = alreadyEdit ? 'verification' : 'recognition';
   // Розпізнавання/редагування — бали тримаємо як «непідтверджені» до закриття справи.
-  await deliverCollabPoints(chatId, tgId, user, ackMessageId, /*closed*/ false, actionBase, action, /*held*/ true, cse.caseId);
+  await deliverCollabPoints(chatId, tgId, user, /*closed*/ false, actionBase, action, /*held*/ true, cse.caseId);
   await deleteSession(tgId, cse.caseId);
 }
 
@@ -3155,8 +3162,7 @@ async function collabSubmit(
 async function collabConfirm(
   chatId: number,
   tgId: string,
-  caseId: string,
-  ackMessageId?: number
+  caseId: string
 ) {
   const [user, cse] = await Promise.all([getUser(tgId), getCase(caseId)]);
   if (!user) return;
@@ -3167,10 +3173,16 @@ async function collabConfirm(
   }
   const min = await getMinConfirmations(cse.targetSubmissions);
   // Снапшот того, що користувач підтвердив — поточні current_answers справи.
-  await recordCaseEvent(caseId, tgId, 'confirm', cse.currentAnswers || []);
+  // Клейм ДО інкременту: повторне підтвердження (старе прев'ю, гонитва поза
+  // клеймом сесії) не рахується в confirmations_count і не дає балів удруге.
+  if (!(await claimConfirmEvent(caseId, tgId, cse.currentAnswers || []))) {
+    await deleteSession(tgId, caseId);
+    await sendMessage(chatId, T.alreadyConfirmedCase, { reply_markup: mainMenuKeyboard(user) });
+    return;
+  }
   const { closed } = await confirmCase(caseId, min);
   // Перевірка — 1 бал база (нараховується одразу, не «непідтверджені»).
-  await deliverCollabPoints(chatId, tgId, user, ackMessageId, closed, cse.pointsVerification ?? 1, 'verification');
+  await deliverCollabPoints(chatId, tgId, user, closed, cse.pointsVerification ?? 1, 'verification');
   // Справу закрито — розраховуємо непідтверджені бали її розпізнавача/редакторів.
   if (closed) {
     try {
@@ -3198,7 +3210,6 @@ async function deliverCollabPoints(
   chatId: number,
   tgId: string,
   user: BotUser,
-  ackMessageId: number | undefined,
   closed: boolean,
   actionBase: number,
   action: MarathonAction,
@@ -3227,9 +3238,7 @@ async function deliverCollabPoints(
     const pendingText =
       fmt(T.pointsPending, { points: earned, todayCount, todayDone, goal: telegramBotConfig.cases.dailyGoal }) +
       (bonus.marathon ? '\n' + fmt(T.marathonConfirmLine, { name: bonus.marathon.name, coef: bonus.marathon.coefficient }) : '');
-    await (ackMessageId
-      ? editMessageText(chatId, ackMessageId, pendingText).catch(() => sendMessage(chatId, pendingText, { reply_markup: mainMenuKeyboard(user) }))
-      : sendMessage(chatId, pendingText, { reply_markup: mainMenuKeyboard(user) }));
+    await sendMessage(chatId, pendingText, { reply_markup: mainMenuKeyboard(user) });
     return;
   }
 
@@ -3264,10 +3273,7 @@ async function deliverCollabPoints(
     upsertUser({ ...user, totalPoints: newTotal, consecutiveMisses: 0 }, user.rowIndex),
     // Місячний рейтинг: ті самі бали — у поточний київський місяць.
     incMonthlyPoints(kyivMonthString(), tgId, earned, user.displayName),
-    ackMessageId
-      ? editMessageText(chatId, ackMessageId, finalText)
-          .catch(() => sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }))
-      : sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }),
+    sendMessage(chatId, finalText, { reply_markup: mainMenuKeyboard(user) }),
   ]);
 
   if (tierMsg) await sendMessage(chatId, tierMsg);

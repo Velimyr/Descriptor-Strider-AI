@@ -1,5 +1,4 @@
 import express from "express";
-import axios from "axios";
 import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
@@ -72,19 +71,11 @@ app.use('/api/public/v1', publicRouter);
 // Першосторонній API сайту перевірки справ. Сесія через Bearer-токен (без партнер-ключа).
 app.use('/api/verif', verifRouter);
 
-// Proxy for PDF files to avoid CORS
-app.get("/api/proxy-pdf", async (req, res) => {
-  const url = req.query.url as string;
-  if (!url) return res.status(400).send("URL is required");
-
-  try {
-    const response = await axios.get(url, { responseType: "arraybuffer" });
-    res.set("Content-Type", "application/pdf");
-    res.send(response.data);
-  } catch (error) {
-    console.error("Error proxying PDF:", error);
-    res.status(500).send("Failed to fetch PDF");
-  }
+// Колишній проксі PDF (обхід CORS для «Розпізнавання» за посиланням) вимкнено:
+// він без авторизації завантажував БУДЬ-ЯКИЙ URL — чужий трафік і SSRF за наш рахунок.
+// Маршрут лишено, щоб старі вкладки отримали зрозумілу відповідь, а не index.html.
+app.get("/api/proxy-pdf", (_req, res) => {
+  res.status(410).send("PDF proxy disabled");
 });
 
 // Google Auth URL

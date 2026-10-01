@@ -1096,7 +1096,19 @@ function levenshtein(a: string, b: string, minBand = 5): number {
   }
 }
 
+// Тимчасово вимкнено (2026-10): найдорожчий за CPU ендпоінт (~4 с CPU і ~9 МБ JSON на
+// кожне відкриття, кеш майже не влучає, бо бот пише підтвердження весь день), а ліміт
+// Active CPU на Hobby — 4 год/міс. Код лишається; щоб увімкнути — false тут і
+// INTEGRITY_DISABLED у TelegramAdminTab.tsx. Дії з парами/бани працюють як і раніше.
+const INTEGRITY_DISABLED = true;
+
 router.get('/admin/integrity', async (req, res) => {
+  if (INTEGRITY_DISABLED) {
+    return res.status(503).json({
+      error: 'integrity_disabled',
+      message: 'Перевірку доброчесності тимчасово вимкнено для економії ресурсів сервера.',
+    });
+  }
   const threshold = Math.max(0, parseInt((req.query.threshold as string) || '5', 10) || 5);
   const includeResolved = String(req.query.includeResolved || '') === '1';
   // НАЙВАЖЧИЙ ендпоінт: тягне ВСЕ — submissions, confirmations, cases, reviews
