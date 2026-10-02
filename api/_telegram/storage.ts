@@ -2,6 +2,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { telegramBotConfig } from '../../src/telegram-bot/config.js';
+import { keepAliveFetch } from '../_core/keepAlive.js';
 
 let cachedClient: SupabaseClient | null = null;
 
@@ -106,17 +107,17 @@ function requestPath(input: RequestInfo | URL): string {
 async function cacheAwareFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const store = requestCache.getStore();
   const method = (init?.method || 'GET').toUpperCase();
-  if (!store || method === 'GET' || method === 'HEAD') return fetch(input, init);
+  if (!store || method === 'GET' || method === 'HEAD') return keepAliveFetch(input, init);
   const path = requestPath(input);
   const invalidates =
     path === USERS_PATH ||
     (path.startsWith(RPC_PATH_PREFIX) && !READ_ONLY_RPCS.has(path.slice(RPC_PATH_PREFIX.length)));
-  if (!invalidates) return fetch(input, init);
+  if (!invalidates) return keepAliveFetch(input, init);
   // До запиту — щоб паралельне читання не взяло старий рядок із кешу; після — щоб
   // не лишився рядок, прочитаний, поки запис ще летів.
   store.users.clear();
   try {
-    return await fetch(input, init);
+    return await keepAliveFetch(input, init);
   } finally {
     store.users.clear();
   }

@@ -2,6 +2,8 @@ import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
+// Першим із модулів API: keep-alive для axios/fetch має діяти до будь-яких вихідних запитів.
+import "./_core/keepAlive.js";
 import telegramRouter from "./_telegram/index.js";
 import publicRouter from "./_public/index.js";
 import verifRouter from "./_verif/index.js";
