@@ -9,20 +9,12 @@
 // Перемикання: deleteWebhook → цей процес почне отримувати апдейти. Відкат:
 // setWebhook на Vercel (кнопка в адмінці) — тоді getUpdates отримує 409 і процес
 // просто чекає, нічого не обробляючи.
+import './bot-env.js';
 import express from 'express';
-import dotenv from 'dotenv';
-import path from 'path';
 import axios from 'axios';
 import './api/_core/keepAlive.js';
 import telegramRouter, { processUpdate } from './api/_telegram/index.js';
 import { telegramBotConfig } from './src/telegram-bot/config.js';
-
-dotenv.config({
-  path: [
-    path.resolve(process.cwd(), '.env.local'),
-    path.resolve(process.cwd(), '.env'),
-  ],
-});
 
 const PORT = Number(process.env.BOT_PORT || 3100);
 const TOKEN = process.env[telegramBotConfig.tg.botTokenEnv] || '';
