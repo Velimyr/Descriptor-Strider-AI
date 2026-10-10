@@ -30,6 +30,10 @@ const CRON_SECRET = process.env[telegramBotConfig.cronSecretEnv] || '';
 // Необов'язково: URL пінгу healthchecks.io — сповістить, якщо процес завис/впав.
 const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || '';
 const TZ = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
+// BOT_CRONS=off — лише прийом апдейтів, крони лишаються на GitHub Actions → Vercel
+// (перехідний режим). Інакше — крони тут, а GH-воркфлоу треба вимкнути: cleanup не
+// захищений від паралельного запуску.
+const CRONS_ENABLED = !/^(off|0|false|no)$/i.test(process.env.BOT_CRONS || '');
 
 if (!TOKEN) {
   console.error(`[bot] Missing env ${telegramBotConfig.tg.botTokenEnv}`);
@@ -204,17 +208,21 @@ async function shutdown(signal: string) {
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
-console.log(`[bot] старт; розсилка о ${DISPATCH_HOURS.join(', ')}:00 (${TZ})`);
-scheduleNextMinute();
 void pollLoop();
 
-// Процес перезапустили посеред розсилки — продовжуємо її (а не чекаємо наступного слоту).
-import('./api/_telegram/dispatchRound.js')
-  .then(m => m.hasUnfinishedRound())
-  .then(unfinished => {
-    if (unfinished) {
-      console.log('[bot] знайдено незавершений раунд розсилки — продовжую');
-      startJob(jobs[0]);
-    }
-  })
-  .catch(e => console.error('[bot] перевірка незавершеного раунду:', e?.message || e));
+if (!CRONS_ENABLED) {
+  console.log('[bot] старт; крони вимкнено (BOT_CRONS=off) — лише прийом апдейтів');
+} else {
+  console.log(`[bot] старт; розсилка о ${DISPATCH_HOURS.join(', ')}:00 (${TZ})`);
+  scheduleNextMinute();
+  // Процес перезапустили посеред розсилки — продовжуємо її (а не чекаємо наступного слоту).
+  import('./api/_telegram/dispatchRound.js')
+    .then(m => m.hasUnfinishedRound())
+    .then(unfinished => {
+      if (unfinished) {
+        console.log('[bot] знайдено незавершений раунд розсилки — продовжую');
+        startJob(jobs[0]);
+      }
+    })
+    .catch(e => console.error('[bot] перевірка незавершеного раунду:', e?.message || e));
+}
