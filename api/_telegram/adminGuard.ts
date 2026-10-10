@@ -34,7 +34,7 @@ const ADMIN_ROUTES: Array<[RegExp, AdminScope[]]> = [
   [/^\/me$/, []],
 
   // Налаштування / діагностика / webhook
-  [/^\/(health|check-db|check-chat|recent-groups|test-announce|ping-chat|meta|set-webhook|webhook-info|delete-webhook)$/, ['setup']],
+  [/^\/(health|check-db|check-chat|recent-groups|test-announce|ping-chat|meta|set-webhook|webhook-info|delete-webhook|bot-host)$/, ['setup']],
 
   // Питання (ProcessDescriptionView теж читає перелік питань)
   [/^\/save-questions$/, ['questions']],

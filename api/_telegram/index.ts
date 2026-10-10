@@ -33,6 +33,15 @@ import {
   verifyPassword,
 } from '../_core/admins.js';
 import { handleUpdate } from './bot.js';
+import {
+  cronsRunHere,
+  getCronsHost,
+  getServerHeartbeat,
+  webhookUrlForThisDeployment,
+  setCronsHost,
+  thisHost,
+  type BotHost,
+} from './botHost.js';
 import { sendPhotoByBuffer, setWebhook, getWebhookInfo, deleteWebhook } from './tg-api.js';
 import { detectCaseBoxes } from './slicer.js';
 import {
@@ -88,6 +97,11 @@ router.get('/cron/tick', async (req, res) => {
     return res.status(403).send('forbidden');
   }
   try {
+    // Крони перемкнуто на інший бік (адмінка → «Де працює бот»). 'done' — щоб цикл
+    // у GitHub Actions одразу завершився.
+    if (!(await cronsRunHere())) {
+      return res.json({ ok: true, status: 'done', note: `crons-on-${await getCronsHost()}` });
+    }
     const { runDispatchTickChunk } = await import('./dispatchRound.js');
     const result = await runDispatchTickChunk({ force: req.query.force === '1' });
     res.json({ ok: true, ...result });
@@ -103,6 +117,23 @@ router.get('/cron/cleanup', async (req, res) => {
   if (expected && req.query.secret !== expected) {
     return res.status(403).send('forbidden');
   }
+  if (!(await cronsRunHere())) {
+    return res.json({ ok: true, skipped: `crons-on-${await getCronsHost()}` });
+  }
+  // Ліза: два одночасні cleanup (напр. у момент перемикання кронів) двічі слали б
+  // «сесія завершилась» і двічі рахували пропуск.
+  const { tryClaimLease, releaseLease } = await import('./storage.js');
+  if (!(await tryClaimLease('cleanup_lease', 10 * 60_000))) {
+    return res.json({ ok: true, skipped: 'busy' });
+  }
+  try {
+    await runCleanup(res);
+  } finally {
+    await releaseLease('cleanup_lease').catch(e => console.error('cleanup lease release failed', e));
+  }
+});
+
+async function runCleanup(res: express.Response) {
   const cfg = telegramBotConfig.dispatch;
   const sessions = await getAllSessions();
   const ttlMs = cfg.sessionTtlHours * 3600 * 1000;
@@ -154,7 +185,7 @@ router.get('/cron/cleanup', async (req, res) => {
     }
   }
   res.json({ ok: true, cleaned });
-});
+}
 
 // ----------- Простий in-memory кеш для адмін-ендпоінтів -----------
 // Кеш живе в межах warm-інстансу Vercel; на cold start спорожнюється.
@@ -298,6 +329,9 @@ router.get('/hof/photo/:tgId', async (req, res) => {
 router.get('/cron/group-tick', async (req, res) => {
   const expected = process.env[telegramBotConfig.cronSecretEnv];
   if (expected && req.query.secret !== expected) return res.status(403).send('forbidden');
+  if (!(await cronsRunHere())) {
+    return res.json({ ok: true, skipped: `crons-on-${await getCronsHost()}` });
+  }
   const hourStr = KYIV_HOUR_FMT.format(new Date());
   const kyivHour = parseInt(hourStr, 10);
 
@@ -333,6 +367,9 @@ router.get('/cron/karma-ingest', async (req, res) => {
   const expected = process.env[telegramBotConfig.cronSecretEnv];
   if (expected && req.query.secret !== expected) return res.status(403).send('forbidden');
   try {
+    if (!(await cronsRunHere())) {
+      return res.json({ ok: true, skipped: `crons-on-${await getCronsHost()}` });
+    }
     const { getAllUserTotals } = await import('./storage.js');
     const { ingestAccounts } = await import('./karma.js');
     const users = await getAllUserTotals();
@@ -672,6 +709,66 @@ router.get('/admin/webhook-info', async (req, res) => {
 router.post('/admin/delete-webhook', async (req, res) => {
   await deleteWebhook();
   res.json({ ok: true });
+});
+
+// ----------- Де працює бот (Vercel / сервер) — див. botHost.ts -----------
+async function readBotHostState() {
+  const [webhook, crons, server] = await Promise.all([
+    getWebhookInfo(),
+    getCronsHost(),
+    getServerHeartbeat().catch(() => null),
+  ]);
+  return {
+    updates: (webhook?.url ? 'vercel' : 'server') as BotHost,
+    webhook: {
+      url: webhook?.url || '',
+      pending: webhook?.pending_update_count ?? 0,
+      lastError: webhook?.last_error_message || '',
+      lastErrorAt: webhook?.last_error_date ? new Date(webhook.last_error_date * 1000).toISOString() : '',
+    },
+    crons,
+    server,
+    // Звідки відповідає цей запит адмінки (для підказок в UI).
+    adminHost: thisHost(),
+    // Куди піде вебхук при перемиканні повідомлень «на Vercel» (null → адреса з браузера).
+    vercelWebhookUrl: webhookUrlForThisDeployment(),
+  };
+}
+
+router.get('/admin/bot-host', async (_req, res) => {
+  try {
+    res.json(await readBotHostState());
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
+});
+
+// body: { target: 'updates' | 'crons', host: 'vercel' | 'server', url? }
+// url — запасний варіант для локального dev (поза Vercel), див. webhookUrlForThisDeployment.
+router.post('/admin/bot-host', async (req, res) => {
+  const { target, host, url } = req.body || {};
+  if (target !== 'updates' && target !== 'crons') return res.status(400).json({ error: 'bad target' });
+  if (host !== 'vercel' && host !== 'server') return res.status(400).json({ error: 'bad host' });
+  try {
+    if (target === 'crons') {
+      await setCronsHost(host);
+    } else if (host === 'server') {
+      // Без drop_pending_updates: апдейти, що прийдуть у момент перемикання, забере сервер.
+      await deleteWebhook();
+    } else {
+      const webhookUrl = webhookUrlForThisDeployment() || (typeof url === 'string' ? url : '');
+      if (!/^https:\/\//.test(webhookUrl)) {
+        return res.status(400).json({ error: `Вебхук потребує https-адреси, а вийшло: ${webhookUrl || '(порожньо)'}` });
+      }
+      const secret = process.env[telegramBotConfig.tg.webhookSecretEnv];
+      if (!secret) return res.status(400).json({ error: `Missing ${telegramBotConfig.tg.webhookSecretEnv}` });
+      await setWebhook(webhookUrl, secret);
+    }
+    console.log(`[bot-host] ${req.admin?.login || '?'}: ${target} → ${host}`);
+    res.json(await readBotHostState());
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'internal' });
+  }
 });
 
 // Завантаження картинки в канал. Приймає base64 PNG/JPEG.

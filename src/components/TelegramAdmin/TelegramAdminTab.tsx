@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X, RefreshCw, Save, UploadCloud, Wand2, Trash2, Plus, AlertTriangle } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import { TableColumn } from '../../types';
-import { tgApi, adminLogin, AdminProfile } from '../../services/telegramApi';
+import { tgApi, adminLogin, AdminProfile, BotHostState } from '../../services/telegramApi';
 import { ADMIN_SCOPE_LABELS, AdminScope } from '../../telegram-bot/adminScopes';
 import { AdminAuthProvider, useAdminAuth } from './adminAuth';
 import { AdminsView } from './AdminsView';
@@ -225,6 +225,165 @@ const LoginGate: React.FC<{ onSuccess: (p: AdminProfile) => void; onClose: () =>
 
 // ==================== SETUP ====================
 
+// ---- Де працює бот (api/_telegram/botHost.ts) ----
+type BotHost = 'vercel' | 'server';
+const HOST_LABEL: Record<BotHost, string> = { vercel: 'Vercel', server: 'Сервер' };
+// Сервер звітує раз на 5 хв; дві пропущені мітки — вважаємо, що він не працює.
+const HEARTBEAT_STALE_MIN = 11;
+const POLL_LABEL: Record<string, string> = {
+  polling: 'забирає повідомлення',
+  conflict: 'чекає — повідомлення йдуть на Vercel',
+  error: 'помилка отримання повідомлень',
+  starting: 'запускається',
+};
+
+function minutesAgo(iso?: string): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 60_000)) : null;
+}
+
+const BotHostSection: React.FC = () => {
+  const [state, setState] = useState<BotHostState | null>(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState<'' | 'updates' | 'crons' | 'load'>('');
+
+  const load = async () => {
+    setBusy('load');
+    try {
+      setState(await tgApi.botHost());
+      setErr('');
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy('');
+    }
+  };
+  useEffect(() => {
+    load();
+  }, []);
+
+  const server = state?.server || null;
+  // Куди піде вебхук при перемиканні на Vercel: сервер визначає за типом деплою;
+  // null — адмінка не на Vercel (локально), тоді адреса з браузера.
+  const vercelTarget = state?.vercelWebhookUrl || `${window.location.origin}/api/telegram/webhook`;
+  const age = minutesAgo(server?.at);
+  const serverAlive = age !== null && age <= HEARTBEAT_STALE_MIN;
+
+  const switchTo = async (target: 'updates' | 'crons', host: BotHost) => {
+    const what = target === 'updates' ? 'прийом повідомлень' : 'крони (розсилки справ, cleanup, групи, Карма)';
+    const warnings: string[] = [];
+    if (host === 'server') {
+      if (!serverAlive) warnings.push('⚠ Сервер не звітує понад 10 хв (або ще жодного разу). Після перемикання бот може перестати працювати.');
+      if (target === 'crons' && server && !server.cronsEnv) {
+        warnings.push('⚠ На сервері крони вимкнено змінною BOT_CRONS=off — розсилок не буде НІДЕ, доки її не приберуть.');
+      }
+    }
+    if (target === 'updates' && host === 'vercel') warnings.push(`Вебхук буде встановлено на:\n${vercelTarget}`);
+    if (!window.confirm([`Перемкнути ${what} на «${HOST_LABEL[host]}»?`, ...warnings].join('\n\n'))) return;
+    setBusy(target);
+    try {
+      setState(await tgApi.setBotHost(target, host, vercelTarget));
+      setErr('');
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy('');
+    }
+  };
+
+  // Що зараз реально не так — показуємо червоним над перемикачами.
+  const problems: string[] = [];
+  if (state) {
+    if (state.updates === 'server' && !serverAlive) problems.push('Повідомлення перемкнуто на сервер, але сервер не звітує — бот, імовірно, не відповідає.');
+    else if (state.updates === 'server' && server && server.polling === 'error') problems.push('Сервер не може отримати повідомлення від Telegram.');
+    if (state.crons === 'server' && !serverAlive) problems.push('Крони перемкнуто на сервер, але сервер не звітує — розсилки не підуть.');
+    else if (state.crons === 'server' && server && !server.cronsEnv) problems.push('Крони перемкнуто на сервер, але там стоїть BOT_CRONS=off — розсилки не підуть.');
+  }
+
+  const Row: React.FC<{ title: string; target: 'updates' | 'crons'; host: BotHost; children?: React.ReactNode }> = ({ title, target, host, children }) => {
+    const other: BotHost = host === 'vercel' ? 'server' : 'vercel';
+    return (
+      <div className="flex flex-wrap items-start justify-between gap-2 border-t pt-2">
+        <div className="space-y-0.5">
+          <div>
+            {title}: <b>{HOST_LABEL[host]}</b>
+          </div>
+          {children}
+        </div>
+        <button
+          onClick={() => switchTo(target, other)}
+          disabled={!!busy}
+          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-medium disabled:opacity-50"
+        >
+          {busy === target ? 'Перемикаю…' : `Перемкнути на «${HOST_LABEL[other]}»`}
+        </button>
+      </div>
+    );
+  };
+
+  return (
+    <section className="border rounded p-3 bg-slate-50 space-y-2 text-sm">
+      <div className="flex items-center justify-between">
+        <span className="font-medium">Де працює бот</span>
+        <button onClick={load} disabled={!!busy} className="text-xs text-indigo-600 flex items-center gap-1 disabled:opacity-50">
+          <RefreshCw size={12} /> Оновити
+        </button>
+      </div>
+      {err && <div className="text-red-600 text-xs">❌ {err}</div>}
+      {problems.map(p => (
+        <div key={p} className="text-red-600 text-xs flex items-start gap-1">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" /> {p}
+        </div>
+      ))}
+      {state && (
+        <>
+          <Row title="Повідомлення користувачів" target="updates" host={state.updates}>
+            <div className="text-xs text-slate-500 break-all">
+              {state.webhook.url ? <>Вебхук: <code>{state.webhook.url}</code></> : 'Вебхук знято — повідомлення забирає сервер'}
+            </div>
+            {state.webhook.url && state.webhook.url !== vercelTarget && (
+              <div className="text-xs text-amber-600 break-all">
+                ⚠ Вебхук веде не на адресу цього деплою (<code>{vercelTarget}</code>) — перевірте, чи це очікувано.
+              </div>
+            )}
+            {state.webhook.pending > 0 && (
+              <div className="text-xs text-amber-600">⚠ У черзі Telegram: {state.webhook.pending}</div>
+            )}
+            {state.webhook.lastError && (
+              <div className="text-xs text-red-600">
+                Остання помилка вебхука: {state.webhook.lastError}
+                {state.webhook.lastErrorAt ? ` (${new Date(state.webhook.lastErrorAt).toLocaleString('uk-UA')})` : ''}
+              </div>
+            )}
+          </Row>
+          <Row title="Крони (розсилки, cleanup, групи, Карма)" target="crons" host={state.crons} />
+          <div className="border-t pt-2 text-xs space-y-0.5">
+            <div className="font-medium text-sm">Сервер</div>
+            {!server ? (
+              <div className="text-slate-500">Ще жодного разу не звітував.</div>
+            ) : (
+              <>
+                <div className={serverAlive ? 'text-green-700' : 'text-red-600'}>
+                  {serverAlive ? '● Живий' : '● Не звітує'} — остання мітка {age === 0 ? 'щойно' : `${age} хв тому`}
+                </div>
+                <div className="text-slate-600">
+                  Прийом: {POLL_LABEL[server.polling] || server.polling} · оброблено з запуску: {server.updatesHandled}
+                </div>
+                <div className="text-slate-500">
+                  Запущено {new Date(server.startedAt).toLocaleString('uk-UA')}
+                  {server.version ? ` · версія ${server.version}` : ''}
+                  {!server.cronsEnv ? ' · BOT_CRONS=off' : ''}
+                </div>
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </section>
+  );
+};
+
 const SetupView: React.FC = () => {
   const [health, setHealth] = useState<any>(null);
   const [dbCheck, setDbCheck] = useState<any>(null);
@@ -272,21 +431,6 @@ const SetupView: React.FC = () => {
 
   const allEnvOk = health?.env && Object.values(health.env).every(Boolean);
   const dbOk = dbCheck?.ok === true;
-
-  const initialize = async () => {
-    setBusy(true);
-    setMsg('');
-    try {
-      const url = `${window.location.origin}/api/telegram/webhook`;
-      await tgApi.setWebhook(url);
-      setMsg(`✅ Webhook встановлено: ${url}`);
-      await refresh();
-    } catch (e: any) {
-      setMsg('❌ ' + e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div className="space-y-5 max-w-2xl">
@@ -344,44 +488,8 @@ const SetupView: React.FC = () => {
         </section>
       )}
 
-      {/* Webhook стан */}
-      {health?.webhook && (
-        <section className="border rounded p-3 bg-slate-50 space-y-1 text-sm">
-          <div className="font-medium">Webhook Telegram</div>
-          <div>
-            URL:{' '}
-            {health.webhook.url ? (
-              <code className="text-xs break-all">{health.webhook.url}</code>
-            ) : (
-              <span className="text-red-600">не встановлено — натисніть «Налаштувати webhook»</span>
-            )}
-          </div>
-          {health.webhook.pending_update_count > 0 && (
-            <div className="text-amber-600">⚠ Накопичилось апдейтів: {health.webhook.pending_update_count}</div>
-          )}
-          {health.webhook.last_error_message && (
-            <div className="text-red-600">Остання помилка: {health.webhook.last_error_message}</div>
-          )}
-        </section>
-      )}
-
-      {/* Налаштування webhook */}
-      {allEnvOk && dbOk && (
-        <section className="space-y-2">
-          <button
-            onClick={initialize}
-            disabled={busy}
-            className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-sm font-medium disabled:opacity-50"
-          >
-            {busy ? 'Працюю…' : 'Налаштувати webhook на цей домен'}
-          </button>
-          <p className="text-xs text-slate-500">
-            Скаже Telegram-у слати апдейти на{' '}
-            <code>{typeof window !== 'undefined' ? window.location.origin : ''}/api/telegram/webhook</code>.
-            Виконуйте при першому налаштуванні і після зміни домену.
-          </p>
-        </section>
-      )}
+      {/* Де працює бот: Vercel / сервер (прийом повідомлень і крони окремо) */}
+      {health?.env?.botToken && <BotHostSection />}
 
       {/* Collaborative-режим: налаштування */}
       <section className="border rounded p-3 bg-slate-50 space-y-3 text-sm">

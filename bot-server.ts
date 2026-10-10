@@ -6,14 +6,18 @@
 // Логіка та сама, що й на Vercel: апдейт → processUpdate, крони → ті самі
 // /api/telegram/cron/* маршрути (локальний HTTP на 127.0.0.1, назовні не відкритий).
 //
-// Перемикання: deleteWebhook → цей процес почне отримувати апдейти. Відкат:
-// setWebhook на Vercel (кнопка в адмінці) — тоді getUpdates отримує 409 і процес
-// просто чекає, нічого не обробляючи.
+// Перемикання — в адмінці («Де працює бот», див. api/_telegram/botHost.ts):
+//   • повідомлення: вебхук знято → цей процес забирає апдейти; вебхук на Vercel →
+//     getUpdates отримує 409 і процес чекає, нічого не обробляючи;
+//   • крони: тут виконуються лише коли прапорець у bot_meta = 'server'.
+// Раз на 5 хв процес пише в bot_meta мітку «живий» — її показує адмінка.
 import './bot-env.js';
 import express from 'express';
 import axios from 'axios';
+import { execSync } from 'node:child_process';
 import './api/_core/keepAlive.js';
 import telegramRouter, { processUpdate } from './api/_telegram/index.js';
+import { cronsRunHere, writeServerHeartbeat, type ServerHeartbeat } from './api/_telegram/botHost.js';
 import { telegramBotConfig } from './src/telegram-bot/config.js';
 
 const PORT = Number(process.env.BOT_PORT || 3100);
@@ -22,9 +26,8 @@ const CRON_SECRET = process.env[telegramBotConfig.cronSecretEnv] || '';
 // Необов'язково: URL пінгу healthchecks.io — сповістить, якщо процес завис/впав.
 const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || '';
 const TZ = telegramBotConfig.dispatch.timezone || 'Europe/Kyiv';
-// BOT_CRONS=off — лише прийом апдейтів, крони лишаються на GitHub Actions → Vercel
-// (перехідний режим). Інакше — крони тут, а GH-воркфлоу треба вимкнути: cleanup не
-// захищений від паралельного запуску.
+// BOT_CRONS=off — аварійний вимикач: крони на цьому сервері не запускаються взагалі,
+// навіть якщо в адмінці їх перемкнуто сюди. Звичайне перемикання — через адмінку.
 const CRONS_ENABLED = !/^(off|0|false|no)$/i.test(process.env.BOT_CRONS || '');
 
 if (!TOKEN) {
@@ -63,8 +66,10 @@ function updateKey(u: any): string {
   return id != null ? String(id) : `u${u?.update_id}`;
 }
 
+let updatesHandled = 0;
 function enqueue(update: any) {
   const key = updateKey(update);
+  updatesHandled++;
   const next = (chains.get(key) ?? Promise.resolve()).then(() => processUpdate(update));
   chains.set(key, next);
   next.finally(() => {
@@ -79,9 +84,47 @@ function pingHealth() {
   axios.get(HEALTHCHECK_URL, { timeout: 10_000 }).catch(() => {});
 }
 
+// ---------- Мітка «сервер живий» (для адмінки) ----------
+const STARTED_AT = new Date().toISOString();
+const VERSION = (() => {
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return '';
+  }
+})();
+let pollState: ServerHeartbeat['polling'] = 'starting';
+
+// Записи — строго по черзі, а стан береться на момент запису: інакше паралельні
+// upsert-и могли б лишити в БД старіший стан.
+let heartbeatChain = Promise.resolve();
+function heartbeat() {
+  heartbeatChain = heartbeatChain
+    .then(() =>
+      writeServerHeartbeat({
+        at: new Date().toISOString(),
+        startedAt: STARTED_AT,
+        version: VERSION,
+        polling: pollState,
+        cronsEnv: CRONS_ENABLED,
+        updatesHandled,
+      })
+    )
+    .catch(e => console.error('[bot] heartbeat failed:', e?.message || e));
+}
+
+// Зміна стану прийому — в лог і одразу в мітку, щоб адмінка показала її без 5-хв затримки.
+function setPollState(next: ServerHeartbeat['polling'], detail = '') {
+  if (next === pollState) return;
+  pollState = next;
+  if (next === 'polling') console.log('[poll] прийом апдейтів активний (вебхук знято)');
+  else if (next === 'conflict') console.log('[poll] вебхук встановлено — апдейти йдуть на Vercel, чекаю', detail);
+  else if (next === 'error') console.error('[poll] getUpdates падає:', detail);
+  heartbeat();
+}
+
 async function pollLoop() {
   let offset = 0;
-  let conflictLogged = false;
   while (!stopping) {
     try {
       const res = await axios.post(
@@ -90,7 +133,7 @@ async function pollLoop() {
         { offset, timeout: 50, allowed_updates: ['message', 'callback_query'] },
         { timeout: 65_000, signal: pollAbort.signal }
       );
-      conflictLogged = false;
+      setPollState('polling');
       for (const u of res.data?.result ?? []) {
         offset = u.update_id + 1;
         enqueue(u);
@@ -102,11 +145,11 @@ async function pollLoop() {
       const desc = e?.response?.data?.description || e?.message;
       if (status === 409) {
         // Вебхук активний (бот працює через Vercel) або запущено другий інстанс.
-        if (!conflictLogged) console.warn('[poll] 409: вебхук встановлено або працює інший інстанс —', desc);
-        conflictLogged = true;
-        await sleep(30_000);
+        // 10 с — щоб після перемикання в адмінці сервер підхопив апдейти швидко.
+        setPollState('conflict', desc);
+        await sleep(10_000);
       } else {
-        console.error('[poll] getUpdates failed:', status ?? '', desc);
+        setPollState('error', `${status ?? ''} ${desc}`);
         await sleep(5_000);
       }
     }
@@ -144,14 +187,28 @@ const jobs: Job[] = [
   { name: 'karma-ingest', due: (h, m) => h === 4 && m === 0, run: () => callCron('karma-ingest') },
 ];
 
+// Чи крони зараз за цим сервером (прапорець в адмінці). Лог — лише при зміні.
+let cronsHereLogged: boolean | null = null;
+async function cronsAllowed(): Promise<boolean> {
+  const here = await cronsRunHere().catch(e => {
+    console.error('[cron] не вдалося прочитати прапорець кронів:', e?.message || e);
+    return false;
+  });
+  if (here !== cronsHereLogged) {
+    console.log(here ? '[cron] крони виконуються тут' : '[cron] крони перемкнуто на Vercel — тут пропускаю');
+    cronsHereLogged = here;
+  }
+  return here;
+}
+
 const running = new Map<string, Promise<void>>();
 function startJob(job: Job) {
   if (running.has(job.name)) {
     console.warn(`[cron] ${job.name}: попередній запуск ще триває — пропускаю`);
     return;
   }
-  const p = job
-    .run()
+  const p = cronsAllowed()
+    .then(allowed => (allowed ? job.run() : undefined))
     .then(r => {
       if (r !== undefined) console.log(`[cron] ${job.name}:`, JSON.stringify(r).slice(0, 500));
     })
@@ -189,6 +246,7 @@ async function shutdown(signal: string) {
   stopping = true;
   console.log(`[bot] ${signal}: зупиняюсь, дочікуюсь обробки апдейтів…`);
   clearTimeout(minuteTimer);
+  clearInterval(heartbeatTimer);
   pollAbort.abort();
   await Promise.race([
     Promise.allSettled([...chains.values(), ...running.values()]),
@@ -201,11 +259,13 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
 void pollLoop();
+heartbeat();
+const heartbeatTimer = setInterval(heartbeat, 5 * 60_000);
 
 if (!CRONS_ENABLED) {
-  console.log('[bot] старт; крони вимкнено (BOT_CRONS=off) — лише прийом апдейтів');
+  console.log(`[bot] старт ${VERSION}; крони вимкнено (BOT_CRONS=off) — лише прийом апдейтів`);
 } else {
-  console.log(`[bot] старт; розсилка о ${DISPATCH_HOURS.join(', ')}:00 (${TZ})`);
+  console.log(`[bot] старт ${VERSION}; розсилка о ${DISPATCH_HOURS.join(', ')}:00 (${TZ}), якщо крони перемкнуто сюди`);
   scheduleNextMinute();
   // Процес перезапустили посеред розсилки — продовжуємо її (а не чекаємо наступного слоту).
   import('./api/_telegram/dispatchRound.js')

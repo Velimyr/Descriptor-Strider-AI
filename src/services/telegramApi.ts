@@ -83,6 +83,22 @@ export interface AdminRow {
   lastLoginAt: string | null;
 }
 
+export interface BotHostState {
+  updates: 'vercel' | 'server';
+  webhook: { url: string; pending: number; lastError: string; lastErrorAt: string };
+  crons: 'vercel' | 'server';
+  server: {
+    at: string;
+    startedAt: string;
+    version: string;
+    polling: 'polling' | 'conflict' | 'error' | 'starting';
+    cronsEnv: boolean;
+    updatesHandled: number;
+  } | null;
+  adminHost: 'vercel' | 'server';
+  vercelWebhookUrl: string | null;
+}
+
 export const tgApi = {
   // Хто я і що мені доступно. Кличеться на старті адмінки: підтверджує, що токен
   // ще живий, і підтягує актуальні скоупи (могли змінитись після видачі токена).
@@ -119,6 +135,13 @@ export const tgApi = {
     call('/admin/set-webhook', { method: 'POST', body: JSON.stringify({ url }) }),
   webhookInfo: () => call('/admin/webhook-info'),
   deleteWebhook: () => call('/admin/delete-webhook', { method: 'POST', body: '{}' }),
+  // Де працює бот: прийом повідомлень і крони — Vercel чи сервер (api/_telegram/botHost.ts).
+  botHost: () => call('/admin/bot-host') as Promise<BotHostState>,
+  setBotHost: (target: 'updates' | 'crons', host: 'vercel' | 'server', url: string) =>
+    call('/admin/bot-host', {
+      method: 'POST',
+      body: JSON.stringify({ target, host, url }),
+    }) as Promise<BotHostState>,
   uploadCase: (payload: {
     imageBase64: string;
     mime: string;

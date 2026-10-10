@@ -4,6 +4,9 @@
 import dotenv from 'dotenv';
 import path from 'path';
 
+// Позначка для api/_telegram/botHost.ts: цей процес — сервер, а не Vercel.
+process.env.BOT_RUNTIME = 'server';
+
 dotenv.config({
   path: [
     path.resolve(process.cwd(), '.env.local'),
