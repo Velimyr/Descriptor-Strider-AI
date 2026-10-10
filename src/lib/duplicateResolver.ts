@@ -56,7 +56,17 @@ export type DupConfidence = 'high' | 'medium' | 'low';
 export type DupVerdict = 'fits' | 'misfits' | 'unknown';
 // Звідки взято контекст: лише зі своєї сторінки, чи довелось захопити сусідні аркуші.
 export type DupScope = 'page' | 'spread';
-export type DupProposalKind = 'page-outlier' | 'duplicate';
+export type DupProposalKind =
+  | 'page-outlier'
+  | 'duplicate'
+  // правила з exportRules.ts
+  | 'empty-slice'
+  | 'twin'
+  | 'sequence'
+  | 'alt-number';
+// renumber — замінити номер targetRowId на suggested; drop — прибрати targetRowId з експорту;
+// keep-one — з усіх members лишити keepRowId, решту прибрати.
+export type DupAction = 'renumber' | 'drop' | 'keep-one';
 
 export interface DupMemberAnalysis {
   rowId: string;
@@ -66,11 +76,14 @@ export interface DupMemberAnalysis {
   neighbours: number[];  // бази сусідів, відсортовані
   scope: DupScope;
   verdict: DupVerdict;   // unknown → сусідів < 2, судити нема на чому
+  title?: string;        // назва справи — для карток близнюків (exportRules)
 }
 
 export interface DupProposal {
   key: string;                     // унікальний ключ (для React і для вибору)
   kind: DupProposalKind;
+  action?: DupAction;              // не задано → renumber
+  keepRowId?: string;              // для keep-one: який запис лишаємо (адмін може змінити)
   title: string;                   // короткий підпис картки
   members: DupMemberAnalysis[];
   targetRowId: string | null;      // який рядок пропонуємо змінити

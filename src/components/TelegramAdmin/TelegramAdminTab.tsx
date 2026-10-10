@@ -17,6 +17,7 @@ import {
   type DupProposal,
   type DupConfidence,
 } from '../../lib/duplicateResolver';
+import { analyzeExportRules, normalizeCaseNumber, type SeqRow, type BboxPart } from '../../lib/exportRules';
 import { VerifUploadView } from '../CasesPreparation/VerifUploadView';
 import { BroadcastView } from './BroadcastView';
 import { DescriptionSettingsFields, useDescriptionSettings } from './DescriptionSettings';
@@ -4636,6 +4637,14 @@ interface Step2Row {
   opys: string;
   sourcePdf: string;
   page: string;
+  parts: BboxPart[] | null;     // bbox справи — для порядку на скані (exportRules)
+}
+
+// Чи можна пропозицію застосувати автоматично (є що змінити).
+function canApplyProposal(p: DupProposal): boolean {
+  if (p.action === 'drop') return !!p.targetRowId;
+  if (p.action === 'keep-one') return !!p.keepRowId && p.members.length > 1;
+  return !!p.suggested && !!p.targetRowId;
 }
 
 // Викликає Gemini, щоб обрати найвірогідніший запис серед N варіантів однієї справи.
@@ -5145,9 +5154,9 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       );
       return;
     }
-    setMsg('');
     // Архівні реквізити беремо з descKey (вони однакові для всього опису).
     const [descArchive = '', descFund = '', descOpys = ''] = (descKey || '').split('|');
+    const normalized: string[] = [];
     const rows: Step2Row[] = groups.map((g, idx) => {
       const s = g.records[g.selectedIndex!];
       const ans = Array.isArray(s.answers) ? [...s.answers] : [];
@@ -5156,6 +5165,16 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
       // Номер беремо як представника групи (g.numberDisplay — із літерою, якщо хтось її
       // вписав), а не з обраного LLM-запису: інакше при «12»/«12б» літера могла губитись.
       if (numberColIdx >= 0 && g.numberDisplay) answers[numberColIdx] = g.numberDisplay;
+      // Технічне сміття в номері («28a» латиницею, «63 г», «439-») прибираємо ДО перевірки
+      // дублів — інакше адмінка й скрипт постобробки по-різному бачать, що є дублем.
+      if (numberColIdx >= 0) {
+        const before = answers[numberColIdx];
+        const after = normalizeCaseNumber(before);
+        if (after !== before) {
+          answers[numberColIdx] = after;
+          normalized.push(`«${before}» → «${after}»`);
+        }
+      }
       return {
         id: `r${idx}`,
         isEmpty: false,
@@ -5165,6 +5184,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         opys: String(s.opys ?? descOpys),
         sourcePdf: String(s.source_pdf ?? ''),
         page: String(s.page ?? ''),
+        parts: Array.isArray(s.bbox_parts) ? (s.bbox_parts as BboxPart[]) : null,
       };
     });
     rows.sort((a, b) =>
@@ -5176,6 +5196,12 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     setStep2Rows(rows);
     setMissingNumbers(null);
     setDupProposals(null);
+    setMsg(
+      normalized.length
+        ? `✓ Нормалізовано номерів: ${normalized.length} — ${normalized.slice(0, 12).join(', ')}` +
+            (normalized.length > 12 ? ` … (+${normalized.length - 12})` : '')
+        : ''
+    );
     setStep('step2');
   };
 
@@ -5234,6 +5260,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
         opys: descOpys,
         sourcePdf: '',
         page: '',
+        parts: null,
       };
     });
     const merged = [...step2Rows, ...extra].sort((a, b) =>
@@ -5302,17 +5329,59 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
 
   const resolveDuplicates = () => {
     if (numberColIdx < 0 || step2Rows.length === 0) return;
-    const rows: DupRow[] = step2Rows.map(r => ({
+    // 1) Правила exportRules: порожні зрізи, близнюки, послідовність за порядком на скані.
+    const roles = questions.map((q: any) => inferColumnRole(q || {}));
+    const titleIdx = roles.indexOf('title');
+    const sheetsIdx = roles.indexOf('page_count');
+    const isDash = (v: any) => ['', '—', '-', '–'].includes(String(v ?? '').trim());
+    const seqRows: SeqRow[] = step2Rows.map(r => ({
       id: r.id,
       isEmpty: r.isEmpty,
-      number: String(r.answers[numberColIdx] ?? ''),
+      number: String(r.answers[numberColIdx] ?? '').trim(),
       sourcePdf: r.sourcePdf,
       page: r.page,
+      parts: r.parts,
+      title: titleIdx >= 0 ? String(r.answers[titleIdx] ?? '') : '',
+      sheets: sheetsIdx >= 0 ? String(r.answers[sheetsIdx] ?? '') : '',
+      // Змістовні поля — усі з відомою роллю (коментар розпізнавача сюди не входить:
+      // на порожньому зрізі там саме й пишуть «тут немає справи»).
+      blank: questions.every((_: any, i: number) => (roles[i] === 'none' && i !== numberColIdx) || isDash(r.answers[i])),
+      filled: r.answers.join('').length,
     }));
-    const proposals = analyzeNumbering(rows, duplicateInfo.items);
+    const ruleProps = analyzeExportRules(seqRows);
+    const removed = new Set<string>();   // рядки, які правила пропонують прибрати
+    const handled = new Set<string>();   // рядки, про які правила вже щось кажуть
+    const claimedValues = new Set<string>();
+    for (const p of ruleProps) {
+      if (p.action === 'keep-one') p.members.forEach(m => { handled.add(m.rowId); if (m.rowId !== p.keepRowId) removed.add(m.rowId); });
+      else if (p.targetRowId) {
+        handled.add(p.targetRowId);
+        if (p.action === 'drop') removed.add(p.targetRowId);
+      }
+      if (p.suggested) claimedValues.add(p.suggested.trim().toLowerCase());
+    }
+    // 2) Старий розв'язувач — на решті рядків; його пропозиції не повинні суперечити правилам.
+    const rows: DupRow[] = step2Rows
+      .filter(r => !removed.has(r.id))
+      .map(r => ({
+        id: r.id,
+        isEmpty: r.isEmpty,
+        number: String(r.answers[numberColIdx] ?? ''),
+        sourcePdf: r.sourcePdf,
+        page: r.page,
+      }));
+    const dups = duplicateInfo.items
+      .map(d => ({ value: d.value, rowIds: d.rowIds.filter(id => !removed.has(id)) }))
+      .filter(d => d.rowIds.length > 1);
+    const legacy = analyzeNumbering(rows, dups).filter(
+      p =>
+        !p.members.some(m => handled.has(m.rowId)) &&
+        !(p.suggested && claimedValues.has(p.suggested.trim().toLowerCase()))
+    );
+    const proposals = [...ruleProps, ...legacy];
     setDupProposals(proposals);
     // Преселектимо тільки впевнені — решту адмін вмикає свідомо.
-    setDupPicked(new Set(proposals.filter(p => p.suggested && p.confidence === 'high').map(p => p.key)));
+    setDupPicked(new Set(proposals.filter(p => canApplyProposal(p) && p.confidence === 'high').map(p => p.key)));
     setDupExpanded(new Set());
     setMsg(proposals.length === 0 ? '✓ Проблем із номерами не знайдено.' : '');
   };
@@ -5328,13 +5397,21 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
 
   const applyDupProposals = () => {
     if (!dupProposals) return;
-    const chosen = dupProposals.filter(p => p.suggested && p.targetRowId && dupPicked.has(p.key));
+    const chosen = dupProposals.filter(p => canApplyProposal(p) && dupPicked.has(p.key));
     if (chosen.length === 0) return;
 
     const patch = new Map<string, string>();       // rowId → новий номер
-    const dropRows = new Set<string>();            // жовті заглушки, що більше не потрібні
+    const dropRows = new Set<string>();            // прибрані з експорту рядки + зайві жовті заглушки
     const filledBases = new Set<number>();
     for (const p of chosen) {
+      if (p.action === 'drop') {
+        dropRows.add(p.targetRowId!);
+        continue;
+      }
+      if (p.action === 'keep-one') {
+        for (const m of p.members) if (m.rowId !== p.keepRowId) dropRows.add(m.rowId);
+        continue;
+      }
       patch.set(p.targetRowId!, p.suggested!);
       if (p.replacesEmptyRowId) dropRows.add(p.replacesEmptyRowId);
       const info = parseNumberCell(p.suggested!);
@@ -5360,7 +5437,27 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     setMissingNumbers(prev => (prev ? prev.filter(n => !filledBases.has(n)) : prev));
     setDupProposals(null);
     setDupPicked(new Set());
-    setMsg(`✓ Застосовано виправлень: ${chosen.length}`);
+    const removedCount = [...dropRows].filter(id => step2Rows.some(r => r.id === id && !r.isEmpty)).length;
+    setMsg(
+      `✓ Застосовано виправлень: ${chosen.length}` +
+        (removedCount ? ` (прибрано з експорту рядків: ${removedCount})` : '')
+    );
+  };
+
+  // Адмін обирає, яку з копій-близнюків лишити.
+  const setTwinKeep = (key: string, rowId: string) => {
+    setDupProposals(prev =>
+      prev ? prev.map(p => (p.key === key ? { ...p, keepRowId: rowId, targetRowId: rowId } : p)) : prev
+    );
+  };
+
+  const DUP_KIND_LABEL: Record<string, string> = {
+    'page-outlier': 'вибивається зі сторінки',
+    duplicate: 'дубль номера',
+    'empty-slice': 'порожній зріз',
+    twin: 'та сама справа двічі',
+    sequence: 'порядок на скані',
+    'alt-number': '«N або M»',
   };
 
   const DUP_CONF: Record<DupConfidence, { label: string; badge: string; card: string }> = {
@@ -5795,7 +5892,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
             <div className="border rounded p-2 space-y-2 bg-white">
               <div className="flex flex-wrap items-center gap-2">
                 <div className="text-sm font-medium">
-                  Пропозиції виправлень ({dupProposals.filter(p => p.suggested).length} з{' '}
+                  Пропозиції виправлень ({dupProposals.filter(canApplyProposal).length} з{' '}
                   {dupProposals.length})
                 </div>
                 <div className="flex-1" />
@@ -5835,7 +5932,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                         <input
                           type="checkbox"
                           checked={dupPicked.has(p.key)}
-                          disabled={!p.suggested || !p.targetRowId}
+                          disabled={!canApplyProposal(p)}
                           onChange={() => toggleDupPick(p.key)}
                         />
                         {p.title}
@@ -5844,9 +5941,18 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                         {conf.label}
                       </span>
                       <span className="px-1.5 py-0.5 rounded bg-white border text-[10px] text-slate-600">
-                        {p.kind === 'page-outlier' ? 'вибивається зі сторінки' : 'дубль номера'}
+                        {DUP_KIND_LABEL[p.kind] || p.kind}
                       </span>
-                      {p.suggested && target ? (
+                      {p.action === 'drop' && target ? (
+                        <span className="font-mono">
+                          {target.page ? `стор. ${target.page}` : 'стор. ?'}
+                          {target.pdf ? ` · ${target.pdf}` : ''}: <b>прибрати рядок з експорту</b>
+                        </span>
+                      ) : p.action === 'keep-one' ? (
+                        <span>
+                          лишити 1 з {p.members.length}, решту <b>прибрати з експорту</b>
+                        </span>
+                      ) : p.suggested && target ? (
                         <span className="font-mono">
                           {target.page ? `стор. ${target.page}` : 'стор. ?'}
                           {target.pdf ? ` · ${target.pdf}` : ''}: {target.number} → <b>{p.suggested}</b>
@@ -5875,9 +5981,30 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                       </button>
                     </div>
 
+                    {p.action === 'keep-one' && (
+                      <div className="space-y-0.5 pl-6">
+                        {p.members.map(m => (
+                          <label key={m.rowId} className="flex items-start gap-2 cursor-pointer">
+                            <input
+                              type="radio"
+                              name={`keep-${p.key}`}
+                              checked={p.keepRowId === m.rowId}
+                              onChange={() => setTwinKeep(p.key, m.rowId)}
+                              className="mt-0.5"
+                            />
+                            <span className={p.keepRowId === m.rowId ? 'font-medium' : 'text-slate-500 line-through'}>
+                              {m.page ? `стор. ${m.page}` : 'стор. ?'}
+                              {m.pdf ? ` · ${m.pdf}` : ''} — {(m.title || '').slice(0, 140) || '(без назви)'}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+
                     {open && (
                       <div className="space-y-1 pt-1">
                         <div className="text-slate-700 leading-relaxed">{p.reason}</div>
+                        {p.action !== 'keep-one' && p.action !== 'drop' && (
                         <table className="text-[11px] border-collapse">
                           <thead>
                             <tr className="text-slate-500">
@@ -5909,6 +6036,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                             ))}
                           </tbody>
                         </table>
+                        )}
                       </div>
                     )}
                   </div>

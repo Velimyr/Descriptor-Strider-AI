@@ -1017,6 +1017,22 @@ router.post('/admin/detect-bboxes', async (req, res) => {
   }
 });
 
+// bbox справи → компактні частини [page, x, y, w] (4 знаки) для Кроку 2 експорту:
+// там з них рахується порядок справ на скані. Решта полів bbox клієнту не потрібна.
+function compactBbox(raw: unknown): number[][] | null {
+  try {
+    const j = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    const parts = Array.isArray((j as any)?.parts) ? (j as any).parts : [];
+    const r4 = (v: any) => Math.round(Number(v) * 10000) / 10000;
+    const out = parts
+      .filter((p: any) => Number.isFinite(Number(p?.page)) && Number.isFinite(Number(p?.y)))
+      .map((p: any) => [Number(p.page), r4(p.x), r4(p.y), r4(p.w)]);
+    return out.length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 // Перетворює collab-справу на запис у форматі submission для уніфікованого експорту.
 function collabCaseToSubmission(
   c: any,
@@ -1037,6 +1053,7 @@ function collabCaseToSubmission(
     source_pdf: c.sourcePdf || '',
     page: c.page || '',
     is_collab: true,
+    bbox_parts: compactBbox(c.bbox),
     confirmations_count: c.confirmationsCount || 0,
     case_status: c.status,
     confirmations,
@@ -1114,6 +1131,7 @@ router.get('/admin/submissions-by-description', async (req, res) => {
       getCollabCasesByDescription,
       getDisplayNamesMap,
       getConfirmationsForCases,
+      getCaseBboxes,
     } = await import('./storage.js');
     const [subs, qRaw, collab] = await Promise.all([
       getSubmissionsByDescription(archive, fund, opys),
@@ -1144,7 +1162,10 @@ router.get('/admin/submissions-by-description', async (req, res) => {
     } catch {
       questions = [];
     }
-    const merged = [...subs, ...collabAsSubs].sort((a: any, b: any) =>
+    // Звичайні submissions bbox не мають — добираємо з bot_cases (лише для справ цього опису).
+    const subBboxes = subs.length ? await getCaseBboxes(subs.map((s: any) => s.case_id)) : {};
+    const subsWithPos = subs.map((s: any) => ({ ...s, bbox_parts: compactBbox(subBboxes[s.case_id]) }));
+    const merged = [...subsWithPos, ...collabAsSubs].sort((a: any, b: any) =>
       String(b.submitted_at || '').localeCompare(String(a.submitted_at || ''))
     );
     res.json({ ok: true, questions, submissions: merged });

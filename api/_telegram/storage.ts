@@ -1921,11 +1921,12 @@ export async function confirmCase(
 }
 
 // Усі collab-справи в межах опису (для експорту як "віртуальні submissions").
-// Egress-фікс: явний список колонок. Зокрема НЕ тягнемо bbox (часто довгий),
-// tg_file_id/tg_chat_id/tg_message_id, locked_*, submissions_count — нічого з цього
-// не потрібно для collabCaseToSubmission().
+// Egress-фікс: явний список колонок. НЕ тягнемо tg_file_id/tg_chat_id/tg_message_id,
+// locked_*, submissions_count — нічого з цього не потрібно для collabCaseToSubmission().
+// bbox тягнемо свідомо (~0.3 КБ/справу): з нього Крок 2 експорту бере порядок справ на
+// скані для правила послідовності номерів (src/lib/exportRules.ts).
 const COLLAB_CASE_COLS_FOR_DESC =
-  'case_id, archive, fund, opys, sprava, source_pdf, page, mode, status, ' +
+  'case_id, archive, fund, opys, sprava, source_pdf, page, mode, status, bbox, ' +
   'current_answers, current_author_tg_id, confirmations_count, created_at, updated_at';
 
 export async function getCollabCasesByDescription(
@@ -1952,6 +1953,22 @@ export async function getCollabCasesByDescription(
     out.push(...rows.map(mapCase));
     if (rows.length < pageSize) break;
     from += pageSize;
+  }
+  return out;
+}
+
+// bbox справ за case_id — для звичайних (не collab) submissions, у яких bbox немає.
+// Порціями: .in() з сотнями id не влазить у URL PostgREST.
+export async function getCaseBboxes(caseIds: string[]): Promise<Record<string, string>> {
+  const ids = [...new Set(caseIds.filter(Boolean))];
+  const out: Record<string, string> = {};
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await db()
+      .from(T.cases)
+      .select('case_id, bbox')
+      .in('case_id', ids.slice(i, i + 200));
+    if (error) throw error;
+    for (const r of data || []) if ((r as any).bbox) out[(r as any).case_id] = (r as any).bbox;
   }
   return out;
 }
