@@ -9,7 +9,8 @@
     "build:widget": "vite build --config vite.config.widget.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "bot": "tsx bot-server.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

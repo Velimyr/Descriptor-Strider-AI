@@ -48,17 +48,14 @@ const router = express.Router();
 // На Vercel serverless функція завершується після відправки відповіді,
 // тож робимо handleUpdate ДО res.sendStatus, інакше обробка може не встигнути.
 // У Telegram є 60-секундний таймаут — для нас цього більш ніж достатньо.
-router.post('/webhook', async (req, res) => {
-  const expected = process.env[telegramBotConfig.tg.webhookSecretEnv];
-  const got = req.header('x-telegram-bot-api-secret-token');
-  if (expected && got !== expected) {
-    return res.status(403).send('forbidden');
-  }
+// Обробка апдейту з повідомленням юзеру про збій. Спільна для вебхука (Vercel) і
+// long polling (bot-server.ts на VM) — не кидає винятків.
+export async function processUpdate(update: any): Promise<void> {
   try {
-    await handleUpdate(req.body);
+    await handleUpdate(update);
   } catch (e: any) {
     console.error('webhook handler error', e?.stack || e);
-    const chatId = req.body?.message?.chat?.id || req.body?.callback_query?.message?.chat?.id;
+    const chatId = update?.message?.chat?.id || update?.callback_query?.message?.chat?.id;
     if (chatId) {
       try {
         const { sendMessage } = await import('./tg-api.js');
@@ -66,6 +63,15 @@ router.post('/webhook', async (req, res) => {
       } catch {}
     }
   }
+}
+
+router.post('/webhook', async (req, res) => {
+  const expected = process.env[telegramBotConfig.tg.webhookSecretEnv];
+  const got = req.header('x-telegram-bot-api-secret-token');
+  if (expected && got !== expected) {
+    return res.status(403).send('forbidden');
+  }
+  await processUpdate(req.body);
   // 200 повертаємо завжди — інакше Telegram буде повторювати апдейт.
   res.sendStatus(200);
 });

@@ -1,0 +1,24 @@
+# systemd-юніт бота на VM (docs/BOT_ORACLE.md).
+# Встановлення: sudo cp deploy/descriptor-bot.service /etc/systemd/system/
+#               sudo systemctl daemon-reload && sudo systemctl enable --now descriptor-bot
+[Unit]
+Description=Descriptor Strider Telegram bot (long polling + crons)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Descriptor-Strider-AI
+# Секрети — у /home/ubuntu/Descriptor-Strider-AI/.env (читає dotenv у bot-server.ts).
+Environment=NODE_ENV=production
+# Для машини з 1 ГБ RAM (VM.Standard.E2.1.Micro) — не дати Node з'їсти всю пам'ять.
+Environment=NODE_OPTIONS=--max-old-space-size=512
+ExecStart=/usr/bin/node --import tsx bot-server.ts
+Restart=always
+RestartSec=5
+# bot-server.ts на SIGTERM дочікується обробки апдейтів до 30 с.
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

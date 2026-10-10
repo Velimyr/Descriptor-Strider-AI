@@ -274,6 +274,14 @@ async function runChunkUnderLease(force: boolean): Promise<TickChunkResult> {
   };
 }
 
+// Чи є розпочатий і ще не протермінований раунд (напр., процес бота перезапустили
+// посеред розсилки). Продовжувати такий раунд безпечно, на відміну від «сліпого»
+// виклику тіку, який після кулдауну стартує НОВИЙ раунд поза слотом.
+export async function hasUnfinishedRound(): Promise<boolean> {
+  const round = await readRound();
+  return !!round && !round.done && Date.now() - Date.parse(round.startedAt) < STALE_ROUND_MS;
+}
+
 async function readRound(): Promise<RoundState | null> {
   const raw = await getMetaNoCache(ROUND_KEY);
   if (!raw) return null;
