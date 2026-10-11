@@ -777,6 +777,24 @@ async function handleMessage(msg: any) {
   // User і session одним запитом — все одно потрібні для більшості шляхів.
   const { user, session } = await getUserWithSession(tgId);
 
+  // Вхід на сайт «Документи Губернатора»: /start gp_XXXXXX або /kod XXXXXX.
+  // Обробляємо ДО бану й до «Надішліть /start»: сайт має дізнатися про бан
+  // (сесію не видасть), а новий учасник — отримати підтвердження з 0 балів.
+  const siteStart = rawText.match(/^\/start(?:@\S+)?\s+(gp_\S*)/i);
+  const siteKod = rawText.match(/^\/kod(?:@\S+)?(?:\s+(.*))?$/is);
+  if (siteStart || siteKod) {
+    const { confirmSiteLogin, siteLoginName } = await import('./siteLogin.js');
+    const reply = await confirmSiteLogin(siteStart ? siteStart[1] : (siteKod![1] || ''), {
+      tgId,
+      name: siteLoginName(msg.from),
+      points: user?.totalPoints || 0,
+      banned: !!user?.banned,
+    });
+    if (user?.banned) await sendMessage(chatId, T.bannedNotice);
+    else await sendMessage(chatId, reply, user ? { reply_markup: mainMenuKeyboard(user) } : undefined);
+    return;
+  }
+
   // Бан (перевірка доброчесності): заблокований не може виконати жодну дію.
   if (user?.banned) {
     await sendMessage(chatId, T.bannedNotice);

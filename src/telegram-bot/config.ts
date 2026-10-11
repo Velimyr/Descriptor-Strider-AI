@@ -49,6 +49,13 @@ export interface TelegramBotConfig {
     tokenEnv: string;  // назва env-змінної з Bearer-токеном (НЕ хардкодимо токен)
   };
 
+  // Вхід на сайт «Документи Губернатора» (442.uagenealogy.com) через бота:
+  // /start gp_XXXXXX або /kod XXXXXX → підтвердження коду на сайті.
+  governorSite: {
+    confirmUrl: string; // POST-ендпоінт підтвердження коду
+    secretEnv: string;  // назва env-змінної зі спільним Bearer-секретом
+  };
+
   dispatch: {
     startHourKyiv: number;      // 0..23
     endHourKyiv: number;        // 0..23 (включно)
@@ -274,6 +281,11 @@ export const telegramBotConfig: TelegramBotConfig = {
   karma: {
     baseUrl: 'https://www.uagenealogy.com',
     tokenEnv: 'KARMA_TOKEN',
+  },
+
+  governorSite: {
+    confirmUrl: 'https://442.uagenealogy.com/api/auth/bot-confirm',
+    secretEnv: 'BLUKACH_BOT_SECRET',
   },
 
   dispatch: {
