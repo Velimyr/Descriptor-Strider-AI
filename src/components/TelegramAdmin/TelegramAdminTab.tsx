@@ -5196,6 +5196,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     setStep2Rows(rows);
     setMissingNumbers(null);
     setDupProposals(null);
+    setYearLabels(null);
     setMsg(
       normalized.length
         ? `✓ Нормалізовано номерів: ${normalized.length} — ${normalized.slice(0, 12).join(', ')}` +
@@ -5324,6 +5325,76 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
   // без жодного запиту на сервер. Застосування живе тільки в step2Rows — як і
   // ручне редагування комірок; у БД нічого не пишемо.
   const [dupProposals, setDupProposals] = useState<DupProposal[] | null>(null);
+
+  // ----- Рік у номері для описів, де нумерація починається заново щороку -----
+  // (напр. 717: 1904 — №1–62, 1905 — №1–20). Лише за явною дією адміна і лише для
+  // дублів: «1» → «1 (1905 р.)». Рік беремо ТІЛЬКИ з дати справи — не вигадуємо:
+  // якщо дати немає, номер не чіпаємо, адмін вписує рік сам.
+  type YearLabel = {
+    rowId: string;
+    from: string;
+    to: string | null;      // null — рік не визначено
+    page: string;
+    date: string;
+    clash: boolean;         // у групі дубля вже є запис з тим самим роком
+  };
+  const [yearLabels, setYearLabels] = useState<YearLabel[] | null>(null);
+
+  const previewYearLabels = () => {
+    if (numberColIdx < 0) return;
+    const roles = questions.map((q: any) => inferColumnRole(q || {}));
+    const dateIdxs = roles
+      .map((r, i) => (r === 'date_start' || r === 'year_range' || r === 'date_end' ? i : -1))
+      .filter(i => i >= 0);
+    const yearOf = (r: Step2Row): { year: string | null; date: string } => {
+      for (const i of dateIdxs) {
+        const v = String(r.answers[i] ?? '');
+        const m = v.match(/(?<!\d)(1[0-9]{3}|20\d{2})(?!\d)/);
+        if (m) return { year: m[1], date: v };
+      }
+      return { year: null, date: dateIdxs.map(i => String(r.answers[i] ?? '')).join(' ').trim() };
+    };
+    const byId = new Map(step2Rows.map(r => [r.id, r]));
+    const out: YearLabel[] = [];
+    for (const d of duplicateInfo.items) {
+      const items = d.rowIds
+        .map(id => byId.get(id))
+        .filter((r): r is Step2Row => !!r && !r.isEmpty)
+        .map(r => {
+          const { year, date } = yearOf(r);
+          return { r, year, date };
+        });
+      const perYear = new Map<string, number>();
+      for (const x of items) if (x.year) perYear.set(x.year, (perYear.get(x.year) || 0) + 1);
+      for (const x of items) {
+        out.push({
+          rowId: x.r.id,
+          from: d.value,
+          to: x.year ? `${d.value} (${x.year} р.)` : null,
+          page: x.r.page,
+          date: x.date,
+          clash: !!x.year && (perYear.get(x.year) || 0) > 1,
+        });
+      }
+    }
+    setYearLabels(out);
+  };
+
+  const applyYearLabels = () => {
+    if (!yearLabels) return;
+    const patch = new Map(yearLabels.filter(l => l.to && !l.clash).map(l => [l.rowId, l.to!]));
+    if (patch.size === 0) return;
+    setStep2Rows(prev =>
+      prev.map(r =>
+        patch.has(r.id)
+          ? { ...r, answers: r.answers.map((a, j) => (j === numberColIdx ? patch.get(r.id)! : a)) }
+          : r
+      )
+    );
+    setYearLabels(null);
+    setDupProposals(null);
+    setMsg(`✓ До номерів дописано рік: ${patch.size}`);
+  };
   const [dupPicked, setDupPicked] = useState<Set<string>>(new Set());
   const [dupExpanded, setDupExpanded] = useState<Set<string>>(new Set());
 
@@ -5334,7 +5405,9 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     const titleIdx = roles.indexOf('title');
     const sheetsIdx = roles.indexOf('page_count');
     const isDash = (v: any) => ['', '—', '-', '–'].includes(String(v ?? '').trim());
-    const seqRows: SeqRow[] = step2Rows.map(r => ({
+    // Номери з дописаним роком («1 (1905 р.)») — свідомо розведені адміном, їх не аналізуємо.
+    const yearLabelled = (r: Step2Row) => /\(\d{4} р\.\)\s*$/.test(String(r.answers[numberColIdx] ?? ''));
+    const seqRows: SeqRow[] = step2Rows.filter(r => !yearLabelled(r)).map(r => ({
       id: r.id,
       isEmpty: r.isEmpty,
       number: String(r.answers[numberColIdx] ?? '').trim(),
@@ -5362,7 +5435,7 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
     }
     // 2) Старий розв'язувач — на решті рядків; його пропозиції не повинні суперечити правилам.
     const rows: DupRow[] = step2Rows
-      .filter(r => !removed.has(r.id))
+      .filter(r => !removed.has(r.id) && !yearLabelled(r))
       .map(r => ({
         id: r.id,
         isEmpty: r.isEmpty,
@@ -5885,6 +5958,65 @@ const ProcessDescriptionView: React.FC<{ geminiKey: string }> = ({ geminiKey }) 
                 Виправте значення в підсвічених рядках вручну — або натисніть «Вирішити дублі»,
                 щоб отримати пропозиції на основі сусідів по сторінці.
               </div>
+              <div className="mt-2">
+                <button
+                  onClick={previewYearLabels}
+                  className="px-3 py-1 bg-white border border-rose-300 rounded text-xs hover:bg-rose-100"
+                  title="Для описів, де нумерація починається заново щороку: «1» → «1 (1905 р.)». Рік — з дати справи."
+                >
+                  Нумерація по роках — дописати рік до дублів…
+                </button>
+              </div>
+            </div>
+          )}
+
+          {yearLabels !== null && (
+            <div className="border border-sky-300 bg-sky-50 rounded p-2 text-xs space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="font-medium text-sky-900">
+                  Дописати рік до номерів-дублів ({yearLabels.filter(l => l.to && !l.clash).length} з {yearLabels.length})
+                </div>
+                <div className="flex-1" />
+                <button
+                  onClick={applyYearLabels}
+                  disabled={!yearLabels.some(l => l.to && !l.clash)}
+                  className="px-3 py-1 bg-sky-700 text-white rounded text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Застосувати
+                </button>
+                <button
+                  onClick={() => setYearLabels(null)}
+                  className="px-3 py-1 bg-white border rounded text-xs hover:bg-slate-50"
+                >
+                  Скасувати
+                </button>
+              </div>
+              <div className="text-sky-900/80">
+                Рік береться лише з дати справи. Де дати немає — номер не змінюється, впишіть рік вручну.
+                Якщо два дублі мають той самий рік — це не нумерація по роках, їх теж не чіпаємо.
+              </div>
+              <table className="text-[11px] border-collapse">
+                <thead>
+                  <tr className="text-slate-500">
+                    <th className="text-left pr-3 font-normal">Стор.</th>
+                    <th className="text-left pr-3 font-normal">Дата</th>
+                    <th className="text-left pr-3 font-normal">Номер</th>
+                    <th className="text-left font-normal">Стане</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {yearLabels.map(l => (
+                    <tr key={l.rowId} className={!l.to || l.clash ? 'text-rose-700' : ''}>
+                      <td className="pr-3 align-top">{l.page || '—'}</td>
+                      <td className="pr-3 align-top">{(l.date || '—').slice(0, 40)}</td>
+                      <td className="pr-3 align-top font-mono">{l.from}</td>
+                      <td className="align-top font-mono">
+                        {!l.to ? 'рік не визначено — без змін' : l.clash ? `${l.to} — той самий рік, без змін` : <b>{l.to}</b>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 
