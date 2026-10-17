@@ -408,44 +408,52 @@ returns table (
 $$;
 revoke all on function bot_description_progress(int) from public, anon, authenticated;
 
--- Агрегати для прогнозу завершення фонду. Замінює `getAllCases()` +
--- `computeFundEta()` у JS — повертає одним рядком лише те, що реально
--- використовується для формули. ETA-дата рахується вже на сервері API
--- (вона тривіальна арифметика, але потребує константи фонду з конфіга).
+-- Агрегати для прогнозу завершення фонду. Числа фонду (усього описів,
+-- готово поза ботом) — у конфігу, ETA-дату рахує API (computeFundEtaFromStats).
+-- v2: прогноз у СПРАВАХ, а не в описах (описи — від 7 до 5000+ справ, тож
+-- «описів за N днів» дуже шумить і не бачить частково готових описів).
 --
--- p_target            — мін. підтверджень/сабмітів, щоб справа = "done".
--- p_window_days       — вікно для оцінки швидкості (днів).
---
--- fully_done_by_bot   — кількість описів, де ВСІ справи done.
--- completions_in_window — серед fully_done — скільки завершились за останні
---                        p_window_days днів (max(updated_at) у вікні).
-create or replace function bot_fund_eta_stats(p_target int, p_window_days int)
-returns table (fully_done_by_bot int, completions_in_window int)
+-- fully_done_by_bot    — описів, де ВСІ справи done.
+-- descriptions_known   — описів у боті загалом; cases_known — справ у них
+--                        (cases_known / descriptions_known = середній розмір опису).
+-- open_remaining_cases — скільки справ ще не done у незакритих описах.
+-- done_cases_short/long — done-справ, востаннє змінених за p_short_days / p_long_days
+--                        (темп бота у справах/день для діапазону прогнозу).
+-- Старий bot_fund_eta_stats(int,int) після деплою можна прибрати:
+--   drop function if exists bot_fund_eta_stats(int, int);
+create or replace function bot_fund_eta_stats_v2(p_target int, p_short_days int, p_long_days int)
+returns table (
+  fully_done_by_bot int,
+  descriptions_known int,
+  cases_known bigint,
+  open_remaining_cases bigint,
+  done_cases_short bigint,
+  done_cases_long bigint
+)
 language sql security definer as $$
-  with per_desc as (
+  with c as (
     select
-      archive, fund, opys,
-      count(*) as total_cases,
-      count(*) filter (
-        where status = 'done'
-           or (mode = 'collaborative' and confirmations_count >= coalesce(target_submissions, p_target))
-           or (mode <> 'collaborative' and submissions_count >= coalesce(target_submissions, p_target))
-      ) as done_cases,
-      max(updated_at) as last_updated
+      archive, fund, opys, updated_at,
+      (status = 'done'
+        or (mode = 'collaborative' and confirmations_count >= coalesce(target_submissions, p_target))
+        or (mode <> 'collaborative' and submissions_count >= coalesce(target_submissions, p_target))
+      ) as is_done
     from bot_cases
-    group by archive, fund, opys
   ),
-  fully as (
-    select last_updated from per_desc
-    where total_cases > 0 and done_cases = total_cases
+  per_desc as (
+    select count(*) as total_cases, count(*) filter (where is_done) as done_cases
+    from c
+    group by archive, fund, opys
   )
   select
-    (select count(*)::int from fully) as fully_done_by_bot,
-    (select count(*)::int from fully
-      where last_updated > now() - (p_window_days || ' days')::interval
-    ) as completions_in_window;
+    (select count(*)::int from per_desc where done_cases = total_cases),
+    (select count(*)::int from per_desc),
+    (select coalesce(sum(total_cases), 0)::bigint from per_desc),
+    (select coalesce(sum(total_cases - done_cases), 0)::bigint from per_desc where done_cases < total_cases),
+    (select count(*)::bigint from c where is_done and updated_at > now() - make_interval(days => p_short_days)),
+    (select count(*)::bigint from c where is_done and updated_at > now() - make_interval(days => p_long_days));
 $$;
-revoke all on function bot_fund_eta_stats(int, int) from public, anon, authenticated;
+revoke all on function bot_fund_eta_stats_v2(int, int, int) from public, anon, authenticated;
 
 -- Кандидати на dispatch: відкриті справи, не заблоковані іншим юзером,
 -- де користувач НЕ брав участі (не сабмітив, не пропустив, не торкався в collab).

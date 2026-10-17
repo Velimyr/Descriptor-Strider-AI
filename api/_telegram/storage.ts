@@ -50,7 +50,7 @@ const RPC_INC_TOTAL_POINTS = `${PREFIX}inc_total_points`;
 const RPC_LEADERBOARD_TOP = `${PREFIX}leaderboard_top`;
 const RPC_USER_RANK = `${PREFIX}user_rank`;
 const RPC_USER_STATUS_COUNTS = `${PREFIX}user_status_counts`;
-const RPC_FUND_ETA_STATS = `${PREFIX}fund_eta_stats`;
+const RPC_FUND_ETA_STATS = `${PREFIX}fund_eta_stats_v2`;
 const RPC_TODAY_ACTIVITY = `${PREFIX}today_activity`;
 const RPC_DAILY_ACTIVITY = `${PREFIX}daily_activity`;
 const RPC_BROADCAST_PREVIEW = `${PREFIX}broadcast_preview`;
@@ -2021,22 +2021,36 @@ export async function getDescriptionProgressViaRpc(target: number): Promise<
   }));
 }
 
-// Агрегати для прогнозу завершення фонду. Повертає тільки 2 числа —
-// решту (ETA-дату, totalDescriptions/baseline) рахуємо вже в API з конфіга.
-// Заміна `getAllCases() + computeFundEta(cases)` — основне джерело egress.
+// Агрегати для прогнозу завершення фонду (RPC *_fund_eta_stats_v2): лише кілька
+// чисел, без `BotCase[]`. ETA-дати рахує computeFundEtaFromStats з конфіга.
+export interface FundEtaStats {
+  fullyDoneByBot: number;
+  descriptionsKnown: number;
+  casesKnown: number;
+  openRemainingCases: number;
+  doneCasesShort: number;
+  doneCasesLong: number;
+}
+
 export async function getFundEtaStats(
   target: number,
-  windowDays: number
-): Promise<{ fullyDoneByBot: number; completionsInWindow: number }> {
+  shortDays: number,
+  longDays: number
+): Promise<FundEtaStats> {
   const { data, error } = await db().rpc(RPC_FUND_ETA_STATS, {
     p_target: target,
-    p_window_days: windowDays,
+    p_short_days: shortDays,
+    p_long_days: longDays,
   });
   if (error) throw error;
   const row = Array.isArray(data) ? data[0] : data;
   return {
     fullyDoneByBot: Number(row?.fully_done_by_bot || 0),
-    completionsInWindow: Number(row?.completions_in_window || 0),
+    descriptionsKnown: Number(row?.descriptions_known || 0),
+    casesKnown: Number(row?.cases_known || 0),
+    openRemainingCases: Number(row?.open_remaining_cases || 0),
+    doneCasesShort: Number(row?.done_cases_short || 0),
+    doneCasesLong: Number(row?.done_cases_long || 0),
   };
 }
 

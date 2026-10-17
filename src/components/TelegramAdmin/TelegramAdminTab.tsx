@@ -3738,21 +3738,29 @@ const ResultsView: React.FC = () => {
             </div>
             <div className="text-slate-700">
               Прогнозована дата завершення розпізнавання, виходячи з поточної швидкості розпізнавання:{' '}
-              {fundEta.etaDateLocal ? (
-                <b>{fundEta.etaDateLocal}</b>
+              {fundEta.etaFromLocal ? (
+                <b>
+                  {fundEta.etaFromLocal === fundEta.etaToLocal
+                    ? fundEta.etaFromLocal
+                    : `між ${fundEta.etaFromLocal} і ${fundEta.etaToLocal}`}
+                </b>
               ) : fundEta.remaining === 0 ? (
                 <b>фонд уже повністю розпізнано 🎉</b>
               ) : (
                 <span className="text-slate-500">
-                  невідомо (за останні {fundEta.windowDays} дн. не завершився жоден опис)
+                  невідомо (за останні {fundEta.longWindowDays} дн. не розпізнано жодної справи)
                 </span>
               )}
-              {fundEta.etaDateLocal && (
-                <span className="text-xs text-slate-500">
-                  {' '}
-                  · темп: {fundEta.ratePerDay.toFixed(2)} опис./день за останні {fundEta.windowDays} дн.; готово{' '}
-                  {fundEta.totalDone}/{fundEta.totalDescriptions}
-                </span>
+              {fundEta.remaining > 0 && (
+                <div className="text-xs text-slate-500">
+                  Темп: {Math.round(fundEta.casesPerDayShort)} справ/день за {fundEta.shortWindowDays} дн. →{' '}
+                  {fundEta.etaShortLocal || '—'}; {Math.round(fundEta.casesPerDayLong)} справ/день за{' '}
+                  {fundEta.longWindowDays} дн. → {fundEta.etaLongLocal || '—'}. Залишок ≈{' '}
+                  {fundEta.remainingCases.toLocaleString('uk-UA')} справ (середній опис ≈{' '}
+                  {Math.round(fundEta.avgCasesPerDescription)} справ; у роботі {fundEta.openDescriptions}{' '}
+                  опис., їх частковий прогрес враховано). Готово {fundEta.totalDone}/{fundEta.totalDescriptions}: бот{' '}
+                  {fundEta.fullyDoneByBot} + поза ботом {fundEta.doneOutsideBot}.
+                </div>
               )}
             </div>
           </>

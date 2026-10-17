@@ -1913,21 +1913,14 @@ router.get('/admin/monthly', async (req, res) => {
   }
 });
 
-// Прогноз завершення фонду. Прогноз будуємо так:
-// 1) Беремо описи, у яких УСІ справи done (fullyDoneNow).
-// 2) Для кожного такого опису «дата завершення» ≈ max(updated_at) серед його справ.
-// 3) Швидкість = скільки таких описів завершилися за останні N днів (вікно 14 днів).
-// 4) Залишилось = totalDescriptions − fullyDoneNow − baseline.
-// 5) Прогнозована дата = сьогодні + ceil(залишилось / швидкість).
-router.get('/admin/fund-eta', async (req, res) => {
-  const windowDays = Math.max(
-    1,
-    Math.min(60, parseInt(String(req.query.windowDays || '14'), 10) || 14)
-  );
+// Прогноз завершення фонду: бот (живі агрегати) + ШІ поза ботом (контрольні
+// точки конфіга). Формула — у computeFundEtaFromStats (scheduler.ts).
+router.get('/admin/fund-eta', async (_req, res) => {
   const target = telegramBotConfig.cases.targetSubmissions;
+  const { short, long } = telegramBotConfig.fund.rateWindowsDays;
   const { getFundEtaStats } = await import('./storage.js');
-  const stats = await getFundEtaStats(target, windowDays);
-  res.json(computeFundEtaFromStats(stats.fullyDoneByBot, stats.completionsInWindow, windowDays));
+  const stats = await getFundEtaStats(target, short, long);
+  res.json(computeFundEtaFromStats(stats));
 });
 
 router.get('/admin/daily-activity', async (req, res) => {

@@ -2010,29 +2010,28 @@ async function cmdProgress(chatId: number, user: BotUser) {
   // SQL-агрегація для списку описів + такі ж SQL-агрегати для ETA фонду.
   // Раніше тут робився getAllCases() — головне джерело egress (11 МБ/виклик).
   const target = telegramBotConfig.cases.targetSubmissions;
-  const ETA_WINDOW_DAYS = 14;
+  const etaWindows = telegramBotConfig.fund.rateWindowsDays;
   const [rawDescriptions, etaStats] = await Promise.all([
     getDescriptionProgressViaRpc(target),
-    getFundEtaStats(target, ETA_WINDOW_DAYS),
+    getFundEtaStats(target, etaWindows.short, etaWindows.long),
   ]);
-  const eta = computeFundEtaFromStats(
-    etaStats.fullyDoneByBot,
-    etaStats.completionsInWindow,
-    ETA_WINDOW_DAYS
-  );
+  const eta = computeFundEtaFromStats(etaStats);
   const etaLine =
     eta.remaining <= 0
       ? fmt(T.fundEtaDone, { fundNumber: eta.fundNumber })
-      : eta.etaDateLocal
+      : eta.etaFromLocal
       ? fmt(T.fundEtaLine, {
           fundNumber: eta.fundNumber,
           remaining: eta.remaining,
-          etaDate: eta.etaDateLocal,
+          etaDate:
+            eta.etaFromLocal === eta.etaToLocal
+              ? eta.etaFromLocal
+              : fmt(T.fundEtaRange, { from: eta.etaFromLocal, to: eta.etaToLocal }),
         })
       : fmt(T.fundEtaUnknown, {
           fundNumber: eta.fundNumber,
           remaining: eta.remaining,
-          windowDays: eta.windowDays,
+          windowDays: eta.longWindowDays,
         });
   // Перетворюємо у формат для відображення: name + donePct.
   const descriptions = rawDescriptions

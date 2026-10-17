@@ -4,6 +4,7 @@ import {
   BotUser,
   CandidateCase,
   countSubmissionsByCase,
+  FundEtaStats,
   getCandidateCasesForUser,
   getCandidateCasesSlimForUser,
   getCase,
@@ -379,109 +380,69 @@ export interface DescriptionProgress {
 export interface FundEta {
   fundNumber: string;
   totalDescriptions: number;
-  baselineDoneDescriptions: number;
+  doneOutsideBot: number;
   fullyDoneByBot: number;
+  openDescriptions: number;        // завантажені в бот, але ще не закриті
   totalDone: number;
-  remaining: number;
-  windowDays: number;
-  completionsInWindow: number;
-  ratePerDay: number;
-  etaDateIso: string | null;
-  etaDateLocal: string | null;
+  remaining: number;               // цілих описів (у т.ч. частково готові)
+  avgCasesPerDescription: number;  // середній розмір опису за даними бота
+  remainingCases: number;          // залишок у справах (з урахуванням часткового прогресу)
+  shortWindowDays: number;
+  longWindowDays: number;
+  casesPerDayShort: number;
+  casesPerDayLong: number;
+  etaShortLocal: string | null;    // за темпом short-вікна
+  etaLongLocal: string | null;     // за темпом long-вікна
+  etaFromLocal: string | null;     // рання межа діапазону
+  etaToLocal: string | null;       // пізня межа діапазону
 }
 
-// Чисто-арифметична версія: бере вже готові агрегати з RPC `bot_fund_eta_stats`
-// і дораховує ETA-дату + remaining з конфіга. Без `BotCase[]` — нуль egress.
-// Використовуй СКРІЗЬ замість `computeFundEta(allCases)`.
-export function computeFundEtaFromStats(
-  fullyDoneByBot: number,
-  completionsInWindow: number,
-  windowDays = 14
-): FundEta {
+// Прогноз завершення фонду — у СПРАВАХ, бо описи бувають від 7 до 5000+ справ:
+// 1) Готово (описів) = закриті ботом + doneOutsideBot (фіксоване, з конфіга).
+// 2) Залишок у справах = незроблені справи у відкритих описах (відомі точно) +
+//    ще не завантажені в бот описи × середній розмір опису з бота.
+// 3) Темп = done-справ за short/long вікно ÷ днів вікна.
+// 4) Дата = сьогодні + залишок ÷ темп; показуємо діапазон між двома вікнами.
+export function computeFundEtaFromStats(stats: FundEtaStats): FundEta {
   const fund = cfg.fund;
-  const ratePerDay = completionsInWindow / windowDays;
-  const totalDone = fullyDoneByBot + fund.baselineDoneDescriptions;
+  const { short: shortWindowDays, long: longWindowDays } = fund.rateWindowsDays;
+  const totalDone = Math.min(fund.totalDescriptions, stats.fullyDoneByBot + fund.doneOutsideBot);
   const remaining = Math.max(0, fund.totalDescriptions - totalDone);
-  let etaDateIso: string | null = null;
-  let etaDateLocal: string | null = null;
-  if (remaining > 0 && ratePerDay > 0) {
-    const daysLeft = Math.ceil(remaining / ratePerDay);
-    const etaMs = Date.now() + daysLeft * 86_400_000;
-    const d = new Date(etaMs);
-    etaDateIso = d.toISOString();
-    etaDateLocal = KYIV_UA_DATE_FMT.format(d);
-  }
+  const openDescriptions = Math.max(0, stats.descriptionsKnown - stats.fullyDoneByBot);
+  const notLoaded = Math.max(0, remaining - openDescriptions);
+  const avgCasesPerDescription =
+    stats.descriptionsKnown > 0 ? stats.casesKnown / stats.descriptionsKnown : 0;
+  const remainingCases =
+    remaining > 0 ? Math.round(stats.openRemainingCases + notLoaded * avgCasesPerDescription) : 0;
+  const casesPerDayShort = stats.doneCasesShort / shortWindowDays;
+  const casesPerDayLong = stats.doneCasesLong / longWindowDays;
+
+  const etaMs = (perDay: number): number | null =>
+    remainingCases > 0 && perDay > 0
+      ? Date.now() + Math.ceil(remainingCases / perDay) * 86_400_000
+      : null;
+  const shortMs = etaMs(casesPerDayShort);
+  const longMs = etaMs(casesPerDayLong);
+  const known = [shortMs, longMs].filter((t): t is number => t !== null);
+  const fmtDate = (t: number | null) => (t === null ? null : KYIV_UA_DATE_FMT.format(new Date(t)));
   return {
     fundNumber: fund.number,
     totalDescriptions: fund.totalDescriptions,
-    baselineDoneDescriptions: fund.baselineDoneDescriptions,
-    fullyDoneByBot,
+    doneOutsideBot: fund.doneOutsideBot,
+    fullyDoneByBot: stats.fullyDoneByBot,
+    openDescriptions,
     totalDone,
     remaining,
-    windowDays,
-    completionsInWindow,
-    ratePerDay,
-    etaDateIso,
-    etaDateLocal,
-  };
-}
-
-// Спільна логіка прогнозу завершення фонду. Використовується і в адмін-ендпоінті,
-// і в /progress-команді бота, щоб користувачі бачили одну й ту саму цифру.
-// LEGACY: цей варіант робить повний скан bot_cases. Залишений для адмінських
-// місць, які поки що тягнуть `getAllCases()` (integrity тощо). Нові виклики —
-// через `getFundEtaStats() + computeFundEtaFromStats()`.
-export function computeFundEta(cases: BotCase[], windowDays = 14): FundEta {
-  const fund = cfg.fund;
-  const target = cfg.cases.targetSubmissions;
-  const groups = new Map<string, { total: number; done: number; lastUpdated: string }>();
-  for (const c of cases) {
-    const k = descriptionKey(c);
-    const g = groups.get(k) || { total: 0, done: 0, lastUpdated: '' };
-    g.total++;
-    const progress = c.mode === 'collaborative' ? c.confirmationsCount : c.submissionsCount;
-    const done = c.status === 'done' || progress >= target;
-    if (done) g.done++;
-    const t = c.updatedAt || c.createdAt || '';
-    if (t > g.lastUpdated) g.lastUpdated = t;
-    groups.set(k, g);
-  }
-  let fullyDoneByBot = 0;
-  const completions: number[] = [];
-  for (const [, g] of groups) {
-    if (g.total > 0 && g.done === g.total) {
-      fullyDoneByBot++;
-      const ts = Date.parse(g.lastUpdated);
-      if (!isNaN(ts)) completions.push(ts);
-    }
-  }
-  const nowMs = Date.now();
-  const windowMs = windowDays * 86_400_000;
-  const completionsInWindow = completions.filter(t => nowMs - t <= windowMs).length;
-  const ratePerDay = completionsInWindow / windowDays;
-  const totalDone = fullyDoneByBot + fund.baselineDoneDescriptions;
-  const remaining = Math.max(0, fund.totalDescriptions - totalDone);
-  let etaDateIso: string | null = null;
-  let etaDateLocal: string | null = null;
-  if (remaining > 0 && ratePerDay > 0) {
-    const daysLeft = Math.ceil(remaining / ratePerDay);
-    const etaMs = nowMs + daysLeft * 86_400_000;
-    const d = new Date(etaMs);
-    etaDateIso = d.toISOString();
-    etaDateLocal = KYIV_UA_DATE_FMT.format(d);
-  }
-  return {
-    fundNumber: fund.number,
-    totalDescriptions: fund.totalDescriptions,
-    baselineDoneDescriptions: fund.baselineDoneDescriptions,
-    fullyDoneByBot,
-    totalDone,
-    remaining,
-    windowDays,
-    completionsInWindow,
-    ratePerDay,
-    etaDateIso,
-    etaDateLocal,
+    avgCasesPerDescription,
+    remainingCases,
+    shortWindowDays,
+    longWindowDays,
+    casesPerDayShort,
+    casesPerDayLong,
+    etaShortLocal: fmtDate(shortMs),
+    etaLongLocal: fmtDate(longMs),
+    etaFromLocal: known.length ? fmtDate(Math.min(...known)) : null,
+    etaToLocal: known.length ? fmtDate(Math.max(...known)) : null,
   };
 }
 

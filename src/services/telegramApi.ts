@@ -234,19 +234,25 @@ export const tgApi = {
       source: 'all' | 'telegram' | 'web';
       days: Array<{ date: string; cases: number; users: number }>;
     }>,
-  fundEta: (windowDays = 14) =>
-    call(`/admin/fund-eta?windowDays=${windowDays}`) as Promise<{
+  fundEta: () =>
+    call('/admin/fund-eta') as Promise<{
       fundNumber: string;
       totalDescriptions: number;
-      baselineDoneDescriptions: number;
+      doneOutsideBot: number;
       fullyDoneByBot: number;
+      openDescriptions: number;
       totalDone: number;
       remaining: number;
-      windowDays: number;
-      completionsInWindow: number;
-      ratePerDay: number;
-      etaDateIso: string | null;
-      etaDateLocal: string | null;
+      avgCasesPerDescription: number;
+      remainingCases: number;
+      shortWindowDays: number;
+      longWindowDays: number;
+      casesPerDayShort: number;
+      casesPerDayLong: number;
+      etaShortLocal: string | null;
+      etaLongLocal: string | null;
+      etaFromLocal: string | null;
+      etaToLocal: string | null;
     }>,
   integrity: (threshold = 5, includeResolved = false) =>
     call(`/admin/integrity?threshold=${threshold}${includeResolved ? '&includeResolved=1' : ''}`),

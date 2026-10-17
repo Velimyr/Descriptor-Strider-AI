@@ -76,7 +76,12 @@ export interface TelegramBotConfig {
   fund: {
     number: string;              // номер фонду (для тексту), напр. '442'
     totalDescriptions: number;   // скільки описів у фонді разом
-    baselineDoneDescriptions: number; // вже розпізнано до початку роботи бота
+    // Описи, готові ПОЗА ботом (розпізнані до бота + разові від ШІ). Бот їх не
+    // бачить, тож число фіксоване; нових поза ботом не планується.
+    doneOutsideBot: number;
+    // Вікна (днів) для темпу бота у справах/день: short → оптимістична дата,
+    // long → консервативна. Прогноз показується діапазоном між ними.
+    rateWindowsDays: { short: number; long: number };
   };
 
   verif: {
@@ -309,8 +314,10 @@ export const telegramBotConfig: TelegramBotConfig = {
 
   fund: {
     number: '442',
-    totalDescriptions: 654,
-    baselineDoneDescriptions: 41,
+    totalDescriptions: 659,
+    // 41 розпізнано до бота + 62 разово від ШІ (на 2026-10-17 разом із ботом 188).
+    doneOutsideBot: 103,
+    rateWindowsDays: { short: 30, long: 90 },
   },
 
   verif: {
@@ -589,10 +596,11 @@ export const telegramBotConfig: TelegramBotConfig = {
     invalidCaseNumber: 'У номері справи допускаються лише цифри, літери (великі чи маленькі) та пробіли.',
     fundEtaLine:
       'До завершення розпізнавання фонду №<b>{fundNumber}</b> залишилося розпізнати <b>{remaining}</b> описів.\n' +
-      'Прогнозована дата завершення розпізнавання, виходячи з поточної швидкості розпізнавання: <b>{etaDate}</b>',
+      'Прогнозована дата завершення розпізнавання, виходячи з поточної швидкості: <b>{etaDate}</b>',
     fundEtaUnknown:
       'До завершення розпізнавання фонду №<b>{fundNumber}</b> залишилося розпізнати <b>{remaining}</b> описів.\n' +
-      'Прогнозовану дату завершення поки що неможливо порахувати (за останні {windowDays} дн. не закрився жоден опис).',
+      'Прогнозовану дату завершення поки що неможливо порахувати (за останні {windowDays} дн. не розпізнано жодної справи).',
+    fundEtaRange: 'між {from} і {to}',
     fundEtaDone: 'Фонд №<b>{fundNumber}</b> повністю розпізнано 🎉',
     cancelled: 'Скасовано.',
     sessionAlreadyOpen: 'У вас уже є відкрита справа — продовжуємо її. Щоб скасувати, надішліть /cancel.',
