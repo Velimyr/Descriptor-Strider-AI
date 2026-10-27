@@ -1092,7 +1092,7 @@ export async function setSession(s: Omit<BotSession, 'rowIndex'>, _existingRowIn
       const raw = await getMeta('collab_lock_minutes');
       const n = parseInt(raw || '', 10);
       const lockMinutes = Number.isFinite(n) && n > 0 ? n : 30;
-      await lockCase(s.caseId, s.tgId, lockMinutes);
+      await renewCaseLock(s.caseId, s.tgId, lockMinutes);
     } catch (e) {
       console.error('setSession: renew collab lock failed', e);
     }
@@ -1704,6 +1704,23 @@ export async function lockCase(caseId: string, tgId: string, lockMinutes: number
     for (const [id, l] of recentLocks) if (l.until <= now) recentLocks.delete(id);
   }
   recentLocks.set(caseId, { tgId, at: Date.now(), until });
+}
+
+// Продовження локу активною сесією: умовний UPDATE — лише якщо лок наш, вільний
+// або протух. Інакше юзер, що повернувся після протухання, відбирав справу в того,
+// кому її вже видали, і обидва розпізнавали її паралельно.
+async function renewCaseLock(caseId: string, tgId: string, lockMinutes: number): Promise<void> {
+  const now = Date.now();
+  const until = now + lockMinutes * 60_000;
+  const { data, error } = await db()
+    .from(T.cases)
+    .update({ locked_by_tg_id: tgId, locked_until: new Date(until).toISOString() })
+    .eq('case_id', caseId)
+    .or(`locked_by_tg_id.eq.${tgId},locked_until.is.null,locked_until.lt."${new Date(now).toISOString()}"`)
+    .select('case_id');
+  if (error) throw error;
+  // Чужий лок не кешуємо — наступна відповідь спробує ще раз (раптом той лок протух).
+  if ((data || []).length > 0) recentLocks.set(caseId, { tgId, at: now, until });
 }
 
 // Зняти блокування (юзер завершив дію або відмовився).

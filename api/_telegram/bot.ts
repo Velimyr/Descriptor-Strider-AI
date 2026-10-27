@@ -2980,11 +2980,12 @@ async function confirmAndSubmit(
   // Collab-режим: розгалуження на create vs edit.
   if (cse.mode === 'collaborative') {
     const alreadyEdit = await hasUserTouchedCase(cse.caseId, tgId);
-    // Сесія стартувала як 'asking' → на момент видачі справа була порожня. Якщо
-    // зараз (на момент сабміту) вона вже МАЄ версію, а цей юзер її не торкався —
-    // хтось інший устиг розпізнати її, поки юзер відповідав (лок протух). Тоді не
-    // перезаписуємо його роботу мовчки, а показуємо перевірку/пропозицію іншої.
-    if (!alreadyEdit && session.state === 'asking' && cse.confirmationsCount > 0) {
+    // Без події юзера це розпізнавання з нуля (правка пише 'edit' ще на кнопці
+    // «Редагувати»). Якщо справа на момент сабміту вже МАЄ версію — хтось інший
+    // устиг розпізнати її, поки юзер відповідав (лок протух). Тоді не перезаписуємо
+    // його роботу мовчки, а показуємо перевірку/пропозицію іншої. Стан сесії тут
+    // не перевіряємо: сабміт завжди йде з 'confirming'/'editing', не з 'asking'.
+    if (!alreadyEdit && cse.confirmationsCount > 0) {
       return handleCaseStolenWhileAnswering(chatId, tgId, cse, questions);
     }
     return collabSubmit(chatId, tgId, cse, user, questions, answers, alreadyEdit);
