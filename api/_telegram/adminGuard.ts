@@ -42,6 +42,8 @@ const ADMIN_ROUTES: Array<[RegExp, AdminScope[]]> = [
 
   // Підготовка справ
   [/^\/(upload-case|upload-verif-case|detect-bboxes)$/, ['cases']],
+  [/^\/(case-images-audit|replace-case-image)$/, ['cases']],
+  [/^\/case-image\/[^/]+$/, ['cases']],
   [/^\/description-settings$/, ['cases', 'process']],
   [/^\/verif-descriptions$/, ['cases', 'process']],
   [/^\/descriptions$/, ['process']],
@@ -65,7 +67,9 @@ const ADMIN_ROUTES: Array<[RegExp, AdminScope[]]> = [
 
   // Доброчесність
   [/^\/(integrity|penalize|banned-users)$/, ['integrity']],
-  [/^\/integrity\/(dismiss|reopen|ban|unban)$/, ['integrity']],
+  [/^\/integrity\/(dismiss|reopen)$/, ['integrity']],
+  // Блокування доступне і з картки користувача в «Огляді».
+  [/^\/integrity\/(ban|unban)$/, ['integrity', 'overview']],
 
   // Партнери / Пазл / Розсилки
   [/^\/partners(\/[^/]+)?$/, ['partners']],

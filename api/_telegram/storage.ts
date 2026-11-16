@@ -799,6 +799,21 @@ export async function getBannedUsers(): Promise<BannedUserRow[]> {
 
 // Бан/розбан користувача (перевірка доброчесності). Окремо від patchUser, бо
 // ban_reason/banned_at/banned_by не входять у BotUser.
+// Деталі бана одного юзера (для картки профілю в адмінці). null — не заблокований.
+export async function getUserBanInfo(
+  tgId: string
+): Promise<{ banReason: string; bannedAt: string; bannedBy: string } | null> {
+  const { data, error } = await db()
+    .from(T.users)
+    .select('banned, ban_reason, banned_at, banned_by')
+    .eq('tg_id', tgId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data || (data as any).banned !== true) return null;
+  const r = data as any;
+  return { banReason: r.ban_reason || '', bannedAt: r.banned_at || '', bannedBy: r.banned_by || '' };
+}
+
 export async function setUserBanned(
   tgId: string,
   banned: boolean,
@@ -1891,6 +1906,141 @@ export async function setCaseEdited(
     })
     .eq('case_id', caseId);
   if (error) throw error;
+}
+
+// ----- Перезаливка картинок справ (адмінка «Перевірка картинок опису») -----
+// Справу заливали з білою/чорною картинкою (зламаний рендер PDF в адмінці) —
+// адмін перерізає фрагмент за збереженим bbox і підміняє картинку в тій самій
+// справі (case_id, сторінка, порядок лишаються).
+
+export interface CaseImageAuditRow {
+  caseId: string;
+  page: string;
+  bbox: string;
+  sourcePdf: string;
+  status: string;
+  currentAnswers: string[];
+  participants: Array<{ tgId: string; displayName: string; kind: string; points: number | null; pointsStatus: string | null }>;
+}
+
+export async function listCasesForImageAudit(archive: string, fund: string, opys: string): Promise<CaseImageAuditRow[]> {
+  const { data, error } = await db()
+    .from(T.cases)
+    .select('case_id, page, bbox, source_pdf, status, current_answers, tg_message_id, created_at')
+    .eq('archive', archive)
+    .eq('fund', fund)
+    .eq('opys', opys)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  const cases = (data as any[]) || [];
+  if (cases.length === 0) return [];
+
+  const ids = cases.map(c => c.case_id);
+  const parts: any[] = [];
+  // .in() з сотнями id упирається в довжину URL — ріжемо пачками.
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data: rows, error: e2 } = await db()
+      .from(T.caseConfirmations)
+      .select('case_id, tg_id, kind, points, points_status')
+      .in('case_id', ids.slice(i, i + 150));
+    if (e2) throw e2;
+    parts.push(...(rows || []));
+  }
+  const userIds = [...new Set(parts.map(p => String(p.tg_id)))];
+  const names = new Map<string, string>();
+  for (let i = 0; i < userIds.length; i += 150) {
+    const { data: users, error: e3 } = await db()
+      .from(T.users)
+      .select('tg_id, display_name')
+      .in('tg_id', userIds.slice(i, i + 150));
+    if (e3) throw e3;
+    for (const u of users || []) names.set(String((u as any).tg_id), (u as any).display_name || '');
+  }
+  const byCase = new Map<string, CaseImageAuditRow['participants']>();
+  for (const p of parts) {
+    const list = byCase.get(p.case_id) || [];
+    list.push({
+      tgId: String(p.tg_id),
+      displayName: names.get(String(p.tg_id)) || '',
+      kind: p.kind,
+      points: p.points === null || p.points === undefined ? null : Number(p.points),
+      pointsStatus: p.points_status ?? null,
+    });
+    byCase.set(p.case_id, list);
+  }
+  return cases.map(c => ({
+    caseId: c.case_id,
+    page: String(c.page || ''),
+    bbox: c.bbox || '',
+    sourcePdf: c.source_pdf || '',
+    status: c.status || '',
+    currentAnswers: Array.isArray(c.current_answers) ? c.current_answers : [],
+    participants: byCase.get(c.case_id) || [],
+  }));
+}
+
+// «Прочерки» — усі поля порожні або тире. Так відповідають на білу картинку.
+const DASH_VALUES = new Set(['', '-', '—', '–', '―']);
+export function isDashOnlyAnswers(answers: string[]): boolean {
+  return answers.length > 0 && answers.every(a => DASH_VALUES.has(String(a ?? '').trim()));
+}
+
+// Підміна картинки + прибирання слідів показу старої (порожньої) картинки:
+// лок і сесії на цю справу (люди відповідали на білий прямокутник), пропуски
+// (пропускали саме через порожнечу — нехай справа знову може до них прийти).
+// resetDashAnswers — якщо поточні відповіді лише прочерки, повертаємо справу на
+// розпізнавання: чистимо current_answers/лічильник і видаляємо НЕрозраховані події
+// (unconfirmed/null → непідтверджені бали за прочерки згорають). Розраховані
+// (confirmed/forfeited) лишаються як аудит: бали за них уже нараховано, а
+// settleCaseAtClose їх більше не чіпає.
+export async function replaceCaseImage(
+  caseId: string,
+  tg: { fileId: string; chatId: string; messageId: string },
+  resetDashAnswers: boolean
+): Promise<{ reset: boolean; removedEvents: number }> {
+  const cse = await getCase(caseId);
+  if (!cse) throw new Error('Справу не знайдено');
+  const reset = resetDashAnswers && isDashOnlyAnswers(cse.currentAnswers || []);
+
+  forgetLock(caseId);
+  const patch: Record<string, any> = {
+    tg_file_id: tg.fileId,
+    tg_chat_id: tg.chatId,
+    tg_message_id: tg.messageId,
+    locked_by_tg_id: '',
+    locked_until: null,
+    updated_at: new Date().toISOString(),
+  };
+  if (reset) {
+    Object.assign(patch, {
+      current_answers: [],
+      current_author_tg_id: '',
+      confirmations_count: 0,
+      submissions_count: 0,
+      status: 'open',
+    });
+  }
+  const { error } = await db().from(T.cases).update(patch).eq('case_id', caseId);
+  if (error) throw error;
+
+  let removedEvents = 0;
+  if (reset) {
+    const { data: removed, error: e2 } = await db()
+      .from(T.caseConfirmations)
+      .delete()
+      .eq('case_id', caseId)
+      .or('points_status.is.null,points_status.eq.unconfirmed')
+      .select('tg_id');
+    if (e2) throw e2;
+    removedEvents = (removed || []).length;
+  }
+  const [{ error: e3 }, { error: e4 }] = await Promise.all([
+    db().from(T.sessions).delete().eq('case_id', caseId),
+    db().from(T.skipped).delete().eq('case_id', caseId),
+  ]);
+  if (e3) throw e3;
+  if (e4) throw e4;
+  return { reset, removedEvents };
 }
 
 // Технічна правка (напр. лише «Коментар розпізнавача»): оновлює текст і знімає

@@ -910,6 +910,11 @@ export const telegramBotConfig: TelegramBotConfig = {
       '🎉 <b>Вам нараховано {points} бонусних балів!</b>\n\n' +
       'За що: {reason}\n\n' +
       'Ваш новий баланс: <b>{total}</b>. Дякуємо за вашу працю! 🙏',
+    // Штраф від адміністратора (той самий ендпоінт, kind='penalty').
+    penaltyApplied:
+      '⚠️ <b>З вашого балансу знято {points} балів.</b>\n\n' +
+      'Причина: {reason}\n\n' +
+      'Ваш новий баланс: <b>{total}</b>.',
 
     // Швидкий фідбек
     savingNotice: '💾 Зберігаю...',

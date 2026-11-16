@@ -71,6 +71,16 @@ async function call(path: string, init?: RequestInit) {
   return data;
 }
 
+export interface CaseImageAuditRow {
+  caseId: string;
+  page: string;
+  bbox: string;
+  sourcePdf: string;
+  status: string;
+  currentAnswers: string[];
+  participants: Array<{ tgId: string; displayName: string; kind: string; points: number | null; pointsStatus: string | null }>;
+}
+
 export interface AdminRow {
   id: string;
   login: string;
@@ -157,6 +167,28 @@ export const tgApi = {
     pointsVerification?: number | null;
     difficulty?: 'normal' | 'hard';
   }) => call('/admin/upload-case', { method: 'POST', body: JSON.stringify(payload) }),
+  caseImagesAudit: (archive: string, fund: string, opys: string) =>
+    call(
+      `/admin/case-images-audit?archive=${encodeURIComponent(archive)}&fund=${encodeURIComponent(fund)}&opys=${encodeURIComponent(opys)}`
+    ) as Promise<{ cases: CaseImageAuditRow[] }>,
+  // Байти поточної картинки справи (для перевірки на однотонність у браузері).
+  caseImageBlob: async (caseId: string): Promise<Blob> => {
+    const res = await fetch(`/api/telegram/admin/case-image/${encodeURIComponent(caseId)}`, {
+      headers: { Authorization: `Bearer ${getAdminToken()}` },
+      cache: 'no-store',
+    });
+    if (res.status === 401) {
+      clearAdminToken();
+      throw new AdminUnauthorizedError();
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.blob();
+  },
+  replaceCaseImage: (caseId: string, imageBase64: string, resetDashAnswers: boolean) =>
+    call('/admin/replace-case-image', {
+      method: 'POST',
+      body: JSON.stringify({ caseId, imageBase64, resetDashAnswers }),
+    }) as Promise<{ ok: boolean; reset: boolean; removedEvents: number }>,
   uploadVerifCase: (payload: {
     imageBase64: string;
     mime: string;
@@ -287,7 +319,7 @@ export const tgApi = {
   }) => call('/admin/integrity/ban', { method: 'POST', body: JSON.stringify(payload) }),
   integrityUnban: (tgId: string) =>
     call('/admin/integrity/unban', { method: 'POST', body: JSON.stringify({ tgId }) }),
-  grantBonus: (payload: { tgId: string; points: number; reason: string }) =>
+  grantBonus: (payload: { tgId: string; points: number; reason: string; kind?: 'bonus' | 'penalty' }) =>
     call('/admin/grant-bonus', { method: 'POST', body: JSON.stringify(payload) }) as Promise<{
       ok: boolean;
       newTotal: number;
@@ -405,6 +437,10 @@ export const tgApi = {
       phoneNumber: string;
       facebookUrl: string;
       photoMessageId: string;
+      banned: boolean;
+      banReason: string;
+      bannedAt: string;
+      bannedBy: string;
     }>,
   userPhotoUrl: (tgId: string) =>
     `/api/telegram/admin/user-photo/${encodeURIComponent(tgId)}?token=${encodeURIComponent(getAdminToken())}`,

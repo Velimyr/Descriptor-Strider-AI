@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X, RefreshCw, Save, UploadCloud, Wand2, Trash2, Plus, AlertTriangle } from 'lucide-react';
 import * as pdfjs from 'pdfjs-dist';
 import { TableColumn } from '../../types';
-import { tgApi, adminLogin, AdminProfile, BotHostState } from '../../services/telegramApi';
+import { tgApi, adminLogin, AdminProfile, BotHostState, CaseImageAuditRow } from '../../services/telegramApi';
 import { ADMIN_SCOPE_LABELS, AdminScope } from '../../telegram-bot/adminScopes';
 import { AdminAuthProvider, useAdminAuth } from './adminAuth';
 import { AdminsView } from './AdminsView';
@@ -660,6 +660,32 @@ const QuestionsView: React.FC<{ initialQuestions?: TableColumn[] }> = ({ initial
 
 const RENDER_SCALE = 3.0; // високий dpi для якості кропів
 
+// Однотонний кроп (білий/чорний прямокутник) — ознака того, що фоновий рендер
+// сторінки pdf.js повернув порожній аркуш. Так у канал пішли 60 білих справ
+// (442-448, стор. 21–28). На скані навіть «чисте» поле має шум паперу, тож
+// низьке стандартне відхилення яскравості = рендер зламався, а не порожня зона.
+const BLANK_CROP_STDDEV = 3;
+function isCanvasBlank(canvas: HTMLCanvasElement): boolean {
+  const w = Math.min(128, canvas.width);
+  const h = Math.max(1, Math.round((canvas.height * w) / canvas.width));
+  const probe = document.createElement('canvas');
+  probe.width = w;
+  probe.height = h;
+  const ctx = probe.getContext('2d')!;
+  ctx.drawImage(canvas, 0, 0, w, h);
+  const px = ctx.getImageData(0, 0, w, h).data;
+  let sum = 0;
+  let sumSq = 0;
+  const n = px.length / 4;
+  for (let i = 0; i < px.length; i += 4) {
+    const l = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    sum += l;
+    sumSq += l * l;
+  }
+  const mean = sum / n;
+  return Math.sqrt(Math.max(0, sumSq / n - mean * mean)) < BLANK_CROP_STDDEV;
+}
+
 type Box = {
   x: number;
   y: number;
@@ -830,6 +856,17 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
   const [msg, setMsg] = useState('');
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [uploadDone, setUploadDone] = useState<{ count: number } | null>(null);
+  // Перевірка картинок уже залитих справ опису (пошук білих/чорних і перезаливка).
+  const [imgAudit, setImgAudit] = useState<{
+    items: Array<CaseImageAuditRow & { dash: boolean }>;
+    scanned: number;
+    total: number;
+    otherPdf: number; // справи опису з іншого PDF — їх цим файлом не перерізати
+    failed: number;   // картинку не вдалося завантажити для перевірки
+    scanning: boolean;
+  } | null>(null);
+  const [imgAuditConfirmed, setImgAuditConfirmed] = useState(false);
+  const [imgReplaceProgress, setImgReplaceProgress] = useState<{ done: number; total: number; reset: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // Архівні реквізити — обовʼязкові для всієї пачки справ.
   // Архівні реквізити НЕ зберігаються між сесіями — кожен PDF може бути іншим описом.
@@ -2480,8 +2517,11 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     return canvas.toDataURL('image/jpeg', 0.92);
   };
 
-  // Кропає bbox і повертає JPEG-dataURL (з префіксом).
-  const cropBoxToDataUrl = async (sourceDataUrl: string, box: Box): Promise<string> => {
+  // Кропає bbox і повертає JPEG-dataURL (з префіксом) + чи кроп однотонний.
+  const cropBoxToDataUrl = async (
+    sourceDataUrl: string,
+    box: Box
+  ): Promise<{ dataUrl: string; blank: boolean }> => {
     return new Promise(resolve => {
       const img = new Image();
       img.onload = () => {
@@ -2514,7 +2554,7 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
             canvas.height
           );
         }
-        resolve(canvas.toDataURL('image/jpeg', 0.85));
+        resolve({ dataUrl: canvas.toDataURL('image/jpeg', 0.85), blank: isCanvasBlank(canvas) });
       };
       img.src = sourceDataUrl;
     });
@@ -2631,8 +2671,23 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         // items уже відсортовані по (page, y).
         const crops: string[] = [];
         for (const it of items) {
-          const dataUrl = await getPageImage(it.page);
-          crops.push(await cropBoxToDataUrl(dataUrl, it.box));
+          let crop = await cropBoxToDataUrl(await getPageImage(it.page), it.box);
+          if (crop.blank) {
+            // Порожній кроп — найімовірніше, зламаний рендер сторінки. Одна спроба
+            // перерендерити її наново, інакше зупиняємось: справу з білою/чорною
+            // картинкою в канал не шлемо.
+            const fresh = await renderPageToDataUrl(pdf, it.page);
+            pageCache.set(it.page, fresh);
+            crop = await cropBoxToDataUrl(fresh, it.box);
+          }
+          if (crop.blank) {
+            throw new Error(
+              `Фрагмент на сторінці ${it.page} вийшов порожнім (однотонним). ` +
+                `Відкрийте цю сторінку й перевірте, що скан видно; якщо ні — перезавантажте вкладку адмінки. ` +
+                `Якщо зона справді порожня — видаліть її.`
+            );
+          }
+          crops.push(crop.dataUrl);
         }
         const finalBase64 = await stackImagesVertically(crops);
         const firstPage = items[0].page;
@@ -2674,6 +2729,119 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
     } finally {
       setBusy(false);
       setTimeout(() => setUploadProgress(null), 800);
+    }
+  };
+
+  // Чи однотонна картинка (Blob із Telegram).
+  const isBlobBlank = async (blob: Blob): Promise<boolean> => {
+    const bmp = await createImageBitmap(blob);
+    const c = document.createElement('canvas');
+    c.width = bmp.width;
+    c.height = bmp.height;
+    c.getContext('2d')!.drawImage(bmp, 0, 0);
+    bmp.close();
+    return isCanvasBlank(c);
+  };
+
+  // Крок 1: знайти в описі справи з порожніми картинками. Нічого не змінює.
+  const scanCaseImages = async () => {
+    if (!pdf || !metaValid) return;
+    setImgAuditConfirmed(false);
+    setImgReplaceProgress(null);
+    setMsg('');
+    try {
+      const { cases } = await tgApi.caseImagesAudit(archive.trim(), fund.trim(), opys.trim());
+      const ours = cases.filter(c => !c.sourcePdf || c.sourcePdf === pdfName);
+      const state = {
+        items: [] as Array<CaseImageAuditRow & { dash: boolean }>,
+        scanned: 0,
+        total: ours.length,
+        otherPdf: cases.length - ours.length,
+        failed: 0,
+        scanning: true,
+      };
+      setImgAudit({ ...state });
+      // Невеликий паралелізм: 176 картинок по одній — довго, усі разом — шкода проксі.
+      let next = 0;
+      const worker = async () => {
+        while (next < ours.length) {
+          const c = ours[next++];
+          try {
+            if (await isBlobBlank(await tgApi.caseImageBlob(c.caseId))) {
+              const answers = c.currentAnswers || [];
+              const dash = answers.length > 0 && answers.every(a => ['', '-', '—', '–', '―'].includes(String(a ?? '').trim()));
+              state.items.push({ ...c, dash });
+            }
+          } catch {
+            state.failed++;
+          }
+          state.scanned++;
+          setImgAudit({ ...state, items: [...state.items] });
+        }
+      };
+      await Promise.all([worker(), worker(), worker(), worker()]);
+      // Порядок як в описі (сервер віддав у порядку заливки).
+      const order = new Map(ours.map((c, i) => [c.caseId, i]));
+      state.items.sort((a, b) => (order.get(a.caseId)! - order.get(b.caseId)!));
+      setImgAudit({ ...state, items: [...state.items], scanning: false });
+    } catch (e: any) {
+      setImgAudit(null);
+      setMsg(`❌ Перевірка картинок: ${e.message}`);
+    }
+  };
+
+  // Крок 2 (після явного підтвердження): перерізати фрагменти за збереженими bbox
+  // з відкритого PDF і підмінити картинки; у справах із прочерками — скинути відповіді.
+  const replaceBlankImages = async () => {
+    if (!imgAudit || !imgAuditConfirmed || !pdf) return;
+    const items = imgAudit.items;
+    const pageCache = new Map<number, string>();
+    const getPageImage = async (p: number, fresh = false): Promise<string> => {
+      if (!fresh && pageCache.has(p)) return pageCache.get(p)!;
+      const dataUrl = !fresh && p === page ? pageImage : await renderPageToDataUrl(pdf, p);
+      pageCache.set(p, dataUrl);
+      return dataUrl;
+    };
+    setBusy(true);
+    setMsg('');
+    let done = 0;
+    let reset = 0;
+    setImgReplaceProgress({ done, total: items.length, reset });
+    try {
+      for (const it of items) {
+        let parts: Array<Box & { page: number }> = [];
+        try {
+          parts = JSON.parse(it.bbox || '{}').parts || [];
+        } catch {
+          /* нижче — помилка про відсутній bbox */
+        }
+        if (parts.length === 0) throw new Error(`У справи ${it.caseId} (стор. ${it.page}) немає збереженої рамки`);
+        const crops: string[] = [];
+        for (const part of parts) {
+          let crop = await cropBoxToDataUrl(await getPageImage(part.page), part);
+          if (crop.blank) crop = await cropBoxToDataUrl(await getPageImage(part.page, true), part);
+          if (crop.blank) {
+            throw new Error(
+              `Фрагмент справи на сторінці ${part.page} знову вийшов порожнім. ` +
+                `Перезавантажте вкладку адмінки, відкрийте той самий PDF і повторіть перевірку.`
+            );
+          }
+          crops.push(crop.dataUrl);
+        }
+        const r = await tgApi.replaceCaseImage(it.caseId, await stackImagesVertically(crops), it.dash);
+        done++;
+        if (r.reset) reset++;
+        setImgReplaceProgress({ done, total: items.length, reset });
+        // Прибираємо оброблену справу зі списку — повторний запуск продовжить з місця зупинки.
+        setImgAudit(prev => (prev ? { ...prev, items: prev.items.filter(x => x.caseId !== it.caseId) } : prev));
+      }
+      setMsg(`✅ Картинки замінено: ${done}. Відповіді-прочерки скинуто: ${reset}.`);
+      setImgAudit(null);
+    } catch (e: any) {
+      setMsg(`❌ ${e.message}\nЗамінено: ${done}/${items.length}. Решта справ лишилась у списку — можна повторити.`);
+    } finally {
+      setBusy(false);
+      setImgAuditConfirmed(false);
     }
   };
 
@@ -2959,6 +3127,16 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
                 {totalBoxes !== groups.size
                   ? `Завантажити (${groups.size} справ із ${totalBoxes} зон)`
                   : `Завантажити всі (${totalBoxes})`}
+              </button>
+            )}
+            {viewMode === 'admin' && (
+              <button
+                onClick={scanCaseImages}
+                disabled={busy || !pdf || !metaValid || !!imgAudit?.scanning}
+                title="Знайти вже залиті справи цього опису з білими/чорними картинками і перезалити їх з відкритого PDF"
+                className="px-2.5 py-1.5 bg-amber-100 text-amber-800 border border-amber-300 text-xs rounded hover:bg-amber-200 disabled:opacity-50"
+              >
+                🔍 Перевірити картинки опису
               </button>
             )}
           </div>
@@ -3320,6 +3498,21 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
         </div>
       )}
 
+      {imgAudit && (
+        <ImageAuditPanel
+          audit={imgAudit}
+          confirmed={imgAuditConfirmed}
+          onConfirmChange={setImgAuditConfirmed}
+          progress={imgReplaceProgress}
+          busy={busy}
+          onReplace={replaceBlankImages}
+          onClose={() => {
+            setImgAudit(null);
+            setImgAuditConfirmed(false);
+          }}
+        />
+      )}
+
       {uploadDone && (
         <div className="border-2 border-green-500 bg-green-50 rounded p-3 text-sm text-green-800 font-medium">
           ✅ Готово: завантажено {uploadDone.count} справ у канал.
@@ -3328,6 +3521,187 @@ export const CasesView: React.FC<{ geminiKey: string; mode?: CasesViewMode }> = 
 
       {msg && <div className="text-sm">{msg}</div>}
     </div>
+  );
+};
+
+// ==================== ПЕРЕВІРКА КАРТИНОК ОПИСУ ====================
+// Список справ із порожніми картинками + явне підтвердження адміна перед
+// перезаливкою і скиданням прочерків (дія змінює бойові справи й бали).
+const KIND_LABELS: Record<string, string> = { create: 'розпізнав', edit: 'редагував', confirm: 'підтвердив' };
+
+const ImageAuditPanel: React.FC<{
+  audit: {
+    items: Array<CaseImageAuditRow & { dash: boolean }>;
+    scanned: number;
+    total: number;
+    otherPdf: number;
+    failed: number;
+    scanning: boolean;
+  };
+  confirmed: boolean;
+  onConfirmChange: (v: boolean) => void;
+  progress: { done: number; total: number; reset: number } | null;
+  busy: boolean;
+  onReplace: () => void;
+  onClose: () => void;
+}> = ({ audit, confirmed, onConfirmChange, progress, busy, onReplace, onClose }) => {
+  const { items } = audit;
+  const dashCases = items.filter(i => i.dash);
+  const keptAnswers = items.filter(i => !i.dash && i.currentAnswers.length > 0);
+  // Що скинеться (нерозраховані події справ із прочерками) і що лишиться (вже нараховані бали).
+  const voided = dashCases.flatMap(i => i.participants.filter(p => !p.pointsStatus || p.pointsStatus === 'unconfirmed'));
+  const settled = new Map<string, { name: string; points: number; cases: number }>();
+  for (const i of items) {
+    for (const p of i.participants) {
+      if (p.pointsStatus !== 'confirmed' || !p.points) continue;
+      const s = settled.get(p.tgId) || { name: p.displayName || p.tgId, points: 0, cases: 0 };
+      s.points += p.points;
+      s.cases++;
+      settled.set(p.tgId, s);
+    }
+  }
+  const short = (id: string) => id.slice(0, 8);
+
+  return (
+    <section className="border-2 border-amber-400 bg-amber-50 rounded p-3 space-y-3 text-sm">
+      <div className="flex items-center justify-between">
+        <div className="font-medium text-amber-900">🔍 Перевірка картинок опису</div>
+        <button onClick={onClose} disabled={busy} className="text-slate-500 hover:text-slate-800 disabled:opacity-50" title="Закрити">
+          <X size={16} />
+        </button>
+      </div>
+
+      {audit.scanning && (
+        <div className="text-slate-700">
+          Перевірено {audit.scanned} з {audit.total} справ… Знайдено порожніх: {items.length}
+        </div>
+      )}
+      {audit.otherPdf > 0 && (
+        <div className="text-xs text-slate-600">
+          ℹ {audit.otherPdf} справ цього опису залиті з іншого PDF — їх не перевіряли (відкрийте той файл окремо).
+        </div>
+      )}
+      {audit.failed > 0 && (
+        <div className="text-xs text-red-700">⚠ Не вдалося завантажити для перевірки {audit.failed} картинок — їх не включено.</div>
+      )}
+
+      {!audit.scanning && items.length === 0 && (
+        <div className="text-green-800">✅ Порожніх картинок у цьому описі не знайдено.</div>
+      )}
+
+      {!audit.scanning && items.length > 0 && (
+        <>
+          <div className="border border-red-300 bg-white rounded p-3 space-y-1 text-slate-800">
+            <div className="font-medium text-red-800">
+              ⚠ Знайдено {items.length} справ із порожніми (білими/чорними) картинками. Після підтвердження:
+            </div>
+            <ul className="list-disc pl-5 space-y-0.5">
+              <li>
+                картинку кожної справи буде заново вирізано з відкритого PDF за збереженою рамкою і замінено в каналі.
+                Справа лишається та сама (case_id, сторінка, порядок не змінюються);
+              </li>
+              <li>
+                <b>у {dashCases.length} справах відповіді складаються лише з прочерків — їх буде скинуто</b>, справи
+                повернуться на розпізнавання (зокрема ті, що вже позначені завершеними);
+              </li>
+              <li>
+                нерозраховані бали за ці прочерки буде анульовано ({voided.length} записів участі видаляються);
+              </li>
+              <li>
+                <b>уже нараховані бали НЕ знімаються</b> — список нижче, рішення щодо них окреме;
+              </li>
+              <li>активні сесії та пропуски цих справ очищаються — справи знову можуть прийти будь-кому;</li>
+              {keptAnswers.length > 0 && (
+                <li>
+                  у {keptAnswers.length} справах є непорожні відповіді — для них лише заміна картинки, відповіді лишаються.
+                </li>
+              )}
+            </ul>
+          </div>
+
+          {settled.size > 0 && (
+            <div className="border border-slate-300 bg-white rounded p-2 text-xs">
+              <div className="font-medium mb-1">Уже нараховані бали за ці справи (лишаються):</div>
+              {[...settled.entries()]
+                .sort((a, b) => b[1].points - a[1].points)
+                .map(([id, s]) => (
+                  <div key={id}>
+                    {s.name} <span className="text-slate-400">({id})</span> — {Math.round(s.points * 100) / 100} балів за {s.cases} справ
+                  </div>
+                ))}
+            </div>
+          )}
+
+          <div className="max-h-96 overflow-auto border border-slate-300 bg-white rounded">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-100 sticky top-0">
+                <tr className="text-left">
+                  <th className="px-2 py-1">Стор.</th>
+                  <th className="px-2 py-1">Справа</th>
+                  <th className="px-2 py-1">Статус</th>
+                  <th className="px-2 py-1">Відповіді</th>
+                  <th className="px-2 py-1">Учасники</th>
+                  <th className="px-2 py-1">Що буде</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map(i => (
+                  <tr key={i.caseId} className="border-t border-slate-200 align-top">
+                    <td className="px-2 py-1">{i.page}</td>
+                    <td className="px-2 py-1 font-mono" title={i.caseId}>{short(i.caseId)}</td>
+                    <td className="px-2 py-1">{i.status === 'done' ? 'завершена' : 'відкрита'}</td>
+                    <td className="px-2 py-1">
+                      {i.currentAnswers.length === 0 ? '—  (немає)' : i.dash ? 'лише прочерки' : i.currentAnswers.join(' | ')}
+                    </td>
+                    <td className="px-2 py-1">
+                      {i.participants.length === 0
+                        ? '—'
+                        : i.participants.map(p => (
+                            <div key={p.tgId}>
+                              {p.displayName || p.tgId}: {KIND_LABELS[p.kind] || p.kind}
+                              {p.points ? `, ${p.points} б.` : ''}
+                              {p.pointsStatus ? ` (${p.pointsStatus})` : ''}
+                            </div>
+                          ))}
+                    </td>
+                    <td className="px-2 py-1">{i.dash ? 'картинка + скидання відповідей' : 'лише картинка'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <label className="flex items-start gap-2 text-slate-800">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={confirmed}
+              disabled={busy}
+              onChange={e => onConfirmChange(e.target.checked)}
+            />
+            <span>
+              Я перевірив список і підтверджую: замінити картинки {items.length} справ і скинути відповіді-прочерки в{' '}
+              {dashCases.length} справах.
+            </span>
+          </label>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={onReplace}
+              disabled={!confirmed || busy}
+              className="px-3 py-1.5 bg-red-600 text-white text-sm rounded disabled:opacity-50"
+            >
+              Перезалити {items.length} картинок
+            </button>
+            {progress && (
+              <span className="text-slate-700">
+                Замінено {progress.done} з {progress.total}, скинуто прочерків: {progress.reset}
+              </span>
+            )}
+          </div>
+        </>
+      )}
+    </section>
   );
 };
 
@@ -3794,6 +4168,16 @@ const OverviewView: React.FC = () => {
   const [monthlyPage, setMonthlyPage] = useState(1);
   // Профіль користувача — модалка по кліку на рядок.
   const [profileTgId, setProfileTgId] = useState<string | null>(null);
+  // Фільтр користувачів за TG ID (підрядок) або імʼям.
+  const [userQuery, setUserQuery] = useState('');
+  const userQ = userQuery.trim().toLowerCase();
+  const matchUser = (u: { tgId: string; displayName?: string }) =>
+    !userQ || String(u.tgId).toLowerCase().includes(userQ) || (u.displayName || '').toLowerCase().includes(userQ);
+
+  useEffect(() => {
+    setUsersPage(1);
+    setMonthlyPage(1);
+  }, [userQ]);
 
   const refresh = async () => {
     setBusy(true);
@@ -3851,7 +4235,16 @@ const OverviewView: React.FC = () => {
     descPageSafe * DESC_PAGE_SIZE
   );
 
-  const usersList: any[] = Array.isArray(data?.users) ? data.users : [];
+  const usersList: any[] = useMemo(
+    () => (Array.isArray(data?.users) ? data.users : []).filter(matchUser),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data, userQ]
+  );
+  const monthlyFiltered = useMemo(
+    () => monthly.filter(matchUser),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [monthly, userQ]
+  );
   const usersTotalPages = Math.max(1, Math.ceil(usersList.length / USERS_PAGE_SIZE));
   const usersPageSafe = Math.min(usersPage, usersTotalPages);
   const usersPageRows = usersList.slice(
@@ -3859,9 +4252,9 @@ const OverviewView: React.FC = () => {
     usersPageSafe * USERS_PAGE_SIZE
   );
 
-  const monthlyTotalPages = Math.max(1, Math.ceil(monthly.length / USERS_PAGE_SIZE));
+  const monthlyTotalPages = Math.max(1, Math.ceil(monthlyFiltered.length / USERS_PAGE_SIZE));
   const monthlyPageSafe = Math.min(monthlyPage, monthlyTotalPages);
-  const monthlyPageRows = monthly.slice(
+  const monthlyPageRows = monthlyFiltered.slice(
     (monthlyPageSafe - 1) * USERS_PAGE_SIZE,
     monthlyPageSafe * USERS_PAGE_SIZE
   );
@@ -3893,6 +4286,41 @@ const OverviewView: React.FC = () => {
           ))}
         </div>
       </div>
+      {/* Пошук користувача: фільтрує таблиці (якщо дані завантажені), а «Профіль»
+          відкриває картку за точним TG ID навіть без «Оновити» — це один легкий запит. */}
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={e => {
+          e.preventDefault();
+          const id = userQuery.trim();
+          if (id) setProfileTgId(id);
+        }}
+      >
+        <input
+          value={userQuery}
+          onChange={e => setUserQuery(e.target.value)}
+          placeholder="TG ID або імʼя користувача"
+          className="border rounded px-2 py-1.5 text-sm w-64 font-mono"
+        />
+        <button
+          type="submit"
+          disabled={!userQuery.trim()}
+          className="px-3 py-1.5 bg-indigo-600 text-white text-sm rounded disabled:opacity-40"
+          title="Відкрити картку користувача за точним TG ID"
+        >
+          Відкрити профіль
+        </button>
+        {userQuery && (
+          <button type="button" onClick={() => setUserQuery('')} className="text-xs text-slate-500 hover:underline">
+            очистити
+          </button>
+        )}
+        {userQ && data && sub === 'users' && (
+          <span className="text-xs text-slate-500">
+            Знайдено: {userMode === 'total' ? usersList.length : monthlyFiltered.length}
+          </span>
+        )}
+      </form>
       {msg && <div className="text-sm">{msg}</div>}
 
       {!data && !busy && (
@@ -4102,6 +4530,11 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
   const [bonusReason, setBonusReason] = useState('');
   const [bonusBusy, setBonusBusy] = useState(false);
   const [bonusMsg, setBonusMsg] = useState('');
+  const [bonusKind, setBonusKind] = useState<'bonus' | 'penalty'>('bonus');
+  // Блокування
+  const [banReason, setBanReason] = useState('');
+  const [banBusy, setBanBusy] = useState(false);
+  const [banMsg, setBanMsg] = useState('');
 
   const reload = () => {
     setBusy(true);
@@ -4130,15 +4563,21 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
       setBonusMsg('⚠ Вкажіть додатну кількість балів');
       return;
     }
+    const isPenalty = bonusKind === 'penalty';
     if (!bonusReason.trim()) {
-      setBonusMsg('⚠ Вкажіть причину нарахування');
+      setBonusMsg(isPenalty ? '⚠ Вкажіть причину штрафу' : '⚠ Вкажіть причину нарахування');
+      return;
+    }
+    if (isPenalty && !window.confirm(`Зняти ${pts} балів у "${p?.displayName || tgId}"?\n\nКористувач отримає повідомлення з причиною.`)) {
       return;
     }
     setBonusBusy(true);
     setBonusMsg('');
     try {
-      const r = await tgApi.grantBonus({ tgId, points: pts, reason: bonusReason.trim() });
-      setBonusMsg(r.warning ? `✅ Нараховано (${r.newTotal}). ${r.warning}` : `✅ Нараховано! Новий баланс: ${r.newTotal}`);
+      const r = await tgApi.grantBonus({ tgId, points: pts, reason: bonusReason.trim(), kind: bonusKind });
+      const done = isPenalty ? 'Знято' : 'Нараховано';
+      const total = Math.round(r.newTotal * 100) / 100;
+      setBonusMsg(r.warning ? `✅ ${done} (${total}). ${r.warning}` : `✅ ${done}! Новий баланс: ${total}`);
       setBonusPoints('');
       setBonusReason('');
       await reload();
@@ -4146,6 +4585,38 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
       setBonusMsg(`⚠ ${e.message}`);
     } finally {
       setBonusBusy(false);
+    }
+  };
+
+  const toggleBan = async () => {
+    if (!p) return;
+    const name = p.displayName || tgId;
+    if (p.banned) {
+      if (!window.confirm(`Розблокувати "${name}"?`)) return;
+    } else if (
+      !window.confirm(
+        `Заблокувати "${name}"?\n\nКористувач більше не зможе виконати жодну дію — ` +
+        `ні в боті, ні на сайті. Розблокувати можна тут або у «Перевірці доброчесності».`
+      )
+    ) {
+      return;
+    }
+    setBanBusy(true);
+    setBanMsg('');
+    try {
+      if (p.banned) {
+        await tgApi.integrityUnban(tgId);
+        setBanMsg('✅ Розблоковано');
+      } else {
+        const r: any = await tgApi.integrityBan({ tgId, reason: banReason.trim() });
+        setBanMsg(r?.warning ? `✅ ${r.warning}` : '✅ Заблоковано');
+        setBanReason('');
+      }
+      await reload();
+    } catch (e: any) {
+      setBanMsg(`⚠ ${e.message}`);
+    } finally {
+      setBanBusy(false);
     }
   };
 
@@ -4182,6 +4653,7 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
                   <div className="text-xs text-slate-500 font-mono mt-0.5">tg_id: {p.tgId}</div>
                   <div className="text-xs text-slate-500 mt-0.5">Балів: {p.totalPoints} · {p.status}</div>
                   {p.source === 'web' && <div className="text-xs text-amber-600 mt-0.5">web-юзер{p.partnerId ? ` (partner: ${p.partnerId})` : ''}</div>}
+                  {p.banned && <div className="text-xs font-semibold text-red-600 mt-0.5">🚫 Заблоковано</div>}
                 </div>
               </div>
 
@@ -4210,9 +4682,24 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
               </div>
               <div className="text-xs text-slate-400 pt-2 border-t">Створено: {p.createdAt ? new Date(p.createdAt).toLocaleString('uk-UA') : '—'}</div>
 
-              {/* Нарахування бонусних балів за особливі заслуги */}
+              {/* Нарахування бонусних балів / штраф */}
               <div className="pt-3 border-t">
-                <div className="text-xs font-semibold uppercase text-slate-400 mb-2">🎉 Бонусні бали</div>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="text-xs font-semibold uppercase text-slate-400">Бали</div>
+                  {([['bonus', '🎉 Бонус'], ['penalty', '⚠️ Штраф']] as const).map(([k, label]) => (
+                    <button
+                      key={k}
+                      onClick={() => { setBonusKind(k); setBonusMsg(''); }}
+                      className={`px-2 py-0.5 text-xs rounded border ${
+                        bonusKind === k
+                          ? k === 'penalty' ? 'bg-red-600 text-white border-red-600' : 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white border-slate-300 text-slate-600'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
                 <div className="space-y-2">
                   <input
                     type="number"
@@ -4220,28 +4707,70 @@ const UserProfileModal: React.FC<{ tgId: string; onClose: () => void }> = ({ tgI
                     step="any"
                     value={bonusPoints}
                     onChange={e => setBonusPoints(e.target.value)}
-                    placeholder="Кількість балів"
+                    placeholder={bonusKind === 'penalty' ? 'Скільки балів зняти' : 'Кількість балів'}
                     className="w-full border rounded px-2 py-1.5 text-sm"
                   />
                   <textarea
                     value={bonusReason}
                     onChange={e => setBonusReason(e.target.value)}
-                    placeholder="За що саме (це побачить користувач у Telegram)"
+                    placeholder={bonusKind === 'penalty'
+                      ? 'Причина штрафу (це побачить користувач у Telegram)'
+                      : 'За що саме (це побачить користувач у Telegram)'}
                     rows={2}
                     className="w-full border rounded px-2 py-1.5 text-sm resize-y"
                   />
                   <button
                     onClick={grantBonus}
                     disabled={bonusBusy}
-                    className="px-3 py-1.5 bg-emerald-600 text-white text-sm rounded disabled:opacity-50"
+                    className={`px-3 py-1.5 text-white text-sm rounded disabled:opacity-50 ${bonusKind === 'penalty' ? 'bg-red-600' : 'bg-emerald-600'}`}
                   >
-                    {bonusBusy ? 'Нараховую…' : 'Нарахувати бонус'}
+                    {bonusBusy
+                      ? (bonusKind === 'penalty' ? 'Знімаю…' : 'Нараховую…')
+                      : (bonusKind === 'penalty' ? 'Зняти бали' : 'Нарахувати бонус')}
                   </button>
+                  <div className="text-xs text-slate-400">Зміна йде і в загальний баланс, і в рейтинг поточного місяця.</div>
                   {p.source === 'web' && (
-                    <div className="text-xs text-amber-600">web-юзер: бали нарахуються, але повідомлення в Telegram не надійде.</div>
+                    <div className="text-xs text-amber-600">web-юзер: бали зміняться, але повідомлення в Telegram не надійде.</div>
                   )}
                   {bonusMsg && <div className="text-xs text-slate-700">{bonusMsg}</div>}
                 </div>
+              </div>
+
+              {/* Блокування */}
+              <div className="pt-3 border-t">
+                <div className="text-xs font-semibold uppercase text-slate-400 mb-2">🚫 Блокування</div>
+                {p.banned ? (
+                  <div className="space-y-2">
+                    <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2 space-y-0.5">
+                      <div><b>Заблоковано</b>{p.bannedAt ? ` ${new Date(p.bannedAt).toLocaleString('uk-UA')}` : ''}{p.bannedBy ? ` · ${p.bannedBy}` : ''}</div>
+                      {p.banReason && <div>Причина: {p.banReason}</div>}
+                    </div>
+                    <button
+                      onClick={toggleBan}
+                      disabled={banBusy}
+                      className="px-3 py-1.5 bg-slate-200 text-slate-800 text-sm rounded disabled:opacity-50"
+                    >
+                      {banBusy ? 'Розблоковую…' : 'Розблокувати'}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <input
+                      value={banReason}
+                      onChange={e => setBanReason(e.target.value)}
+                      placeholder="Причина (лише для адмінів, необовʼязково)"
+                      className="w-full border rounded px-2 py-1.5 text-sm"
+                    />
+                    <button
+                      onClick={toggleBan}
+                      disabled={banBusy}
+                      className="px-3 py-1.5 bg-red-600 text-white text-sm rounded disabled:opacity-50"
+                    >
+                      {banBusy ? 'Блокую…' : '🚫 Заблокувати'}
+                    </button>
+                  </div>
+                )}
+                {banMsg && <div className="text-xs text-slate-700 mt-2">{banMsg}</div>}
               </div>
             </>
           )}

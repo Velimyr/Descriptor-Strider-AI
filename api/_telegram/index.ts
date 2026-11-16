@@ -830,6 +830,75 @@ router.post('/admin/upload-case', async (req, res) => {
   }
 });
 
+// ----- Перевірка картинок опису: пошук порожніх (білих/чорних) і перезаливка -----
+// Список справ опису з bbox і учасниками — адмінка сама завантажує кожну картинку
+// (через /admin/case-image) і визначає однотонні.
+router.get('/admin/case-images-audit', async (req, res) => {
+  const archive = String(req.query.archive || '').trim();
+  const fund = String(req.query.fund || '').trim();
+  const opys = String(req.query.opys || '').trim();
+  if (!archive || !fund || !opys) return res.status(400).json({ error: 'archive, fund, opys required' });
+  try {
+    const { listCasesForImageAudit } = await import('./storage.js');
+    res.json({ cases: await listCasesForImageAudit(archive, fund, opys) });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/admin/case-image/:caseId', async (req, res) => {
+  try {
+    const { getCaseFileId } = await import('./storage.js');
+    const fileId = await getCaseFileId(req.params.caseId);
+    if (fileId === null) return res.status(404).send('case not found');
+    if (!fileId) return res.status(410).send('image unavailable');
+    const { tg } = await import('./tg-api.js');
+    const info = await tg('getFile', { file_id: fileId });
+    const filePath = info?.file_path;
+    if (!filePath) return res.status(410).send('telegram file expired');
+    const botToken = process.env[telegramBotConfig.tg.botTokenEnv];
+    if (!botToken) return res.status(500).send('bot token missing');
+    const axios = (await import('axios')).default;
+    const upstream = await axios.get(
+      `https://api.telegram.org/file/bot${botToken}/${filePath}`,
+      { responseType: 'arraybuffer', timeout: 15000 }
+    );
+    res.setHeader('Content-Type', upstream.headers['content-type'] || 'image/jpeg');
+    // Після перезаливки картинка під тим самим URL змінюється — не кешуємо.
+    res.setHeader('Cache-Control', 'no-store');
+    res.send(Buffer.from(upstream.data));
+  } catch (e: any) {
+    console.error('admin case-image failed', e?.message || e);
+    res.status(502).send('download error');
+  }
+});
+
+// Підміна картинки наявної справи (той самий case_id). resetDashAnswers — адмін
+// явно підтвердив скидання прочерків; сервер усе одно сам перевіряє, що відповіді
+// справді лише прочерки, і нічого іншого не скидає.
+router.post('/admin/replace-case-image', async (req, res) => {
+  const { caseId, imageBase64, resetDashAnswers } = req.body || {};
+  if (!caseId || !imageBase64) return res.status(400).json({ error: 'caseId, imageBase64 required' });
+  const channelId = process.env[telegramBotConfig.tg.channelIdEnv];
+  if (!channelId) return res.status(400).json({ error: `Missing ${telegramBotConfig.tg.channelIdEnv}` });
+  try {
+    const { getCase, replaceCaseImage } = await import('./storage.js');
+    if (!(await getCase(String(caseId)))) return res.status(404).json({ error: 'Справу не знайдено' });
+    const result = await sendPhotoByBuffer(channelId, Buffer.from(imageBase64, 'base64'), 'case.jpg');
+    const photoArr = result?.photo || [];
+    const fileId = photoArr.length ? photoArr[photoArr.length - 1].file_id : '';
+    if (!fileId) return res.status(502).json({ error: 'Telegram не повернув file_id' });
+    const out = await replaceCaseImage(
+      String(caseId),
+      { fileId, chatId: String(channelId), messageId: String(result?.message_id || '') },
+      resetDashAnswers === true
+    );
+    res.json({ ok: true, ...out });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Завантаження розпізнаної справи на ВЕБ-перевірку (вкладка «Веб» у Підготовці справ).
 // Картинка → група (як для бота), текст + питання + ai-відповіді → verif_cases.
 router.post('/admin/upload-verif-case', async (req, res) => {
@@ -1591,18 +1660,21 @@ router.post('/admin/integrity/unban', async (req, res) => {
   }
 });
 
-// ----- Нарахування бонусних балів за особливі заслуги -----
+// ----- Бонусні бали / штрафи від адміністратора -----
 // Адмін зазначає кількість і причину; користувач отримує повідомлення в Telegram.
-// Бали йдуть і в lifetime-total, і в місячний рейтинг (як звичайні), атомарними RPC.
+// kind='bonus' (деф.) — нарахування, kind='penalty' — списання. Зміна йде і в
+// lifetime-total, і в місячний рейтинг поточного місяця, атомарними RPC.
 router.post('/admin/grant-bonus', async (req, res) => {
   const { tgId, points, reason } = req.body || {};
+  const isPenalty = req.body?.kind === 'penalty';
   const pts = Math.round(Number(points) * 100) / 100;
   if (!tgId || !Number.isFinite(pts) || pts <= 0) {
     return res.status(400).json({ error: 'tgId і додатній points обовʼязкові' });
   }
   if (!reason || !String(reason).trim()) {
-    return res.status(400).json({ error: 'Вкажіть причину нарахування' });
+    return res.status(400).json({ error: isPenalty ? 'Вкажіть причину штрафу' : 'Вкажіть причину нарахування' });
   }
+  const delta = isPenalty ? -pts : pts;
   try {
     const { getUser, incTotalPoints, incMonthlyPoints } = await import('./storage.js');
     const { kyivMonthString } = await import('./scheduler.js');
@@ -1611,22 +1683,24 @@ router.post('/admin/grant-bonus', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'Користувача не знайдено' });
 
     const [newTotal] = await Promise.all([
-      incTotalPoints(user.tgId, pts),
-      incMonthlyPoints(kyivMonthString(), user.tgId, pts, user.displayName),
+      incTotalPoints(user.tgId, delta),
+      incMonthlyPoints(kyivMonthString(), user.tgId, delta, user.displayName),
     ]);
 
     // Повідомляємо лише TG-юзерів (web:… не мають приватного чату з ботом).
     if (!isWebUserId(String(tgId))) {
       const esc = (s: string) => s.replace(/[&<>]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[ch] as string));
-      const text = telegramBotConfig.texts.bonusGranted
+      const tpl = isPenalty ? telegramBotConfig.texts.penaltyApplied : telegramBotConfig.texts.bonusGranted;
+      const text = tpl
         .replace('{points}', String(pts))
         .replace('{reason}', esc(String(reason).trim()))
-        .replace('{total}', String(newTotal));
+        .replace('{total}', String(Math.round(newTotal * 100) / 100));
       try {
         const { sendMessage } = await import('./tg-api.js');
         await sendMessage(user.tgId, text);
       } catch (e: any) {
-        return res.json({ ok: true, newTotal, warning: `Бали нараховано, але повідомлення не доставлено: ${e?.message || e}` });
+        const what = isPenalty ? 'Бали знято' : 'Бали нараховано';
+        return res.json({ ok: true, newTotal, warning: `${what}, але повідомлення не доставлено: ${e?.message || e}` });
       }
     }
     res.json({ ok: true, newTotal });
@@ -1769,9 +1843,12 @@ router.post('/admin/broadcast/:id/cancel', async (req, res) => {
 // ----- Профіль юзера: повна інформація (вкл. приватні поля), для адмін-UI -----
 router.get('/admin/user-profile/:tgId', async (req, res) => {
   try {
-    const { getUser } = await import('./storage.js');
+    const { getUser, getUserBanInfo } = await import('./storage.js');
     const u = await getUser(req.params.tgId);
     if (!u) return res.status(404).json({ error: 'not found' });
+    // Окремий точковий запит, а не u.banned: getUser може віддати закешований рядок,
+    // і після бана/розбана з картки статус показувався б застарілим.
+    const ban = await getUserBanInfo(u.tgId);
     const tgLink = u.tgUsername
       ? `https://t.me/${u.tgUsername}`
       : `tg://user?id=${u.tgId}`;
@@ -1794,6 +1871,10 @@ router.get('/admin/user-profile/:tgId', async (req, res) => {
       phoneNumber: u.phoneNumber,
       facebookUrl: u.facebookUrl,
       photoMessageId: u.photoMessageId,
+      banned: !!ban,
+      banReason: ban?.banReason || '',
+      bannedAt: ban?.bannedAt || '',
+      bannedBy: ban?.bannedBy || '',
     });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || 'internal' });
