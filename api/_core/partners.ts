@@ -160,9 +160,32 @@ export async function getPartnerById(partnerId: string): Promise<Partner | null>
   return data ? mapPartner(data) : null;
 }
 
+// Кеш партнера за хешем ключа в пам'яті інстансу. Без нього КОЖЕН запит віджета
+// (вкл. відхилені 401/403 і зациклені клієнти) робить запит у БД — 17.11.2026
+// один партнер так дав ~22k зайвих запитів за добу. Кешуємо і «не знайдено»
+// (нема ключа чи вимкнений партнер), щоб чужий/відкликаний ключ теж не бив у БД.
+// Інші інстанси побачать зміну партнера (вимкнення, origins) за ≤ TTL.
+const PARTNER_CACHE_TTL_MS = 60_000;
+const PARTNER_CACHE_MAX = 200;
+const partnerCache = new Map<string, { partner: Partner | null; expires: number }>();
+
+function clearPartnerCache(): void {
+  partnerCache.clear();
+}
+
 // Lookup за хешем ключа. Індекс idx_*_partners_api_key_hash робить це O(1).
 export async function getPartnerByApiKey(apiKey: string): Promise<Partner | null> {
   const hash = hashApiKey(apiKey);
+  const now = Date.now();
+  const hit = partnerCache.get(hash);
+  if (hit && hit.expires > now) return hit.partner;
+  const partner = await fetchPartnerByHash(hash);
+  if (partnerCache.size >= PARTNER_CACHE_MAX) partnerCache.clear();
+  partnerCache.set(hash, { partner, expires: now + PARTNER_CACHE_TTL_MS });
+  return partner;
+}
+
+async function fetchPartnerByHash(hash: string): Promise<Partner | null> {
   const { data, error } = await db()
     .from(T.partners)
     .select('*')
@@ -187,11 +210,13 @@ export async function updatePartner(
   if (patch.customization !== undefined) row.customization = sanitizeCustomization(patch.customization);
   if (Object.keys(row).length === 0) return;
   const { error } = await db().from(T.partners).update(row).eq('partner_id', partnerId);
+  clearPartnerCache();
   if (error) throw error;
 }
 
 export async function deletePartner(partnerId: string): Promise<void> {
   const { error } = await db().from(T.partners).delete().eq('partner_id', partnerId);
+  clearPartnerCache();
   if (error) throw error;
 }
 

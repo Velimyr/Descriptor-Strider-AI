@@ -23,6 +23,8 @@ type Stage =
   | { kind: 'error'; message: string };
 
 const HEARTBEAT_MS = 30_000;
+// Скільки максимум опитуємо статус привʼязки до Telegram.
+const LINK_POLL_MAX_MS = 10 * 60_000;
 
 export interface AppProps {
   api: ApiClient;
@@ -186,8 +188,21 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, posi
   useEffect(() => {
     if (stage.kind !== 'linking') return;
     let stopped = false;
+    let inFlight = false;
     const code = stage.code;
+    const startedAt = Date.now();
     const tick = async () => {
+      // Запобіжник від «вічного» опитування (напр. забута відкрита вкладка):
+      // код живе обмежений час, далі просимо почати заново.
+      if (Date.now() - startedAt > LINK_POLL_MAX_MS) {
+        stopped = true;
+        window.clearInterval(interval);
+        setStage({ kind: 'error', message: 'Час на привʼязку минув. Спробуйте ще раз.' });
+        return;
+      }
+      // Повільна мережа — не накладаємо запити один на одного.
+      if (inFlight) return;
+      inFlight = true;
       try {
         const r = await api.linkStatus(code);
         if (stopped) return;
@@ -199,7 +214,18 @@ export const App: React.FC<AppProps> = ({ api, partnerId, buttonText, help, posi
         } else if (r.status === 'expired' || r.status === 'unknown') {
           setStage({ kind: 'error', message: 'Код прострочений. Спробуйте ще раз.' });
         }
-      } catch {/* network — пропускаємо, повторимо */}
+      } catch (e: any) {
+        // 4xx (ключ/origin/429) самі не минуть — повторювати кожні 3 с марно і
+        // це палить CPU сервера. Мережеві збої/5xx — пропускаємо, повторимо.
+        const status = Number(e?.status) || 0;
+        if (!stopped && status >= 400 && status < 500) {
+          stopped = true;
+          window.clearInterval(interval);
+          setStage({ kind: 'error', message: 'Не вдалось перевірити привʼязку. Спробуйте ще раз.' });
+        }
+      } finally {
+        inFlight = false;
+      }
     };
     const interval = window.setInterval(tick, 3000);
     return () => { stopped = true; window.clearInterval(interval); };

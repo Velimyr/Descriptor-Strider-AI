@@ -36,9 +36,38 @@ export function widgetCors(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+// Лог відхилених запитів віджета (шлях, origin, партнер, причина). Тротлінг:
+// один рядок на ключ (причина+шлях+origin+партнер) раз на хвилину з лічильником
+// пропущених — щоб зациклений клієнт було видно, але він не засмічував логи.
+const REJECT_LOG_WINDOW_MS = 60_000;
+const rejectLog = new Map<string, { first: number; suppressed: number }>();
+
+export function logRejected(req: Request, status: number, reason: string, partnerId?: string) {
+  const path = (req.originalUrl || req.url || '').split('?')[0];
+  const origin = (req.headers.origin as string | undefined) || '-';
+  const key = `${status}|${reason}|${path}|${origin}|${partnerId || '-'}`;
+  const now = Date.now();
+  const e = rejectLog.get(key);
+  if (e && now - e.first < REJECT_LOG_WINDOW_MS) {
+    e.suppressed++;
+    return;
+  }
+  const prev = e?.suppressed || 0;
+  if (rejectLog.size > 500) rejectLog.clear();
+  rejectLog.set(key, { first: now, suppressed: 0 });
+  console.warn(
+    `[widget-reject] ${status} ${reason} ${req.method} ${path} origin=${origin} partner=${partnerId || '-'} ` +
+    `ua=${String(req.headers['user-agent'] || '-').slice(0, 80)}` +
+    (prev ? ` (+${prev} за попередню хвилину)` : '')
+  );
+}
+
 export async function requirePartner(req: Request, res: Response, next: NextFunction) {
   const apiKey = req.header('X-Partner-Key');
-  if (!apiKey) return res.status(401).json({ error: 'missing X-Partner-Key' });
+  if (!apiKey) {
+    logRejected(req, 401, 'no-key');
+    return res.status(401).json({ error: 'missing X-Partner-Key' });
+  }
   let partner: Partner | null;
   try {
     partner = await getPartnerByApiKey(apiKey);
@@ -46,10 +75,14 @@ export async function requirePartner(req: Request, res: Response, next: NextFunc
     console.error('partner lookup failed', e?.message || e);
     return res.status(500).json({ error: 'internal' });
   }
-  if (!partner) return res.status(401).json({ error: 'invalid partner key' });
+  if (!partner) {
+    logRejected(req, 401, 'bad-key');
+    return res.status(401).json({ error: 'invalid partner key' });
+  }
 
   const origin = req.headers.origin as string | undefined;
   if (!isOriginAllowed(partner, origin)) {
+    logRejected(req, 403, 'origin', partner.partnerId);
     // Повертаємо тільки incoming_origin — щоб партнер міг порівняти зі своїм списком
     // в адмінці. Сам список не розкриваємо.
     return res.status(403).json({
@@ -68,15 +101,26 @@ export async function requirePartner(req: Request, res: Response, next: NextFunc
 export async function requireSession(req: Request, res: Response, next: NextFunction) {
   const auth = req.header('Authorization') || '';
   const m = /^Bearer\s+(.+)$/.exec(auth);
-  if (!m) return res.status(401).json({ error: 'missing session token' });
+  const pid = req.partner?.partnerId;
+  if (!m) {
+    logRejected(req, 401, 'no-session', pid);
+    return res.status(401).json({ error: 'missing session token' });
+  }
   const payload = verifySessionToken(m[1]);
-  if (!payload) return res.status(401).json({ error: 'invalid or expired session' });
+  if (!payload) {
+    logRejected(req, 401, 'bad-session', pid);
+    return res.status(401).json({ error: 'invalid or expired session' });
+  }
   // Перевірка що сесія належить тому ж партнеру що й ключ.
   if (req.partner && payload.partnerId !== req.partner.partnerId) {
+    logRejected(req, 403, 'session-partner-mismatch', pid);
     return res.status(403).json({ error: 'session/partner mismatch' });
   }
   const user = await getUser(payload.tgId);
-  if (!user) return res.status(401).json({ error: 'user no longer exists' });
+  if (!user) {
+    logRejected(req, 401, 'user-gone', pid);
+    return res.status(401).json({ error: 'user no longer exists' });
+  }
   // Бан (перевірка доброчесності): заблокований не може виконати жодну дію.
   // Покриває і віджет, і сайт перевірки — обидва ходять через requireSession.
   if (user.banned) {
